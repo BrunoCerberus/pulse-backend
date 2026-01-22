@@ -30,13 +30,20 @@ func NewOGImageExtractor() *OGImageExtractor {
 }
 
 // ogImagePatterns are regex patterns to extract og:image from HTML
+// Ordered by priority - try og:image first, then twitter:image as fallback
 var ogImagePatterns = []*regexp.Regexp{
-	// Standard og:image
-	regexp.MustCompile(`<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']`),
-	regexp.MustCompile(`<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']`),
+	// Standard og:image (various attribute orders)
+	regexp.MustCompile(`(?i)<meta[^>]+property\s*=\s*["']og:image["'][^>]+content\s*=\s*["']([^"']+)["']`),
+	regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image["']`),
+	// og:image:url variant (some sites use this)
+	regexp.MustCompile(`(?i)<meta[^>]+property\s*=\s*["']og:image:url["'][^>]+content\s*=\s*["']([^"']+)["']`),
+	regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+property\s*=\s*["']og:image:url["']`),
 	// Twitter image as fallback
-	regexp.MustCompile(`<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']`),
-	regexp.MustCompile(`<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']`),
+	regexp.MustCompile(`(?i)<meta[^>]+name\s*=\s*["']twitter:image["'][^>]+content\s*=\s*["']([^"']+)["']`),
+	regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']twitter:image["']`),
+	// Twitter image:src variant
+	regexp.MustCompile(`(?i)<meta[^>]+name\s*=\s*["']twitter:image:src["'][^>]+content\s*=\s*["']([^"']+)["']`),
+	regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']twitter:image:src["']`),
 }
 
 // ExtractOGImage fetches the article page and extracts the og:image URL

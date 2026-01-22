@@ -59,7 +59,8 @@ func (c *Client) GetActiveSources() ([]models.Source, error) {
 	return sources, nil
 }
 
-// InsertArticle inserts a new article, returns true if inserted, false if duplicate
+// InsertArticle inserts a new article or updates image_url if it already exists
+// Returns true if inserted (new), false if updated (existing)
 func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 	url := fmt.Sprintf("%s/articles", c.baseURL)
 
@@ -73,7 +74,9 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 		return false, err
 	}
 	c.setHeaders(req)
-	req.Header.Set("Prefer", "return=minimal")
+	// Upsert: on conflict with url_hash, update image_url if the new one is different
+	// This allows og:image updates for existing articles
+	req.Header.Set("Prefer", "return=minimal,resolution=merge-duplicates")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -81,13 +84,14 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 	}
 	defer resp.Body.Close()
 
-	// 201 = created, 409 = conflict (duplicate url_hash)
+	// 201 = created (new article)
+	// 200 = upserted (updated existing article)
 	if resp.StatusCode == http.StatusCreated {
 		return true, nil
 	}
 
-	if resp.StatusCode == http.StatusConflict {
-		return false, nil // Duplicate, skip
+	if resp.StatusCode == http.StatusOK {
+		return false, nil // Updated existing article
 	}
 
 	body, _ := io.ReadAll(resp.Body)
