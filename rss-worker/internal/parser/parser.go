@@ -50,7 +50,10 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 // enrichWithOGImages fetches og:image for each article in parallel
 // Uses a worker pool to avoid overwhelming servers
 func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Article) {
+	log.Printf("[OG] Starting og:image enrichment for %d articles", len(articles))
+
 	if len(articles) == 0 {
+		log.Printf("[OG] No articles to process")
 		return
 	}
 
@@ -85,6 +88,7 @@ func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Arti
 
 	// Wait for completion
 	wg.Wait()
+	log.Printf("[OG] Completed og:image enrichment")
 }
 
 // fetchOGImageForArticle fetches the og:image for a single article
