@@ -91,13 +91,20 @@ func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Arti
 func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Article) {
 	ogImage, err := p.ogExtractor.ExtractOGImage(ctx, article.URL)
 	if err != nil {
-		log.Printf("Failed to fetch og:image for %s: %v", article.URL, err)
+		log.Printf("[OG] ERROR fetching %s: %v", article.URL, err)
 		return
 	}
 
 	if ogImage != "" {
-		article.ImageURL = &ogImage
-		log.Printf("Found og:image for %s: %s", article.URL, ogImage)
+		// Only update if og:image is different from the RSS thumbnail
+		if article.ThumbnailURL == nil || ogImage != *article.ThumbnailURL {
+			article.ImageURL = &ogImage
+			log.Printf("[OG] SUCCESS %s -> %s", article.URL, ogImage)
+		} else {
+			log.Printf("[OG] SAME as thumbnail for %s", article.URL)
+		}
+	} else {
+		log.Printf("[OG] NOT FOUND for %s", article.URL)
 	}
 }
 

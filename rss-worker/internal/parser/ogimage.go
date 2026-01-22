@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -59,11 +60,13 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 
 	resp, err := e.client.Do(req)
 	if err != nil {
+		log.Printf("[OG-HTTP] Request failed for %s: %v", articleURL, err)
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[OG-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return "", nil // Not an error, just no image found
 	}
 

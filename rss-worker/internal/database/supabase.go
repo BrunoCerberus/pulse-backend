@@ -60,7 +60,7 @@ func (c *Client) GetActiveSources() ([]models.Source, error) {
 }
 
 // InsertArticle inserts a new article or updates image_url if it already exists
-// Returns true if inserted (new), false if updated (existing)
+// Returns true if inserted (new), false if updated/skipped (existing)
 func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 	url := fmt.Sprintf("%s/articles", c.baseURL)
 
@@ -74,9 +74,7 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 		return false, err
 	}
 	c.setHeaders(req)
-	// Upsert: on conflict with url_hash, update image_url if the new one is different
-	// This allows og:image updates for existing articles
-	req.Header.Set("Prefer", "return=minimal,resolution=merge-duplicates")
+	req.Header.Set("Prefer", "return=minimal")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -85,17 +83,61 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 	defer resp.Body.Close()
 
 	// 201 = created (new article)
-	// 200 = upserted (updated existing article)
 	if resp.StatusCode == http.StatusCreated {
 		return true, nil
 	}
 
-	if resp.StatusCode == http.StatusOK {
-		return false, nil // Updated existing article
+	// 409 = conflict (duplicate url_hash) - try to update image_url if we have an og:image
+	if resp.StatusCode == http.StatusConflict {
+		// Only update if we have a real og:image (different from thumbnail)
+		hasOGImage := article.ImageURL != nil && *article.ImageURL != "" &&
+			(article.ThumbnailURL == nil || *article.ImageURL != *article.ThumbnailURL)
+
+		if hasOGImage {
+			fmt.Printf("[DB] Updating image_url for existing article: %s\n", article.URL)
+			if err := c.UpdateArticleImage(article.URLHash, *article.ImageURL); err != nil {
+				fmt.Printf("[DB] Failed to update image: %v\n", err)
+			}
+		}
+		return false, nil
 	}
 
 	body, _ := io.ReadAll(resp.Body)
 	return false, fmt.Errorf("failed to insert article: %s - %s", resp.Status, string(body))
+}
+
+// UpdateArticleImage updates just the image_url for an existing article
+func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
+	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
+
+	data := map[string]interface{}{
+		"image_url":  imageURL,
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to update article image: %s - %s", resp.Status, string(respBody))
+	}
+
+	return nil
 }
 
 // InsertArticles inserts multiple articles in batch
