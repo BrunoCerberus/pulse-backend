@@ -28,15 +28,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache-dependency-path: rss-worker/go.sum
-
-      - name: Download dependencies
-        working-directory: rss-worker
-        run: go mod download
+          cache: false
 
       - name: Build worker
         working-directory: rss-worker
-        run: go build -o rss-worker .
+        run: |
+          go mod tidy
+          go build -o rss-worker .
 
       - name: Run RSS Worker
         working-directory: rss-worker
@@ -67,7 +65,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache-dependency-path: rss-worker/go.sum
+          cache: false
 
       - name: Build and run cleanup
         working-directory: rss-worker
@@ -75,5 +73,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
+          go mod tidy
           go build -o rss-worker .
           ./rss-worker cleanup
