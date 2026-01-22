@@ -36,6 +36,9 @@ func main() {
 		case "backfill-images":
 			runOGImageBackfill(db, rssParser)
 			return
+		case "backfill-content":
+			runContentBackfill(db, rssParser)
+			return
 		}
 	}
 
@@ -273,5 +276,96 @@ func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser 
 	}
 
 	log.Printf("[BACKFILL] SUCCESS %s -> %s", article.URL, ogImage)
+	return true
+}
+
+func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
+	log.Println("📝 Starting content backfill for articles missing content")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
+	defer cancel()
+
+	// Get articles that need content backfill (limit to 200 per run - content extraction is heavier)
+	articles, err := db.GetArticlesNeedingContent(200)
+	if err != nil {
+		log.Fatalf("Failed to get articles for content backfill: %v", err)
+	}
+
+	log.Printf("📋 Found %d articles needing content backfill", len(articles))
+
+	if len(articles) == 0 {
+		log.Println("✅ No articles need content backfill")
+		return
+	}
+
+	// Process articles concurrently (lower concurrency for content extraction)
+	const maxWorkers = 3
+	numWorkers := min(maxWorkers, len(articles))
+	work := make(chan database.ArticleForContentBackfill, len(articles))
+	results := make(chan struct{ updated bool }, len(articles))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for article := range work {
+				select {
+				case <-ctx.Done():
+					results <- struct{ updated bool }{false}
+					return
+				default:
+					updated := processContentBackfill(ctx, db, rssParser, article)
+					results <- struct{ updated bool }{updated}
+				}
+			}
+		}()
+	}
+
+	// Send work
+	for _, article := range articles {
+		work <- article
+	}
+	close(work)
+
+	// Collect results
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var updatedCount, skippedCount int
+	for result := range results {
+		if result.updated {
+			updatedCount++
+		} else {
+			skippedCount++
+		}
+	}
+
+	log.Printf("✅ Content backfill complete: updated=%d, skipped=%d", updatedCount, skippedCount)
+}
+
+func processContentBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForContentBackfill) bool {
+	contentExtractor := parser.NewContentExtractor()
+	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)
+	if err != nil {
+		log.Printf("[CONTENT-BACKFILL] ERROR fetching content for %s: %v", article.URL, err)
+		return false
+	}
+
+	if content == "" {
+		log.Printf("[CONTENT-BACKFILL] No content extracted for %s", article.URL)
+		return false
+	}
+
+	// Update the article's content
+	if err := db.UpdateArticleContent(article.URLHash, content); err != nil {
+		log.Printf("[CONTENT-BACKFILL] ERROR updating %s: %v", article.URL, err)
+		return false
+	}
+
+	log.Printf("[CONTENT-BACKFILL] SUCCESS %s (%d chars)", article.URL, len(content))
 	return true
 }

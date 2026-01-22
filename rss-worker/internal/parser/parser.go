@@ -13,15 +13,17 @@ import (
 
 // Parser handles RSS/Atom feed parsing
 type Parser struct {
-	fp          *gofeed.Parser
-	ogExtractor *OGImageExtractor
+	fp               *gofeed.Parser
+	ogExtractor      *OGImageExtractor
+	contentExtractor *ContentExtractor
 }
 
 // New creates a new Parser instance
 func New() *Parser {
 	return &Parser{
-		fp:          gofeed.NewParser(),
-		ogExtractor: NewOGImageExtractor(),
+		fp:               gofeed.NewParser(),
+		ogExtractor:      NewOGImageExtractor(),
+		contentExtractor: NewContentExtractor(),
 	}
 }
 
@@ -43,6 +45,9 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 
 	// Fetch og:images in parallel for high-resolution header images
 	p.enrichWithOGImages(ctx, articles)
+
+	// Extract content for articles that don't have it from RSS
+	p.enrichWithContent(ctx, articles)
 
 	return articles, nil
 }
@@ -109,6 +114,71 @@ func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Art
 		}
 	} else {
 		log.Printf("[OG] NOT FOUND for %s", article.URL)
+	}
+}
+
+// enrichWithContent extracts full article content for articles that don't have it
+func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Article) {
+	// Filter to only articles without content
+	var needsContent []*models.Article
+	for _, article := range articles {
+		if article.Content == nil || *article.Content == "" {
+			needsContent = append(needsContent, article)
+		}
+	}
+
+	if len(needsContent) == 0 {
+		log.Printf("[CONTENT] All articles have content from RSS")
+		return
+	}
+
+	log.Printf("[CONTENT] Starting content extraction for %d articles", len(needsContent))
+
+	const maxWorkers = 3 // Lower than og:image since content extraction is heavier
+	numWorkers := min(maxWorkers, len(needsContent))
+
+	work := make(chan *models.Article, len(needsContent))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for article := range work {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					p.fetchContentForArticle(ctx, article)
+				}
+			}
+		}()
+	}
+
+	// Send work
+	for _, article := range needsContent {
+		work <- article
+	}
+	close(work)
+
+	wg.Wait()
+	log.Printf("[CONTENT] Completed content extraction")
+}
+
+// fetchContentForArticle extracts content for a single article
+func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Article) {
+	content, err := p.contentExtractor.ExtractTextContent(ctx, article.URL)
+	if err != nil {
+		log.Printf("[CONTENT] ERROR fetching %s: %v", article.URL, err)
+		return
+	}
+
+	if content != "" {
+		article.Content = &content
+		log.Printf("[CONTENT] SUCCESS %s (%d chars)", article.URL, len(content))
+	} else {
+		log.Printf("[CONTENT] NOT FOUND for %s", article.URL)
 	}
 }
 

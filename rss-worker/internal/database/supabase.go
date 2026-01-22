@@ -319,6 +319,13 @@ type ArticleForBackfill struct {
 	ThumbnailURL *string `json:"thumbnail_url"`
 }
 
+// ArticleForContentBackfill represents minimal article data for content backfill
+type ArticleForContentBackfill struct {
+	URLHash string  `json:"url_hash"`
+	URL     string  `json:"url"`
+	Content *string `json:"content"`
+}
+
 // GetArticlesNeedingOGImage retrieves articles that need og:image backfill
 // (where image_url equals thumbnail_url, is null, or contains low-res indicators)
 func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, error) {
@@ -351,4 +358,67 @@ func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, err
 	}
 
 	return articles, nil
+}
+
+// GetArticlesNeedingContent retrieves articles that need content backfill
+// (where content is null or empty)
+func (c *Client) GetArticlesNeedingContent(limit int) ([]ArticleForContentBackfill, error) {
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,content&or=(content.is.null,content.eq.)&limit=%d", c.baseURL, limit)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, string(body))
+	}
+
+	var articles []ArticleForContentBackfill
+	if err := json.NewDecoder(resp.Body).Decode(&articles); err != nil {
+		return nil, err
+	}
+
+	return articles, nil
+}
+
+// UpdateArticleContent updates the content field for an existing article
+func (c *Client) UpdateArticleContent(urlHash string, content string) error {
+	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
+
+	data := map[string]interface{}{
+		"content": content,
+	}
+
+	body, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to update article content: %s - %s", resp.Status, string(respBody))
+	}
+
+	return nil
 }
