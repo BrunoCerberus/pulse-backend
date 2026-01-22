@@ -111,8 +111,7 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
 
 	data := map[string]interface{}{
-		"image_url":  imageURL,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"image_url": imageURL,
 	}
 
 	body, err := json.Marshal(data)
@@ -310,4 +309,43 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("apikey", c.apiKey)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+}
+
+// ArticleForBackfill represents minimal article data for og:image backfill
+type ArticleForBackfill struct {
+	URLHash      string  `json:"url_hash"`
+	URL          string  `json:"url"`
+	ImageURL     *string `json:"image_url"`
+	ThumbnailURL *string `json:"thumbnail_url"`
+}
+
+// GetArticlesNeedingOGImage retrieves articles that need og:image backfill
+// (where image_url equals thumbnail_url or image_url is null)
+func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, error) {
+	// Get articles where image_url is null or equals thumbnail_url
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&or=(image_url.is.null,image_url.eq.thumbnail_url)&limit=%d", c.baseURL, limit)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, string(body))
+	}
+
+	var articles []ArticleForBackfill
+	if err := json.NewDecoder(resp.Body).Decode(&articles); err != nil {
+		return nil, err
+	}
+
+	return articles, nil
 }

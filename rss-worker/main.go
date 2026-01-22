@@ -27,10 +27,16 @@ func main() {
 	db := database.NewClient(cfg)
 	rssParser := parser.New()
 
-	// Check if this is a cleanup run
-	if len(os.Args) > 1 && os.Args[1] == "cleanup" {
-		runCleanup(db, cfg.ArticleRetentionDays)
-		return
+	// Check for special commands
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "cleanup":
+			runCleanup(db, cfg.ArticleRetentionDays)
+			return
+		case "backfill-images":
+			runOGImageBackfill(db, rssParser)
+			return
+		}
 	}
 
 	// Run the main fetch process
@@ -171,4 +177,101 @@ func runCleanup(db *database.Client, daysToKeep int) {
 	}
 
 	log.Printf("✅ Cleanup complete: deleted %d old articles", deleted)
+}
+
+func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
+	log.Println("🖼️ Starting og:image backfill for articles missing high-res images")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	// Get articles that need og:image backfill (limit to 500 per run)
+	articles, err := db.GetArticlesNeedingOGImage(500)
+	if err != nil {
+		log.Fatalf("Failed to get articles for backfill: %v", err)
+	}
+
+	log.Printf("📋 Found %d articles needing og:image backfill", len(articles))
+
+	if len(articles) == 0 {
+		log.Println("✅ No articles need og:image backfill")
+		return
+	}
+
+	// Process articles concurrently
+	const maxWorkers = 5
+	numWorkers := min(maxWorkers, len(articles))
+	work := make(chan database.ArticleForBackfill, len(articles))
+	results := make(chan struct{ updated bool }, len(articles))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for article := range work {
+				select {
+				case <-ctx.Done():
+					results <- struct{ updated bool }{false}
+					return
+				default:
+					updated := processOGImageBackfill(ctx, db, rssParser, article)
+					results <- struct{ updated bool }{updated}
+				}
+			}
+		}()
+	}
+
+	// Send work
+	for _, article := range articles {
+		work <- article
+	}
+	close(work)
+
+	// Collect results
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var updatedCount, skippedCount int
+	for result := range results {
+		if result.updated {
+			updatedCount++
+		} else {
+			skippedCount++
+		}
+	}
+
+	log.Printf("✅ Backfill complete: updated=%d, skipped=%d", updatedCount, skippedCount)
+}
+
+func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForBackfill) bool {
+	ogExtractor := parser.NewOGImageExtractor()
+	ogImage, err := ogExtractor.ExtractOGImage(ctx, article.URL)
+	if err != nil {
+		log.Printf("[BACKFILL] ERROR fetching og:image for %s: %v", article.URL, err)
+		return false
+	}
+
+	if ogImage == "" {
+		log.Printf("[BACKFILL] No og:image found for %s", article.URL)
+		return false
+	}
+
+	// Only update if og:image is different from current image
+	if article.ImageURL != nil && ogImage == *article.ImageURL {
+		log.Printf("[BACKFILL] Same image for %s", article.URL)
+		return false
+	}
+
+	// Update the article's image_url
+	if err := db.UpdateArticleImage(article.URLHash, ogImage); err != nil {
+		log.Printf("[BACKFILL] ERROR updating %s: %v", article.URL, err)
+		return false
+	}
+
+	log.Printf("[BACKFILL] SUCCESS %s -> %s", article.URL, ogImage)
+	return true
 }
