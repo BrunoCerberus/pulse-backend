@@ -320,10 +320,13 @@ type ArticleForBackfill struct {
 }
 
 // GetArticlesNeedingOGImage retrieves articles that need og:image backfill
-// (where image_url equals thumbnail_url or image_url is null)
+// (where image_url equals thumbnail_url, is null, or contains low-res indicators)
 func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, error) {
-	// Get articles where image_url is null or equals thumbnail_url
-	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&or=(image_url.is.null,image_url.eq.thumbnail_url)&limit=%d", c.baseURL, limit)
+	// Get articles where:
+	// - image_url is null, OR
+	// - image_url equals thumbnail_url, OR
+	// - image_url contains width=140 (Guardian low-res)
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&or=(image_url.is.null,image_url.eq.thumbnail_url,image_url.like.*width=140*)&limit=%d", c.baseURL, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
