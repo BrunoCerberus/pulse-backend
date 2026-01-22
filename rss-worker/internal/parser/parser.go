@@ -2,7 +2,9 @@ package parser
 
 import (
 	"context"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -11,13 +13,15 @@ import (
 
 // Parser handles RSS/Atom feed parsing
 type Parser struct {
-	fp *gofeed.Parser
+	fp          *gofeed.Parser
+	ogExtractor *OGImageExtractor
 }
 
 // New creates a new Parser instance
 func New() *Parser {
 	return &Parser{
-		fp: gofeed.NewParser(),
+		fp:          gofeed.NewParser(),
+		ogExtractor: NewOGImageExtractor(),
 	}
 }
 
@@ -37,7 +41,64 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 		}
 	}
 
+	// Fetch og:images in parallel for high-resolution header images
+	p.enrichWithOGImages(ctx, articles)
+
 	return articles, nil
+}
+
+// enrichWithOGImages fetches og:image for each article in parallel
+// Uses a worker pool to avoid overwhelming servers
+func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Article) {
+	if len(articles) == 0 {
+		return
+	}
+
+	const maxWorkers = 5
+	numWorkers := min(maxWorkers, len(articles))
+
+	// Channel for work items
+	work := make(chan *models.Article, len(articles))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for article := range work {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					p.fetchOGImageForArticle(ctx, article)
+				}
+			}
+		}()
+	}
+
+	// Send work
+	for _, article := range articles {
+		work <- article
+	}
+	close(work)
+
+	// Wait for completion
+	wg.Wait()
+}
+
+// fetchOGImageForArticle fetches the og:image for a single article
+func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Article) {
+	ogImage, err := p.ogExtractor.ExtractOGImage(ctx, article.URL)
+	if err != nil {
+		log.Printf("Failed to fetch og:image for %s: %v", article.URL, err)
+		return
+	}
+
+	if ogImage != "" {
+		article.ImageURL = &ogImage
+		log.Printf("Found og:image for %s: %s", article.URL, ogImage)
+	}
 }
 
 // itemToArticle converts a gofeed.Item to our Article model
@@ -81,11 +142,12 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		article.Author = &item.Authors[0].Name
 	}
 
-	// Image
-	imageURL := extractImageURL(item)
-	if imageURL != "" {
-		article.ImageURL = &imageURL
-		article.ThumbnailURL = &imageURL
+	// Image: Use RSS image as thumbnail, og:image will be fetched later for full-size
+	thumbnailURL := extractImageURL(item)
+	if thumbnailURL != "" {
+		article.ThumbnailURL = &thumbnailURL
+		// Also set ImageURL as fallback in case og:image fetch fails
+		article.ImageURL = &thumbnailURL
 	}
 
 	return article
