@@ -1,0 +1,34 @@
+# Binaries
+rss-worker/rss-worker
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (never commit secrets!)
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log

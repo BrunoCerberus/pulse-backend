@@ -1,0 +1,40 @@
+name: Daily Cleanup
+
+on:
+  # Run daily at 3 AM UTC
+  schedule:
+    - cron: '0 3 * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    name: Cleanup Old Articles
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Download dependencies
+        working-directory: rss-worker
+        run: go mod download
+
+      - name: Build worker
+        working-directory: rss-worker
+        run: go build -o rss-worker .
+
+      - name: Run Cleanup
+        working-directory: rss-worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: ./rss-worker cleanup

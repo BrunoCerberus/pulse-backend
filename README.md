@@ -1,0 +1,285 @@
+# Pulse Backend
+
+Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS fetching and **Supabase** for database and API.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          GitHub Actions (Free)                               │
+│                     Scheduled: Every 15 minutes                              │
+│                                                                              │
+│    ┌─────────────────────────────────────────────────────────────────────┐  │
+│    │                         Go RSS Worker                                │  │
+│    │                                                                      │  │
+│    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
+│    │  │ Guardian │  │   BBC    │  │   NPR    │  │ TechCrunch│  ...      │  │
+│    │  │   RSS    │  │   RSS    │  │   RSS    │  │   RSS    │            │  │
+│    │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘            │  │
+│    │       └─────────────┴──────┬──────┴─────────────┘                   │  │
+│    │                            ▼                                        │  │
+│    │                   Parse → Deduplicate → Insert                      │  │
+│    └────────────────────────────┼────────────────────────────────────────┘  │
+└─────────────────────────────────┼───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Supabase (Free Tier)                                 │
+│                                                                              │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
+│   │  articles   │    │   sources   │    │  Auto-generated REST API   │    │
+│   │  (30 days)  │    │  (14 feeds) │    │  GET /rest/v1/articles     │    │
+│   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            Pulse iOS App                                     │
+│                                                                              │
+│   SupabaseNewsService → Unlimited API calls, no rate limits                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Free Tier Limits
+
+| Service | Limit | Our Usage | Status |
+|---------|-------|-----------|--------|
+| Supabase DB | 500 MB | ~50 MB | ✅ |
+| Supabase API | 500K req/mo | ~100K | ✅ |
+| GitHub Actions | 2,000 min/mo | ~720 min | ✅ |
+
+## Quick Start
+
+### 1. Create Supabase Project
+
+1. Go to [supabase.com](https://supabase.com) and create a free account
+2. Create a new project (remember your database password)
+3. Wait for the project to initialize (~2 minutes)
+
+### 2. Run Database Migration
+
+1. In Supabase Dashboard, go to **SQL Editor**
+2. Copy the contents of `supabase/migrations/001_initial_schema.sql`
+3. Paste and click **Run**
+
+This creates:
+- `categories` table with 8 default categories
+- `sources` table with 14 RSS feeds pre-configured
+- `articles` table with full-text search
+- `fetch_logs` table for monitoring
+- Row Level Security policies
+- Helper functions
+
+### 3. Get Your API Keys
+
+In Supabase Dashboard → **Settings** → **API**:
+
+| Key | Purpose | Where to Use |
+|-----|---------|--------------|
+| **Project URL** | API base URL | iOS app + Go worker |
+| **anon (public)** | Read-only access | iOS app |
+| **service_role** | Full access | Go worker only (keep secret!) |
+
+### 4. Set Up GitHub Repository
+
+```bash
+cd ~/pulse-backend
+git init
+git add .
+git commit -m "Initial commit: Pulse backend"
+
+# Create repo on GitHub, then:
+git remote add origin git@github.com:YOUR_USERNAME/pulse-backend.git
+git push -u origin main
+```
+
+### 5. Configure GitHub Secrets
+
+In your GitHub repo → **Settings** → **Secrets and variables** → **Actions**:
+
+| Secret Name | Value |
+|-------------|-------|
+| `SUPABASE_URL` | Your Supabase Project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Your service_role key |
+
+### 6. Enable GitHub Actions
+
+The workflows are already configured:
+- `fetch-rss.yml` - Runs every 15 minutes
+- `cleanup.yml` - Runs daily at 3 AM UTC
+
+Go to **Actions** tab and enable workflows if prompted.
+
+### 7. Test the Worker
+
+Trigger a manual run:
+1. Go to **Actions** → **Fetch RSS Feeds**
+2. Click **Run workflow**
+3. Check the logs to see articles being fetched
+
+### 8. Verify in Supabase
+
+Go to **Table Editor** → **articles** to see the fetched articles.
+
+## Project Structure
+
+```
+pulse-backend/
+├── README.md                          # This file
+├── docs/
+│   └── ios-integration.md             # iOS app integration guide
+├── supabase/
+│   └── migrations/
+│       └── 001_initial_schema.sql     # Database schema
+├── rss-worker/
+│   ├── go.mod                         # Go module definition
+│   ├── main.go                        # Entry point
+│   └── internal/
+│       ├── config/config.go           # Configuration
+│       ├── models/models.go           # Data models
+│       ├── parser/parser.go           # RSS parsing
+│       └── database/supabase.go       # Supabase client
+└── .github/
+    └── workflows/
+        ├── fetch-rss.yml              # RSS fetch job (every 15 min)
+        └── cleanup.yml                # Cleanup job (daily)
+```
+
+## RSS Sources
+
+Pre-configured sources (edit in Supabase Dashboard → **sources** table):
+
+| Source | Category | Status |
+|--------|----------|--------|
+| The Guardian (World, Tech, Business, Sport, Science) | Various | ✅ Active |
+| BBC News (World, Tech, Business, Health) | Various | ✅ Active |
+| NPR News | World | ✅ Active |
+| Ars Technica | Technology | ✅ Active |
+| TechCrunch | Technology | ✅ Active |
+| The Verge | Technology | ✅ Active |
+| Science Daily | Science | ✅ Active |
+
+### Adding New Sources
+
+1. Go to Supabase Dashboard → **Table Editor** → **sources**
+2. Click **Insert row**
+3. Fill in:
+   - `name`: Display name
+   - `slug`: Unique identifier (lowercase, hyphens)
+   - `feed_url`: RSS feed URL
+   - `category_id`: Select from categories table
+   - `is_active`: true
+
+## API Endpoints
+
+Supabase auto-generates REST endpoints:
+
+```bash
+# Base URL: https://your-project.supabase.co/rest/v1
+
+# Get latest articles (paginated)
+GET /articles_with_source?order=published_at.desc&limit=20&offset=0
+
+# Get articles by category
+GET /articles_with_source?category_slug=eq.technology&order=published_at.desc
+
+# Search articles (full-text)
+GET /rpc/search_articles?search_query=climate&result_limit=20
+
+# Get single article
+GET /articles_with_source?id=eq.{uuid}
+
+# Get categories
+GET /categories?order=display_order
+
+# Get active sources
+GET /sources?is_active=eq.true
+```
+
+All requests require the `apikey` header with your anon key.
+
+## iOS App Integration
+
+See [docs/ios-integration.md](docs/ios-integration.md) for detailed instructions on updating the Pulse iOS app.
+
+**Quick summary:**
+1. Add Supabase Swift SDK
+2. Create `SupabaseNewsService` implementing `NewsService`
+3. Swap service registration in `PulseSceneDelegate`
+
+## Local Development
+
+```bash
+cd rss-worker
+
+# Set environment variables
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+
+# Run the worker
+go run .
+
+# Run cleanup
+go run . cleanup
+```
+
+## Monitoring
+
+### Fetch Logs
+
+Check the `fetch_logs` table in Supabase:
+- `status`: running / completed / failed
+- `articles_inserted`: New articles added
+- `articles_skipped`: Duplicates skipped
+- `errors`: Any errors encountered
+
+### GitHub Actions
+
+View workflow runs at:
+`https://github.com/YOUR_USERNAME/pulse-backend/actions`
+
+## Troubleshooting
+
+### No articles appearing
+
+1. Check GitHub Actions logs for errors
+2. Verify secrets are set correctly
+3. Check `fetch_logs` table for error messages
+4. Ensure RSS feed URLs are accessible
+
+### Duplicate articles
+
+The system uses URL hashing for deduplication. If you see duplicates:
+- Check if the source provides different URLs for the same article
+- The `url_hash` column enforces uniqueness
+
+### Database approaching limit
+
+1. Reduce `ArticleRetentionDays` in config (default: 30)
+2. Manually run cleanup: `go run . cleanup`
+3. Reduce number of active sources
+
+## Cost Breakdown
+
+**Monthly cost: $0** (within free tiers)
+
+| Service | Monthly Cost |
+|---------|--------------|
+| Supabase | $0 (free tier) |
+| GitHub Actions | $0 (free for public repos, 2000 min for private) |
+| **Total** | **$0** |
+
+## Scaling Beyond Free Tier
+
+If you outgrow the free tier:
+
+| Upgrade | Cost | Benefit |
+|---------|------|---------|
+| Supabase Pro | $25/mo | 8GB DB, 250GB bandwidth |
+| GitHub Actions | $4/1000 min | More workflow minutes |
+
+## License
+
+MIT

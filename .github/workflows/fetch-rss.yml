@@ -1,0 +1,79 @@
+name: Fetch RSS Feeds
+
+on:
+  # Run every 15 minutes
+  schedule:
+    - cron: '*/15 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      cleanup:
+        description: 'Run cleanup instead of fetch'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  fetch:
+    name: Fetch RSS Feeds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Download dependencies
+        working-directory: rss-worker
+        run: go mod download
+
+      - name: Build worker
+        working-directory: rss-worker
+        run: go build -o rss-worker .
+
+      - name: Run RSS Worker
+        working-directory: rss-worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.cleanup }}" = "true" ]; then
+            ./rss-worker cleanup
+          else
+            ./rss-worker
+          fi
+
+  # Cleanup job runs once daily at 3 AM UTC
+  cleanup:
+    name: Cleanup Old Articles
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # Only run on schedule at 3 AM UTC (not on every 15-min trigger)
+    if: github.event.schedule == '0 3 * * *' || github.event.inputs.cleanup == 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Build and run cleanup
+        working-directory: rss-worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          go build -o rss-worker .
+          ./rss-worker cleanup
