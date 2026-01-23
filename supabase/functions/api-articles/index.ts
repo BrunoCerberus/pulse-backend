@@ -16,7 +16,7 @@ const config: ProxyConfig = {
     "published_at",
   ],
   defaultSelect:
-    "id,title,url,image_url,published_at,source_name,source_slug,category_name,category_slug",
+    "id,title,summary,content,url,image_url,published_at,source_name,source_slug,category_name,category_slug",
 };
 
 Deno.serve(async (req: Request) => {
