@@ -27,8 +27,8 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                         Supabase (Free Tier)                                 │
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
-│   │  articles   │    │   sources   │    │  Auto-generated REST API   │    │
-│   │  (30 days)  │    │  (14 feeds) │    │  GET /rest/v1/articles     │    │
+│   │  articles   │    │   sources   │    │       Edge Functions        │    │
+│   │  (30 days)  │    │  (14 feeds) │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -37,7 +37,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            Pulse iOS App                                     │
 │                                                                              │
-│   SupabaseNewsService → Unlimited API calls, no rate limits                 │
+│   HTTP calls to Edge Functions with Cache-Control support                   │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -48,6 +48,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 |---------|-------|-----------|--------|
 | Supabase DB | 500 MB | ~50 MB | ✅ |
 | Supabase API | 500K req/mo | ~100K | ✅ |
+| Supabase Edge Functions | 500K invocations/mo | Varies | ✅ |
 | GitHub Actions | 2,000 min/mo | ~720 min | ✅ |
 
 ## Quick Start
@@ -112,14 +113,30 @@ The workflows are already configured:
 
 Go to **Actions** tab and enable workflows if prompted.
 
-### 7. Test the Worker
+### 7. Deploy Edge Functions
+
+```bash
+# Install Supabase CLI
+brew install supabase/tap/supabase
+
+# Login and link project
+supabase login
+supabase link --project-ref YOUR_PROJECT_REF
+
+# Deploy all functions
+supabase functions deploy
+```
+
+The Edge Functions provide a caching layer for the iOS app with Cache-Control headers.
+
+### 8. Test the Worker
 
 Trigger a manual run:
 1. Go to **Actions** → **Fetch RSS Feeds**
 2. Click **Run workflow**
 3. Check the logs to see articles being fetched
 
-### 8. Verify in Supabase
+### 9. Verify in Supabase
 
 Go to **Table Editor** → **articles** to see the fetched articles.
 
@@ -131,8 +148,15 @@ pulse-backend/
 ├── docs/
 │   └── ios-integration.md             # iOS app integration guide
 ├── supabase/
-│   └── migrations/
-│       └── 001_initial_schema.sql     # Database schema
+│   ├── config.toml                    # Edge Functions config
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql     # Database schema
+│   └── functions/                     # Edge Functions (caching proxy)
+│       ├── _shared/                   # Shared utilities
+│       ├── api-categories/            # Categories endpoint (24h cache)
+│       ├── api-sources/               # Sources endpoint (1h cache)
+│       ├── api-articles/              # Articles endpoint (5min + ETag)
+│       └── api-search/                # Search endpoint (1min private)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
@@ -174,31 +198,43 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 
 ## API Endpoints
 
-Supabase auto-generates REST endpoints:
+### Edge Functions (Recommended for iOS)
+
+Edge Functions provide caching for better performance:
+
+```bash
+# Base URL: https://your-project.supabase.co/functions/v1
+
+# Get categories (24h cache)
+GET /api-categories
+
+# Get sources (1h cache)
+GET /api-sources
+
+# Get latest articles (5min cache + ETag for 304)
+GET /api-articles?order=published_at.desc&limit=20
+
+# Get articles by category
+GET /api-articles?category_slug=eq.technology&order=published_at.desc&limit=20
+
+# Search articles (1min private cache)
+GET /api-search?q=climate&limit=20
+```
+
+No authentication required - endpoints are public read-only.
+
+### Direct REST API (Alternative)
+
+Supabase auto-generates REST endpoints (requires `apikey` header):
 
 ```bash
 # Base URL: https://your-project.supabase.co/rest/v1
 
-# Get latest articles (paginated)
-GET /articles_with_source?order=published_at.desc&limit=20&offset=0
-
-# Get articles by category
-GET /articles_with_source?category_slug=eq.technology&order=published_at.desc
-
-# Search articles (full-text)
-GET /rpc/search_articles?search_query=climate&result_limit=20
-
-# Get single article
-GET /articles_with_source?id=eq.{uuid}
-
-# Get categories
+GET /articles_with_source?order=published_at.desc&limit=20
 GET /categories?order=display_order
-
-# Get active sources
 GET /sources?is_active=eq.true
+GET /rpc/search_articles?search_query=climate&result_limit=20
 ```
-
-All requests require the `apikey` header with your anon key.
 
 ## iOS App Integration
 
