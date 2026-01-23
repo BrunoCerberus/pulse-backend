@@ -22,7 +22,11 @@ Go RSS Worker (rss-worker/)
         ↓
 PostgreSQL (articles, sources, categories, fetch_logs)
         ↓
-Auto-generated REST API
+Edge Functions (caching proxy with Cache-Control headers)
+    ├── /api-categories  → Cache: 24h
+    ├── /api-sources     → Cache: 1h
+    ├── /api-articles    → Cache: 5min + ETag
+    └── /api-search      → Cache: 1min (private)
         ↓
 Pulse iOS App
 ```
@@ -60,8 +64,19 @@ pulse-backend/
 │       │   ├── ogimage.go             # og:image meta tag extraction
 │       │   └── content.go             # Full article content extraction (go-readability)
 │       └── database/supabase.go       # Supabase REST API client
-├── supabase/migrations/
-│   └── 001_initial_schema.sql         # Database schema (run in Supabase SQL Editor)
+├── supabase/
+│   ├── migrations/
+│   │   └── 001_initial_schema.sql     # Database schema (run in Supabase SQL Editor)
+│   └── functions/                     # Edge Functions (caching proxy)
+│       ├── _shared/                   # Shared utilities
+│       │   ├── cors.ts                # CORS headers
+│       │   ├── cache.ts               # Cache-Control utilities
+│       │   ├── etag.ts                # ETag generation
+│       │   └── supabase-proxy.ts      # Proxy logic
+│       ├── api-categories/index.ts    # Categories endpoint (24h cache)
+│       ├── api-sources/index.ts       # Sources endpoint (1h cache)
+│       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
+│       └── api-search/index.ts        # Search endpoint (1min private)
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 15 minutes
 │   └── cleanup.yml                    # Runs daily at 3 AM UTC
@@ -88,6 +103,38 @@ pulse-backend/
 ### Data Models (`internal/models/models.go`)
 - `HashURL()` function for SHA256-based URL deduplication
 - `FetchResult` for concurrent processing results
+
+### Edge Functions (`supabase/functions/`)
+Caching proxy layer for iOS app with Cache-Control headers:
+
+| Endpoint | Cache | Description |
+|----------|-------|-------------|
+| `/api-categories` | 24h public | Static category list |
+| `/api-sources` | 1h public | RSS source list |
+| `/api-articles` | 5min + ETag | Article feed with 304 support |
+| `/api-search` | 1min private | Full-text search via RPC |
+
+**Deployment:**
+```bash
+# Install Supabase CLI if needed
+brew install supabase/tap/supabase
+
+# Deploy all functions
+supabase functions deploy
+
+# Or deploy individually
+supabase functions deploy api-categories
+supabase functions deploy api-sources
+supabase functions deploy api-articles
+supabase functions deploy api-search
+```
+
+**Local testing:**
+```bash
+supabase start
+supabase functions serve
+curl -i http://localhost:54321/functions/v1/api-articles?limit=5
+```
 
 ## Database Schema
 

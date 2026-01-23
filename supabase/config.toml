@@ -1,0 +1,11 @@
+[functions.api-categories]
+verify_jwt = false
+
+[functions.api-sources]
+verify_jwt = false
+
+[functions.api-articles]
+verify_jwt = false
+
+[functions.api-search]
+verify_jwt = false
