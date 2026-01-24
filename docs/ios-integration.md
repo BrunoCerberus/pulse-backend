@@ -414,3 +414,432 @@ No changes needed - the UI tests should work the same since only the service imp
 - [ ] Test all news-related features
 - [ ] Update deeplink handling for UUID article IDs
 - [ ] Run full test suite
+
+---
+
+## Podcast & Video Support
+
+The backend supports podcasts and YouTube videos alongside articles. This section covers how to handle media content in the iOS app.
+
+### Content Types
+
+The API returns a `media_type` field that indicates the content type:
+
+| `media_type` | Description |
+|--------------|-------------|
+| `null` | Regular article (text content) |
+| `"podcast"` | Audio content (podcast episode) |
+| `"video"` | Video content (YouTube, etc.) |
+
+### Updated SupabaseArticle Model
+
+Update `SupabaseModels.swift` to include media fields:
+
+```swift
+struct SupabaseArticle: Codable {
+    let id: String
+    let title: String
+    let summary: String?
+    let content: String?
+    let url: String
+    let imageUrl: String?
+    let thumbnailUrl: String?
+    let author: String?
+    let publishedAt: Date
+    let createdAt: Date
+    let sourceName: String?
+    let sourceSlug: String?
+    let sourceLogoUrl: String?
+    let sourceWebsiteUrl: String?
+    let categoryName: String?
+    let categorySlug: String?
+
+    // Media fields (for podcasts and videos)
+    let mediaType: String?       // "podcast", "video", or nil
+    let mediaUrl: String?        // Direct URL to audio/video file
+    let mediaDuration: Int?      // Duration in seconds
+    let mediaMimeType: String?   // "audio/mpeg", "video/mp4", etc.
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, summary, content, url, author
+        case imageUrl = "image_url"
+        case thumbnailUrl = "thumbnail_url"
+        case publishedAt = "published_at"
+        case createdAt = "created_at"
+        case sourceName = "source_name"
+        case sourceSlug = "source_slug"
+        case sourceLogoUrl = "source_logo_url"
+        case sourceWebsiteUrl = "source_website_url"
+        case categoryName = "category_name"
+        case categorySlug = "category_slug"
+        case mediaType = "media_type"
+        case mediaUrl = "media_url"
+        case mediaDuration = "media_duration"
+        case mediaMimeType = "media_mime_type"
+    }
+}
+```
+
+### ContentType Enum
+
+Create a `ContentType` enum to handle different content types:
+
+```swift
+enum ContentType: String, Codable, CaseIterable {
+    case article
+    case podcast
+    case video
+
+    init(from mediaType: String?) {
+        switch mediaType {
+        case "podcast": self = .podcast
+        case "video": self = .video
+        default: self = .article
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .article: return "doc.text"
+        case .podcast: return "headphones"
+        case .video: return "play.rectangle"
+        }
+    }
+}
+```
+
+### Updated Article Model
+
+Extend your `Article` model to support media:
+
+```swift
+struct Article: Identifiable, Codable, Equatable {
+    let id: String
+    let title: String
+    let description: String?
+    let content: String?
+    let url: String
+    let imageURL: String?
+    let publishedAt: Date
+    let source: Source
+    let author: String?
+    let category: NewsCategory
+
+    // Media properties
+    let contentType: ContentType
+    let mediaURL: String?
+    let mediaDuration: Int?
+
+    /// Formatted duration string (e.g., "1:23:45")
+    var formattedDuration: String? {
+        guard let duration = mediaDuration, duration > 0 else { return nil }
+
+        let hours = duration / 3600
+        let minutes = (duration % 3600) / 60
+        let seconds = duration % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%d:%02d", minutes, seconds)
+        }
+    }
+
+    var isMedia: Bool {
+        contentType != .article
+    }
+}
+```
+
+### Updated toArticle() Conversion
+
+Update the conversion method in `SupabaseArticle`:
+
+```swift
+extension SupabaseArticle {
+    func toArticle() -> Article {
+        Article(
+            id: id,
+            title: title,
+            description: summary,
+            content: content,
+            url: url,
+            imageURL: imageUrl ?? thumbnailUrl,
+            publishedAt: publishedAt,
+            source: Source(
+                id: sourceSlug ?? "unknown",
+                name: sourceName ?? "Unknown"
+            ),
+            author: author,
+            category: categorySlug.flatMap { NewsCategory(rawValue: $0) } ?? .world,
+            contentType: ContentType(from: mediaType),
+            mediaURL: mediaUrl,
+            mediaDuration: mediaDuration
+        )
+    }
+}
+```
+
+### Fetching Podcasts and Videos
+
+Add methods to fetch media content:
+
+```swift
+extension SupabaseNewsService {
+
+    /// Fetch podcast episodes
+    func fetchPodcasts(page: Int, pageSize: Int) -> AnyPublisher<[Article], Error> {
+        let offset = (page - 1) * pageSize
+
+        return Future { [weak self] promise in
+            guard let self = self else {
+                promise(.failure(NSError(domain: "SupabaseNewsService", code: -1)))
+                return
+            }
+
+            Task {
+                do {
+                    let response: [SupabaseArticle] = try await self.client
+                        .from("articles_with_source")
+                        .select()
+                        .eq("category_slug", value: "podcasts")
+                        .order("published_at", ascending: false)
+                        .range(from: offset, to: offset + pageSize - 1)
+                        .execute()
+                        .value
+
+                    let articles = response.map { $0.toArticle() }
+                    promise(.success(articles))
+                } catch {
+                    promise(.failure(error))
+                }
+            }
+        }
+        .eraseToAnyPublisher()
+    }
+
+    /// Fetch videos
+    func fetchVideos(page: Int, pageSize: Int) -> AnyPublisher<[Article], Error> {
+        let offset = (page - 1) * pageSize
+
+        return Future { [weak self] promise in
+            guard let self = self else {
+                promise(.failure(NSError(domain: "SupabaseNewsService", code: -1)))
+                return
+            }
+
+            Task {
+                do {
+                    let response: [SupabaseArticle] = try await self.client
+                        .from("articles_with_source")
+                        .select()
+                        .eq("category_slug", value: "videos")
+                        .order("published_at", ascending: false)
+                        .range(from: offset, to: offset + pageSize - 1)
+                        .execute()
+                        .value
+
+                    let articles = response.map { $0.toArticle() }
+                    promise(.success(articles))
+                } catch {
+                    promise(.failure(error))
+                }
+            }
+        }
+        .eraseToAnyPublisher()
+    }
+
+    /// Fetch all media (podcasts + videos)
+    func fetchMedia(page: Int, pageSize: Int) -> AnyPublisher<[Article], Error> {
+        let offset = (page - 1) * pageSize
+
+        return Future { [weak self] promise in
+            guard let self = self else {
+                promise(.failure(NSError(domain: "SupabaseNewsService", code: -1)))
+                return
+            }
+
+            Task {
+                do {
+                    let response: [SupabaseArticle] = try await self.client
+                        .from("articles_with_source")
+                        .select()
+                        .not("media_type", operator: .is, value: "null")
+                        .order("published_at", ascending: false)
+                        .range(from: offset, to: offset + pageSize - 1)
+                        .execute()
+                        .value
+
+                    let articles = response.map { $0.toArticle() }
+                    promise(.success(articles))
+                } catch {
+                    promise(.failure(error))
+                }
+            }
+        }
+        .eraseToAnyPublisher()
+    }
+}
+```
+
+### UI Components
+
+#### Media Card View
+
+Create a reusable card that displays content type indicator and duration:
+
+```swift
+struct MediaCardView: View {
+    let article: Article
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Thumbnail with overlay
+            ZStack(alignment: .bottomLeading) {
+                AsyncImage(url: URL(string: article.imageURL ?? "")) { image in
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Color.gray.opacity(0.3)
+                }
+                .frame(height: 180)
+                .clipped()
+
+                // Content type badge
+                HStack(spacing: 4) {
+                    Image(systemName: article.contentType.icon)
+                    if let duration = article.formattedDuration {
+                        Text(duration)
+                    }
+                }
+                .font(.caption.bold())
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.ultraThinMaterial)
+                .cornerRadius(4)
+                .padding(8)
+            }
+
+            // Title and metadata
+            Text(article.title)
+                .font(.headline)
+                .lineLimit(2)
+
+            Text(article.source.name)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+}
+```
+
+#### Handling Media Playback
+
+For podcasts and videos, you have several options:
+
+**Option 1: Open in Safari/YouTube (Simplest)**
+```swift
+func openMedia(_ article: Article) {
+    guard let url = URL(string: article.url) else { return }
+    UIApplication.shared.open(url)
+}
+```
+
+**Option 2: In-app Audio Player (Podcasts)**
+```swift
+import AVFoundation
+
+class AudioPlayerManager: ObservableObject {
+    private var player: AVPlayer?
+    @Published var isPlaying = false
+    @Published var currentTime: Double = 0
+    @Published var duration: Double = 0
+
+    func play(url: String) {
+        guard let mediaURL = URL(string: url) else { return }
+        player = AVPlayer(url: mediaURL)
+        player?.play()
+        isPlaying = true
+    }
+
+    func pause() {
+        player?.pause()
+        isPlaying = false
+    }
+
+    func toggle() {
+        isPlaying ? pause() : player?.play()
+        isPlaying.toggle()
+    }
+}
+```
+
+**Option 3: In-app Video Player**
+```swift
+import AVKit
+
+struct VideoPlayerView: View {
+    let url: String
+
+    var body: some View {
+        if let videoURL = URL(string: url) {
+            VideoPlayer(player: AVPlayer(url: videoURL))
+                .edgesIgnoringSafeArea(.all)
+        }
+    }
+}
+```
+
+### Updated NewsCategory Enum
+
+Add podcasts and videos to your category enum:
+
+```swift
+enum NewsCategory: String, CaseIterable, Codable {
+    case world
+    case technology
+    case business
+    case sports
+    case entertainment
+    case science
+    case health
+    case politics
+    case podcasts    // New
+    case videos      // New
+
+    var displayName: String {
+        switch self {
+        case .world: return "World"
+        case .technology: return "Technology"
+        case .business: return "Business"
+        case .sports: return "Sports"
+        case .entertainment: return "Entertainment"
+        case .science: return "Science"
+        case .health: return "Health"
+        case .politics: return "Politics"
+        case .podcasts: return "Podcasts"
+        case .videos: return "Videos"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .podcasts: return "headphones"
+        case .videos: return "play.rectangle"
+        default: return "newspaper"
+        }
+    }
+}
+```
+
+### Media Checklist
+
+- [ ] Update `SupabaseArticle` model with media fields
+- [ ] Create `ContentType` enum
+- [ ] Update `Article` model with media properties
+- [ ] Add `formattedDuration` computed property
+- [ ] Add fetch methods for podcasts/videos
+- [ ] Create `MediaCardView` component
+- [ ] Add podcasts/videos to `NewsCategory` enum
+- [ ] Implement media playback (Safari, AVPlayer, or AVKit)
+- [ ] Add media tab or section to home screen
+- [ ] Test with real podcast and video content
