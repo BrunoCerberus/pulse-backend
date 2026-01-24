@@ -14,10 +14,11 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 15 min)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (14 sources)
+    ├─ Fetch RSS feeds (48 sources: articles, podcasts, videos)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
+    ├─ Extract: media enclosures (audio/video URLs, duration)
     └─ Insert to Supabase (dedup via url_hash)
         ↓
 PostgreSQL (articles, sources, categories, fetch_logs)
@@ -90,7 +91,9 @@ pulse-backend/
 │           └── supabase_test.go       # Database client tests (69% coverage)
 ├── supabase/
 │   ├── migrations/
-│   │   └── 001_initial_schema.sql     # Database schema (run in Supabase SQL Editor)
+│   │   ├── 001_initial_schema.sql     # Core database schema
+│   │   ├── 002_add_media_support.sql  # Podcast/video media fields
+│   │   └── 003_add_podcast_video_sources.sql  # 34 curated podcast/video sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -119,9 +122,10 @@ pulse-backend/
 - Fetch logging to `fetch_logs` table
 
 ### Parser Module (`internal/parser/`)
-- `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers)
+- `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers). Also extracts media enclosures (audio/video) for podcasts and videos.
 - `ogimage.go`: Extracts og:image/twitter:image from article HTML `<head>` (100KB limit)
 - `content.go`: Uses `go-shiori/go-readability` for article text extraction
+- Media extraction: Parses audio/video enclosures and iTunes duration from RSS feeds
 
 ### Database Client (`internal/database/supabase.go`)
 - Direct HTTP calls to Supabase REST API
@@ -129,6 +133,7 @@ pulse-backend/
 - Key methods: `GetActiveSources()`, `InsertArticles()`, `CleanupOldArticles()`, backfill queries
 
 ### Data Models (`internal/models/models.go`)
+- `Article` struct with media fields: `MediaType`, `MediaURL`, `MediaDuration`, `MediaMIMEType`
 - `HashURL()` function for SHA256-based URL deduplication
 - `FetchResult` for concurrent processing results
 
@@ -166,7 +171,13 @@ curl -i http://localhost:54321/functions/v1/api-articles?limit=5
 
 ## Database Schema
 
-Tables: `categories` (8), `sources` (14 pre-configured), `articles` (with full-text search via tsvector), `fetch_logs`
+Tables: `categories` (10, including Podcasts & Videos), `sources` (48 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
+
+Article media fields (for podcasts/videos):
+- `media_type`: 'podcast' or 'video'
+- `media_url`: Direct URL to audio/video file
+- `media_duration`: Duration in seconds
+- `media_mime_type`: MIME type (audio/mpeg, video/mp4, etc.)
 
 Key functions:
 - `cleanup_old_articles(days_to_keep)` - Called by cleanup command

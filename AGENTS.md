@@ -14,10 +14,11 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 15 min)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (14 sources)
+    ├─ Fetch RSS feeds (48 sources: articles, podcasts, videos)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
+    ├─ Extract: media enclosures (audio/video URLs, duration)
     └─ Insert to Supabase (dedup via url_hash)
         ↓
 PostgreSQL (articles, sources, categories, fetch_logs)
@@ -84,7 +85,9 @@ pulse-backend/
 │           └── supabase_test.go       # Database client tests (69% coverage)
 ├── supabase/
 │   ├── migrations/
-│   │   └── 001_initial_schema.sql     # Database schema
+│   │   ├── 001_initial_schema.sql     # Core database schema
+│   │   ├── 002_add_media_support.sql  # Podcast/video media fields
+│   │   └── 003_add_podcast_video_sources.sql  # Curated sources
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -110,8 +113,8 @@ pulse-backend/
 |-----------|------|-------------|
 | Entry Point | `main.go` | Command routing: fetch, cleanup, backfill-images, backfill-content |
 | Config | `internal/config/config.go` | Loads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY from env |
-| Models | `internal/models/models.go` | Article, Source, Category, FetchLog structs; HashURL() for dedup |
-| Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment |
+| Models | `internal/models/models.go` | Article (with media fields), Source, Category, FetchLog structs; HashURL() for dedup |
+| Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction |
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
 | Database | `internal/database/supabase.go` | Supabase REST API client with deduplication |
@@ -155,9 +158,9 @@ Defaults in `internal/config/config.go`:
 ## Database Schema
 
 Tables:
-- `categories` - 8 news categories
-- `sources` - 14 pre-configured RSS feeds
-- `articles` - News articles with full-text search (tsvector)
+- `categories` - 10 categories (including Podcasts & Videos)
+- `sources` - 48 pre-configured feeds (articles, podcasts, YouTube channels)
+- `articles` - News articles with full-text search (tsvector) and media fields (media_type, media_url, media_duration, media_mime_type)
 - `fetch_logs` - Monitoring records
 
 Key functions:

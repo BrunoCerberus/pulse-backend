@@ -13,7 +13,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │    │                         Go RSS Worker                                │  │
 │    │                                                                      │  │
 │    │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │  │
-│    │  │ Guardian │  │   BBC    │  │   NPR    │  │ TechCrunch│  ...      │  │
+│    │  │ Guardian │  │   BBC    │  │ Podcasts │  │ YouTube  │  ...      │  │
 │    │  │   RSS    │  │   RSS    │  │   RSS    │  │   RSS    │            │  │
 │    │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘            │  │
 │    │       └─────────────┴──────┬──────┴─────────────┘                   │  │
@@ -28,7 +28,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
 │   │  articles   │    │   sources   │    │       Edge Functions        │    │
-│   │  (30 days)  │    │  (14 feeds) │    │    (Caching Proxy Layer)    │    │
+│   │  (30 days)  │    │ (48 feeds)  │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -59,16 +59,18 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 2. Create a new project (remember your database password)
 3. Wait for the project to initialize (~2 minutes)
 
-### 2. Run Database Migration
+### 2. Run Database Migrations
 
 1. In Supabase Dashboard, go to **SQL Editor**
-2. Copy the contents of `supabase/migrations/001_initial_schema.sql`
-3. Paste and click **Run**
+2. Run migrations in order:
+   - `supabase/migrations/001_initial_schema.sql` - Core schema
+   - `supabase/migrations/002_add_media_support.sql` - Podcast/video support
+   - `supabase/migrations/003_add_podcast_video_sources.sql` - Curated sources
 
 This creates:
-- `categories` table with 8 default categories
-- `sources` table with 14 RSS feeds pre-configured
-- `articles` table with full-text search
+- `categories` table with 10 categories (including Podcasts & Videos)
+- `sources` table with 48 feeds (articles, podcasts, YouTube channels)
+- `articles` table with full-text search and media fields
 - `fetch_logs` table for monitoring
 - Row Level Security policies
 - Helper functions
@@ -151,7 +153,9 @@ pulse-backend/
 ├── supabase/
 │   ├── config.toml                    # Edge Functions config
 │   ├── migrations/
-│   │   └── 001_initial_schema.sql     # Database schema
+│   │   ├── 001_initial_schema.sql     # Core database schema
+│   │   ├── 002_add_media_support.sql  # Podcast/video columns
+│   │   └── 003_add_podcast_video_sources.sql  # Curated sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -173,19 +177,40 @@ pulse-backend/
         └── test.yml                   # Unit tests (on push/PR)
 ```
 
-## RSS Sources
+## Content Sources
 
 Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 
-| Source | Category | Status |
-|--------|----------|--------|
-| The Guardian (World, Tech, Business, Sport, Science) | Various | ✅ Active |
-| BBC News (World, Tech, Business, Health) | Various | ✅ Active |
-| NPR News | World | ✅ Active |
-| Ars Technica | Technology | ✅ Active |
-| TechCrunch | Technology | ✅ Active |
-| The Verge | Technology | ✅ Active |
-| Science Daily | Science | ✅ Active |
+### News Articles (14 sources)
+| Source | Category |
+|--------|----------|
+| The Guardian (World, Tech, Business, Sport, Science) | Various |
+| BBC News (World, Tech, Business, Health) | Various |
+| NPR News | World |
+| Ars Technica, TechCrunch, The Verge | Technology |
+| Science Daily | Science |
+
+### Podcasts (17 sources)
+| Source | Topic |
+|--------|-------|
+| The Vergecast, ATP, Darknet Diaries | Technology |
+| The Daily, Up First, Pod Save America | News & Politics |
+| Radiolab, StarTalk, Science Vs | Science |
+| Huberman Lab, Peter Attia, On Purpose | Health |
+| Bill Simmons, Pardon My Take, Ringer NBA | Sports |
+| How I Built This, Acquired, All-In | Business |
+| SmartLess, Conan O'Brien, Armchair Expert | Entertainment |
+
+### YouTube Channels (17 sources)
+| Source | Topic |
+|--------|-------|
+| MKBHD, Fireship, Linus Tech Tips | Technology |
+| Veritasium, Kurzgesagt, SmarterEveryDay | Science |
+| Vox, PBS NewsHour | News |
+| Doctor Mike, Jeff Nippard | Health |
+| JomBoy Media, Secret Base | Sports |
+| CNBC, Bloomberg | Business |
+| First We Feast, Tonight Show, Hot Ones | Entertainment |
 
 ### Adding New Sources
 
@@ -218,6 +243,12 @@ GET /api-articles?order=published_at.desc&limit=20
 
 # Get articles by category
 GET /api-articles?category_slug=eq.technology&order=published_at.desc&limit=20
+
+# Get podcasts
+GET /api-articles?category_slug=eq.podcasts&order=published_at.desc&limit=20
+
+# Get videos
+GET /api-articles?category_slug=eq.videos&order=published_at.desc&limit=20
 
 # Search articles (1min private cache)
 GET /api-search?q=climate&limit=20
