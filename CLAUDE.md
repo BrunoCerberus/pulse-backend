@@ -33,45 +33,72 @@ Pulse iOS App
 
 ## Build and Run Commands
 
+Use `make help` to see all available commands. Key commands:
+
 ```bash
-cd rss-worker
-
-# Build
-go mod tidy && go build -o rss-worker .
-
-# Run locally (requires env vars)
+# Set environment variables (required for run commands)
 export SUPABASE_URL="https://your-project.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
-go run .
 
-# Special commands
-go run . cleanup           # Remove articles older than 30 days
-go run . backfill-images   # Fetch og:images for articles missing images (500 per run)
-go run . backfill-content  # Extract full content for articles (200 per run)
+# Build & Run
+make build             # Build the RSS worker binary
+make run               # Run the RSS worker (fetch feeds)
+make cleanup           # Remove articles older than 30 days
+make backfill-images   # Fetch og:images for articles missing images
+make backfill-content  # Extract full content for articles
+
+# Testing
+make test              # Run all tests (Go + Deno)
+make test-go           # Run Go tests
+make test-go-cover     # Run Go tests with coverage
+make test-go-race      # Run Go tests with race detector
+make test-deno         # Run Deno Edge Function tests
+
+# Supabase Functions
+make deploy            # Deploy all Edge Functions
+make functions-serve   # Run Edge Functions locally
+
+# Without Make:
+cd rss-worker && go run .
+cd rss-worker && go run . cleanup
+cd rss-worker && go test -v ./...
 ```
 
 ## Project Structure
 
 ```
 pulse-backend/
+├── Makefile                           # Common commands (make help)
 ├── rss-worker/                        # Main Go application
 │   ├── main.go                        # Entry point with command routing
 │   └── internal/
-│       ├── config/config.go           # Env config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-│       ├── models/models.go           # Data models (Article, Source, Category, FetchLog)
+│       ├── config/
+│       │   ├── config.go              # Env config (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+│       │   └── config_test.go         # Config tests (100% coverage)
+│       ├── models/
+│       │   ├── models.go              # Data models (Article, Source, Category, FetchLog)
+│       │   └── models_test.go         # Models tests (100% coverage)
 │       ├── parser/
 │       │   ├── parser.go              # RSS parsing with gofeed + enrichment orchestration
+│       │   ├── parser_test.go         # Parser helper tests
 │       │   ├── ogimage.go             # og:image meta tag extraction
-│       │   └── content.go             # Full article content extraction (go-readability)
-│       └── database/supabase.go       # Supabase REST API client
+│       │   ├── ogimage_test.go        # OG image tests with httptest
+│       │   ├── content.go             # Full article content extraction (go-readability)
+│       │   └── content_test.go        # Content extraction tests
+│       └── database/
+│           ├── supabase.go            # Supabase REST API client
+│           └── supabase_test.go       # Database client tests (69% coverage)
 ├── supabase/
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql     # Database schema (run in Supabase SQL Editor)
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
+│       │   ├── cors_test.ts           # CORS tests
 │       │   ├── cache.ts               # Cache-Control utilities
+│       │   ├── cache_test.ts          # Cache tests
 │       │   ├── etag.ts                # ETag generation
+│       │   ├── etag_test.ts           # ETag tests
 │       │   └── supabase-proxy.ts      # Proxy logic
 │       ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
@@ -79,7 +106,8 @@ pulse-backend/
 │       └── api-search/index.ts        # Search endpoint (1min private)
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 15 minutes
-│   └── cleanup.yml                    # Runs daily at 3 AM UTC
+│   ├── cleanup.yml                    # Runs daily at 3 AM UTC
+│   └── test.yml                       # Unit tests on push/PR
 └── docs/ios-integration.md            # iOS app integration guide
 ```
 
@@ -156,10 +184,30 @@ Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
 - `ArticleRetentionDays`: 30 days
 
+## Testing
+
+Unit tests cover Go packages and Deno Edge Functions:
+
+| Package | Coverage | Key Tests |
+|---------|----------|-----------|
+| `internal/models` | 100% | HashURL, NewArticle |
+| `internal/config` | 100% | Load with env var validation |
+| `internal/parser` | 43% | cleanHTML, extractImageURL, OG image, content extraction |
+| `internal/database` | 69% | All Supabase client methods with httptest mocking |
+| `_shared/*.ts` | — | cache, cors, etag utilities |
+
+Run tests:
+```bash
+make test           # All tests
+make test-go-cover  # Go with coverage report
+make test-deno      # Deno Edge Function tests
+```
+
 ## GitHub Actions
 
 - **fetch-rss.yml**: Every 15 minutes + manual trigger
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger
+- **test.yml**: Runs on push/PR to main (Go + Deno tests)
 
 Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 

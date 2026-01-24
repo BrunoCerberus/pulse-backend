@@ -145,6 +145,7 @@ Go to **Table Editor** → **articles** to see the fetched articles.
 ```
 pulse-backend/
 ├── README.md                          # This file
+├── Makefile                           # Common commands (make help)
 ├── docs/
 │   └── ios-integration.md             # iOS app integration guide
 ├── supabase/
@@ -152,7 +153,7 @@ pulse-backend/
 │   ├── migrations/
 │   │   └── 001_initial_schema.sql     # Database schema
 │   └── functions/                     # Edge Functions (caching proxy)
-│       ├── _shared/                   # Shared utilities
+│       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
 │       ├── api-sources/               # Sources endpoint (1h cache)
 │       ├── api-articles/              # Articles endpoint (5min + ETag)
@@ -161,14 +162,15 @@ pulse-backend/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
 │   └── internal/
-│       ├── config/config.go           # Configuration
-│       ├── models/models.go           # Data models
-│       ├── parser/parser.go           # RSS parsing
-│       └── database/supabase.go       # Supabase client
+│       ├── config/                    # Configuration + tests
+│       ├── models/                    # Data models + tests
+│       ├── parser/                    # RSS parsing + tests
+│       └── database/                  # Supabase client + tests
 └── .github/
     └── workflows/
         ├── fetch-rss.yml              # RSS fetch job (every 15 min)
-        └── cleanup.yml                # Cleanup job (daily)
+        ├── cleanup.yml                # Cleanup job (daily)
+        └── test.yml                   # Unit tests (on push/PR)
 ```
 
 ## RSS Sources
@@ -248,17 +250,50 @@ See [docs/ios-integration.md](docs/ios-integration.md) for detailed instructions
 ## Local Development
 
 ```bash
-cd rss-worker
-
 # Set environment variables
 export SUPABASE_URL="https://your-project.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
 
 # Run the worker
-go run .
+make run
 
 # Run cleanup
-go run . cleanup
+make cleanup
+
+# Or without Make:
+cd rss-worker && go run .
+cd rss-worker && go run . cleanup
+```
+
+## Make Commands
+
+Run `make help` to see all available commands:
+
+```bash
+# Testing
+make test              # Run all tests (Go + Deno)
+make test-go           # Run Go tests
+make test-go-cover     # Run Go tests with coverage
+make test-go-race      # Run Go tests with race detector
+make test-deno         # Run Deno Edge Function tests
+
+# Build & Run
+make build             # Build the RSS worker binary
+make run               # Run the RSS worker (fetch feeds)
+make cleanup           # Remove articles older than 30 days
+make backfill-images   # Fetch og:images for articles missing images
+make backfill-content  # Extract content for articles
+
+# Supabase Functions
+make deploy            # Deploy all Edge Functions
+make deploy-categories # Deploy api-categories
+make deploy-sources    # Deploy api-sources
+make deploy-articles   # Deploy api-articles
+make deploy-search     # Deploy api-search
+make functions-serve   # Run Edge Functions locally
+
+# Utilities
+make clean             # Remove build artifacts
 ```
 
 ## Monitoring
