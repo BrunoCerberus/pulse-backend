@@ -1,3 +1,20 @@
+// Package main provides the entry point for the Pulse RSS Worker.
+//
+// The worker fetches RSS feeds from configured sources, parses articles,
+// enriches them with og:image and content extraction, and stores them
+// in Supabase. It supports several commands:
+//
+//   - Default: Fetch all active RSS feeds and insert new articles
+//   - cleanup: Remove articles older than the retention period
+//   - backfill-images: Fetch og:image for articles missing high-res images
+//   - backfill-content: Extract full content for articles missing content
+//
+// Usage:
+//
+//	go run .                  # Run RSS fetch
+//	go run . cleanup          # Clean old articles
+//	go run . backfill-images  # Backfill missing images
+//	go run . backfill-content # Backfill missing content
 package main
 
 import (
@@ -50,6 +67,13 @@ func main() {
 	log.Println("✅ RSS Worker completed successfully")
 }
 
+// runFetch executes the main RSS feed fetching process. It retrieves all active
+// sources from the database, processes them concurrently (limited by maxConcurrent),
+// and inserts new articles. Progress and results are logged to the fetch_logs table.
+//
+// Individual source failures are logged but do not cause the function to return
+// an error. The function only returns an error for critical failures such as
+// being unable to retrieve the source list.
 func runFetch(db *database.Client, rssParser *parser.Parser, maxConcurrent int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -141,6 +165,10 @@ func runFetch(db *database.Client, rssParser *parser.Parser, maxConcurrent int) 
 	return nil
 }
 
+// processSource fetches and processes a single RSS source. It parses the feed,
+// inserts new articles into the database (deduplicating by URL hash), and updates
+// the source's last_fetched_at timestamp. Returns a FetchResult containing
+// counts of articles fetched, inserted, and skipped, plus any error encountered.
 func processSource(ctx context.Context, db *database.Client, rssParser *parser.Parser, source models.Source) models.FetchResult {
 	result := models.FetchResult{Source: source}
 
@@ -171,6 +199,9 @@ func processSource(ctx context.Context, db *database.Client, rssParser *parser.P
 	return result
 }
 
+// runCleanup removes articles older than the specified retention period.
+// It calls the database's cleanup_old_articles function and logs the count
+// of deleted articles. Exits fatally if the cleanup operation fails.
 func runCleanup(db *database.Client, daysToKeep int) {
 	log.Printf("🧹 Running cleanup (keeping %d days of articles)", daysToKeep)
 
@@ -182,6 +213,10 @@ func runCleanup(db *database.Client, daysToKeep int) {
 	log.Printf("✅ Cleanup complete: deleted %d old articles", deleted)
 }
 
+// runOGImageBackfill fetches og:image URLs for articles that are missing
+// high-resolution images. It processes up to 500 articles per run using
+// 5 concurrent workers, with a 30-minute timeout. Articles are selected
+// based on having NULL or low-quality RSS-provided image URLs.
 func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
 	log.Println("🖼️ Starting og:image backfill for articles missing high-res images")
 
@@ -250,6 +285,9 @@ func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
 	log.Printf("✅ Backfill complete: updated=%d, skipped=%d", updatedCount, skippedCount)
 }
 
+// processOGImageBackfill attempts to extract the og:image URL from a single
+// article's webpage. If a valid image is found and differs from the current
+// image, updates the database. Returns true if the article was updated.
 func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForBackfill) bool {
 	ogExtractor := parser.NewOGImageExtractor()
 	ogImage, err := ogExtractor.ExtractOGImage(ctx, article.URL)
@@ -279,6 +317,10 @@ func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser 
 	return true
 }
 
+// runContentBackfill extracts full article content for articles that are
+// missing the content field. It processes up to 200 articles per run using
+// 3 concurrent workers (lower than og:image due to heavier processing),
+// with a 60-minute timeout.
 func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
 	log.Println("📝 Starting content backfill for articles missing content")
 
@@ -347,6 +389,9 @@ func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
 	log.Printf("✅ Content backfill complete: updated=%d, skipped=%d", updatedCount, skippedCount)
 }
 
+// processContentBackfill uses go-readability to extract the main text content
+// from a single article's webpage. If valid content is extracted, updates
+// the database. Returns true if the article was updated.
 func processContentBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForContentBackfill) bool {
 	contentExtractor := parser.NewContentExtractor()
 	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)

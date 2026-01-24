@@ -1,3 +1,29 @@
+/**
+ * Articles API Endpoint
+ *
+ * Returns a paginated list of articles from the articles_with_source view,
+ * which joins articles with their source and category information.
+ *
+ * ## Query Parameters
+ * - `limit` - Number of articles to return (default: all)
+ * - `offset` - Pagination offset
+ * - `source_slug` - Filter by source (e.g., `source_slug=eq.bbc-news`)
+ * - `category_slug` - Filter by category (e.g., `category_slug=eq.technology`)
+ * - `order` - Sort order (e.g., `order=published_at.desc`)
+ * - `published_at` - Date filter (e.g., `published_at=gte.2024-01-01`)
+ * - `select` - Custom field selection
+ *
+ * ## Response
+ * JSON array of article objects with fields:
+ * - `id`, `title`, `summary`, `content`, `url`, `image_url`
+ * - `published_at`, `source_name`, `source_slug`, `category_name`, `category_slug`
+ *
+ * ## Caching
+ * - Cache-Control: 5 minutes fresh, 15 minutes stale-while-revalidate
+ * - ETag support for conditional requests (304 Not Modified)
+ *
+ * @module api-articles
+ */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import { generateETag, checkConditionalRequest } from "../_shared/etag.ts";

@@ -1,3 +1,11 @@
+// Package parser provides RSS/Atom feed parsing and article enrichment.
+//
+// The parser uses gofeed for feed parsing and enriches articles with:
+//   - og:image extraction for high-resolution header images (5 concurrent workers)
+//   - Content extraction via go-readability for full article text (3 concurrent workers)
+//
+// The enrichment is performed in parallel with worker pools to balance
+// throughput against server load.
 package parser
 
 import (
@@ -11,11 +19,12 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
-// Parser handles RSS/Atom feed parsing
+// Parser handles RSS/Atom feed parsing and article enrichment.
+// It combines gofeed for parsing with custom extractors for images and content.
 type Parser struct {
-	fp               *gofeed.Parser
-	ogExtractor      *OGImageExtractor
-	contentExtractor *ContentExtractor
+	fp               *gofeed.Parser     // gofeed parser for RSS/Atom
+	ogExtractor      *OGImageExtractor  // Extracts og:image from article pages
+	contentExtractor *ContentExtractor  // Extracts article text via readability
 }
 
 // New creates a new Parser instance

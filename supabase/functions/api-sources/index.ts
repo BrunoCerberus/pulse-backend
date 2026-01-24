@@ -1,3 +1,31 @@
+/**
+ * Sources API Endpoint
+ *
+ * Returns a list of RSS news sources configured in the system.
+ * Sources represent individual news outlets (e.g., BBC News, TechCrunch).
+ *
+ * ## Query Parameters
+ * - `category_id` - Filter by category UUID
+ * - `is_active` - Filter by active status (e.g., `is_active=eq.true`)
+ * - `slug` - Filter by source slug
+ * - `order` - Sort order
+ * - `select` - Custom field selection
+ *
+ * ## Response
+ * JSON array of source objects with fields:
+ * - `id` - UUID
+ * - `name` - Display name (e.g., "BBC News")
+ * - `slug` - URL-safe identifier (e.g., "bbc-news")
+ * - `website_url` - Source website
+ * - `logo_url` - Source logo image
+ * - `category_id` - Associated category UUID
+ * - `is_active` - Whether source is being fetched
+ *
+ * ## Caching
+ * - Cache-Control: 1 hour (public, max-age=3600)
+ *
+ * @module api-sources
+ */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.ts";

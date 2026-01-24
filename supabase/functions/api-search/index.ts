@@ -1,3 +1,23 @@
+/**
+ * Search API Endpoint
+ *
+ * Full-text search across articles using PostgreSQL's tsvector indexing.
+ * Calls the `search_articles` database function which performs ranked
+ * full-text search on article titles, summaries, and content.
+ *
+ * ## Query Parameters
+ * - `q` - Search query string (required for results)
+ * - `limit` - Maximum results to return (default: 20, max: 100)
+ *
+ * ## Response
+ * JSON array of matching article objects, ranked by relevance.
+ * Returns empty array `[]` if query is empty or whitespace-only.
+ *
+ * ## Caching
+ * - Cache-Control: 1 minute, private (user-specific results)
+ *
+ * @module api-search
+ */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 

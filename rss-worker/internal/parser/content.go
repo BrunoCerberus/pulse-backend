@@ -31,11 +31,11 @@ func NewContentExtractor() *ContentExtractor {
 	}
 }
 
-// ExtractedContent holds the extracted article data
+// ExtractedContent holds the extracted article data from go-readability.
 type ExtractedContent struct {
-	Content     string
-	TextContent string // Plain text version
-	Excerpt     string // Short summary if available
+	Content     string // HTML content with article markup preserved
+	TextContent string // Plain text version with HTML tags stripped
+	Excerpt     string // Short summary extracted from meta description or first paragraph
 }
 
 // ExtractContent fetches the article page and extracts the main content

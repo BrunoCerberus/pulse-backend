@@ -1,3 +1,14 @@
+// Package database provides a client for interacting with the Supabase REST API.
+//
+// The client handles all database operations including:
+//   - Fetching RSS sources
+//   - Inserting and updating articles with deduplication via URL hash
+//   - Managing fetch logs for monitoring
+//   - Cleanup of old articles
+//   - Backfill operations for images and content
+//
+// All operations use the Supabase REST API directly via HTTP, authenticated
+// with the service role key for full read/write access.
 package database
 
 import (
@@ -12,11 +23,12 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
-// Client handles all Supabase database operations
+// Client handles all Supabase database operations via the REST API.
+// It maintains an HTTP client with a 30-second timeout for all requests.
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
+	baseURL    string       // Supabase REST API base URL (e.g., https://xxx.supabase.co/rest/v1)
+	apiKey     string       // Supabase service role key for authentication
+	httpClient *http.Client // HTTP client with configured timeout
 }
 
 // NewClient creates a new Supabase client
@@ -311,19 +323,22 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 }
 
-// ArticleForBackfill represents minimal article data for og:image backfill
+// ArticleForBackfill represents minimal article data needed for og:image backfill.
+// Only the fields required for fetching and comparing images are included
+// to minimize data transfer from the database.
 type ArticleForBackfill struct {
-	URLHash      string  `json:"url_hash"`
-	URL          string  `json:"url"`
-	ImageURL     *string `json:"image_url"`
-	ThumbnailURL *string `json:"thumbnail_url"`
+	URLHash      string  `json:"url_hash"`      // SHA256 hash of URL, used as unique identifier
+	URL          string  `json:"url"`           // Original article URL to fetch og:image from
+	ImageURL     *string `json:"image_url"`     // Current image URL (may be low-res or nil)
+	ThumbnailURL *string `json:"thumbnail_url"` // Original RSS thumbnail for comparison
 }
 
-// ArticleForContentBackfill represents minimal article data for content backfill
+// ArticleForContentBackfill represents minimal article data needed for content extraction.
+// Only the fields required for fetching article content are included.
 type ArticleForContentBackfill struct {
-	URLHash string  `json:"url_hash"`
-	URL     string  `json:"url"`
-	Content *string `json:"content"`
+	URLHash string  `json:"url_hash"` // SHA256 hash of URL, used as unique identifier
+	URL     string  `json:"url"`      // Original article URL to extract content from
+	Content *string `json:"content"`  // Current content (nil or empty for backfill candidates)
 }
 
 // GetArticlesNeedingOGImage retrieves articles that need og:image backfill

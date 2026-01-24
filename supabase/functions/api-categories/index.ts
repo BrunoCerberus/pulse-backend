@@ -1,3 +1,24 @@
+/**
+ * Categories API Endpoint
+ *
+ * Returns a list of news categories (e.g., Technology, Business, Sports).
+ * Categories are static data that rarely changes.
+ *
+ * ## Query Parameters
+ * - `order` - Sort order (e.g., `order=display_order.asc`)
+ * - `select` - Custom field selection
+ *
+ * ## Response
+ * JSON array of category objects with fields:
+ * - `id` - UUID
+ * - `name` - Display name (e.g., "Technology")
+ * - `slug` - URL-safe identifier (e.g., "technology")
+ *
+ * ## Caching
+ * - Cache-Control: 24 hours (public, max-age=86400)
+ *
+ * @module api-categories
+ */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.ts";
