@@ -334,3 +334,221 @@ func TestTruncateToFirstParagraph(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractMediaEnclosure_Audio(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{
+			{Type: "audio/mpeg", URL: "https://example.com/episode.mp3"},
+		},
+	}
+
+	media := extractMediaEnclosure(item)
+	if media == nil {
+		t.Fatal("expected media enclosure, got nil")
+	}
+	if media.URL != "https://example.com/episode.mp3" {
+		t.Errorf("URL = %q, want %q", media.URL, "https://example.com/episode.mp3")
+	}
+	if media.MIMEType != "audio/mpeg" {
+		t.Errorf("MIMEType = %q, want %q", media.MIMEType, "audio/mpeg")
+	}
+}
+
+func TestExtractMediaEnclosure_Video(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{
+			{Type: "video/mp4", URL: "https://example.com/video.mp4"},
+		},
+	}
+
+	media := extractMediaEnclosure(item)
+	if media == nil {
+		t.Fatal("expected media enclosure, got nil")
+	}
+	if media.URL != "https://example.com/video.mp4" {
+		t.Errorf("URL = %q, want %q", media.URL, "https://example.com/video.mp4")
+	}
+	if media.MIMEType != "video/mp4" {
+		t.Errorf("MIMEType = %q, want %q", media.MIMEType, "video/mp4")
+	}
+}
+
+func TestExtractMediaEnclosure_SkipsImages(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{
+			{Type: "image/jpeg", URL: "https://example.com/image.jpg"},
+		},
+	}
+
+	media := extractMediaEnclosure(item)
+	if media != nil {
+		t.Errorf("expected nil for image enclosure, got %+v", media)
+	}
+}
+
+func TestExtractMediaEnclosure_FirstAudioOrVideo(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{
+			{Type: "image/jpeg", URL: "https://example.com/image.jpg"},
+			{Type: "audio/mpeg", URL: "https://example.com/first.mp3"},
+			{Type: "video/mp4", URL: "https://example.com/video.mp4"},
+		},
+	}
+
+	media := extractMediaEnclosure(item)
+	if media == nil {
+		t.Fatal("expected media enclosure, got nil")
+	}
+	if media.URL != "https://example.com/first.mp3" {
+		t.Errorf("URL = %q, want first audio URL", media.URL)
+	}
+}
+
+func TestExtractMediaEnclosure_NoEnclosures(t *testing.T) {
+	item := &gofeed.Item{}
+
+	media := extractMediaEnclosure(item)
+	if media != nil {
+		t.Errorf("expected nil for empty item, got %+v", media)
+	}
+}
+
+func TestExtractMediaEnclosure_WithDuration(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{
+			{Type: "audio/mpeg", URL: "https://example.com/episode.mp3"},
+		},
+		ITunesExt: &ext.ITunesItemExtension{
+			Duration: "3600",
+		},
+	}
+
+	media := extractMediaEnclosure(item)
+	if media == nil {
+		t.Fatal("expected media enclosure, got nil")
+	}
+	if media.Duration != 3600 {
+		t.Errorf("Duration = %d, want 3600", media.Duration)
+	}
+}
+
+func TestParseDuration(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected int
+	}{
+		{
+			name:     "plain seconds",
+			input:    "3600",
+			expected: 3600,
+		},
+		{
+			name:     "MM:SS format",
+			input:    "60:00",
+			expected: 3600,
+		},
+		{
+			name:     "HH:MM:SS format",
+			input:    "1:00:00",
+			expected: 3600,
+		},
+		{
+			name:     "short episode MM:SS",
+			input:    "25:30",
+			expected: 1530,
+		},
+		{
+			name:     "long episode HH:MM:SS",
+			input:    "2:15:45",
+			expected: 8145,
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: 0,
+		},
+		{
+			name:     "whitespace",
+			input:    "  3600  ",
+			expected: 3600,
+		},
+		{
+			name:     "zero",
+			input:    "0",
+			expected: 0,
+		},
+		{
+			name:     "leading zeros HH:MM:SS",
+			input:    "01:05:30",
+			expected: 3930,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDuration(tt.input)
+			if got != tt.expected {
+				t.Errorf("parseDuration(%q) = %d, want %d", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDetermineMediaType(t *testing.T) {
+	tests := []struct {
+		name     string
+		mimeType string
+		expected string
+	}{
+		{
+			name:     "audio/mpeg is podcast",
+			mimeType: "audio/mpeg",
+			expected: "podcast",
+		},
+		{
+			name:     "audio/mp4 is podcast",
+			mimeType: "audio/mp4",
+			expected: "podcast",
+		},
+		{
+			name:     "audio/aac is podcast",
+			mimeType: "audio/aac",
+			expected: "podcast",
+		},
+		{
+			name:     "video/mp4 is video",
+			mimeType: "video/mp4",
+			expected: "video",
+		},
+		{
+			name:     "video/webm is video",
+			mimeType: "video/webm",
+			expected: "video",
+		},
+		{
+			name:     "image/jpeg returns empty",
+			mimeType: "image/jpeg",
+			expected: "",
+		},
+		{
+			name:     "empty string returns empty",
+			mimeType: "",
+			expected: "",
+		},
+		{
+			name:     "application/octet-stream returns empty",
+			mimeType: "application/octet-stream",
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := determineMediaType(tt.mimeType)
+			if got != tt.expected {
+				t.Errorf("determineMediaType(%q) = %q, want %q", tt.mimeType, got, tt.expected)
+			}
+		})
+	}
+}

@@ -241,6 +241,17 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		article.ImageURL = &thumbnailURL
 	}
 
+	// Media: Extract audio/video enclosure for podcasts and videos
+	if media := extractMediaEnclosure(item); media != nil {
+		mediaType := determineMediaType(media.MIMEType)
+		article.MediaType = &mediaType
+		article.MediaURL = &media.URL
+		article.MediaMIMEType = &media.MIMEType
+		if media.Duration > 0 {
+			article.MediaDuration = &media.Duration
+		}
+	}
+
 	return article
 }
 
@@ -355,4 +366,90 @@ func truncateToFirstParagraph(s string) string {
 	}
 
 	return s
+}
+
+// MediaEnclosure holds extracted media information from RSS enclosures
+type MediaEnclosure struct {
+	URL      string
+	MIMEType string
+	Duration int // seconds
+}
+
+// extractMediaEnclosure extracts the first audio or video enclosure from an RSS item
+func extractMediaEnclosure(item *gofeed.Item) *MediaEnclosure {
+	for _, enc := range item.Enclosures {
+		if strings.HasPrefix(enc.Type, "audio/") || strings.HasPrefix(enc.Type, "video/") {
+			return &MediaEnclosure{
+				URL:      enc.URL,
+				MIMEType: enc.Type,
+				Duration: extractDuration(item),
+			}
+		}
+	}
+	return nil
+}
+
+// extractDuration extracts duration in seconds from iTunes namespace
+// Supports both seconds format (3600) and HH:MM:SS format (1:00:00)
+func extractDuration(item *gofeed.Item) int {
+	if item.ITunesExt != nil && item.ITunesExt.Duration != "" {
+		return parseDuration(item.ITunesExt.Duration)
+	}
+	return 0
+}
+
+// parseDuration converts iTunes duration string to seconds
+// Accepts: "3600" (seconds), "60:00" (MM:SS), "1:00:00" (HH:MM:SS)
+func parseDuration(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+
+	parts := strings.Split(s, ":")
+	switch len(parts) {
+	case 1:
+		// Plain seconds
+		var seconds int
+		for _, c := range parts[0] {
+			if c >= '0' && c <= '9' {
+				seconds = seconds*10 + int(c-'0')
+			}
+		}
+		return seconds
+	case 2:
+		// MM:SS
+		minutes := parseIntFromString(parts[0])
+		seconds := parseIntFromString(parts[1])
+		return minutes*60 + seconds
+	case 3:
+		// HH:MM:SS
+		hours := parseIntFromString(parts[0])
+		minutes := parseIntFromString(parts[1])
+		seconds := parseIntFromString(parts[2])
+		return hours*3600 + minutes*60 + seconds
+	}
+	return 0
+}
+
+// parseIntFromString parses digits from a string, ignoring non-digits
+func parseIntFromString(s string) int {
+	var n int
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
+}
+
+// determineMediaType returns "podcast" or "video" based on MIME type
+func determineMediaType(mimeType string) string {
+	if strings.HasPrefix(mimeType, "audio/") {
+		return "podcast"
+	}
+	if strings.HasPrefix(mimeType, "video/") {
+		return "video"
+	}
+	return ""
 }
