@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  go-tests:
+    name: Go Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Download dependencies
+        working-directory: ./rss-worker
+        run: go mod download
+
+      - name: Run tests with race detector
+        working-directory: ./rss-worker
+        run: go test -v -race ./...
+
+      - name: Run tests with coverage
+        working-directory: ./rss-worker
+        run: go test -coverprofile=coverage.out ./...
+
+      - name: Display coverage summary
+        working-directory: ./rss-worker
+        run: go tool cover -func=coverage.out
+
+  deno-tests:
+    name: Deno Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+
+      - name: Run Edge Function tests
+        working-directory: ./supabase/functions
+        run: deno test --allow-env _shared/
