@@ -213,9 +213,10 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		publishedAt,
 	)
 
-	// Summary/Description
+	// Summary/Description (truncated to first paragraph)
 	if item.Description != "" {
 		desc := cleanHTML(item.Description)
+		desc = truncateToFirstParagraph(desc)
 		article.Summary = &desc
 	}
 
@@ -322,4 +323,36 @@ func cleanHTML(s string) string {
 	}
 
 	return result
+}
+
+// truncateToFirstParagraph limits text to the first paragraph ending with a period.
+// This prevents summaries from being too long while ensuring complete sentences.
+func truncateToFirstParagraph(s string) string {
+	if s == "" {
+		return s
+	}
+
+	// First check for paragraph break (double newline)
+	if idx := strings.Index(s, "\n\n"); idx > 0 {
+		s = s[:idx]
+	}
+
+	// Find the first sentence-ending period (followed by space or end of string)
+	// We look for ". " to avoid cutting at abbreviations like "Dr." in the middle
+	minLength := 30 // Minimum chars before we consider truncating at a period
+	for i := minLength; i < len(s); i++ {
+		if s[i] == '.' {
+			// Check if this looks like end of sentence
+			if i == len(s)-1 {
+				// Period at end of string
+				return s
+			}
+			if i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\n') {
+				// Period followed by space or newline - likely end of sentence
+				return s[:i+1]
+			}
+		}
+	}
+
+	return s
 }

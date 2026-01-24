@@ -271,3 +271,66 @@ func TestExtractImageURL_PreferenceOrder(t *testing.T) {
 		t.Errorf("Item.Image should be preferred, got %q", got)
 	}
 }
+
+func TestTruncateToFirstParagraph(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "short text without period",
+			input:    "Short text",
+			expected: "Short text",
+		},
+		{
+			name:     "single sentence",
+			input:    "This is a complete sentence that is long enough to test the truncation logic properly.",
+			expected: "This is a complete sentence that is long enough to test the truncation logic properly.",
+		},
+		{
+			name:     "two sentences truncated to first",
+			input:    "This is the first sentence that is long enough. This is the second sentence.",
+			expected: "This is the first sentence that is long enough.",
+		},
+		{
+			name:     "paragraph break",
+			input:    "First paragraph content here.\n\nSecond paragraph content here.",
+			expected: "First paragraph content here.",
+		},
+		{
+			name:     "preserves short abbreviations",
+			input:    "Dr. Smith works at the hospital and helps patients every day.",
+			expected: "Dr. Smith works at the hospital and helps patients every day.",
+		},
+		{
+			name:     "period at end of string",
+			input:    "This is a complete sentence that is long enough to test.",
+			expected: "This is a complete sentence that is long enough to test.",
+		},
+		{
+			name:     "multiple sentences with newline",
+			input:    "First sentence that is definitely long enough to test.\nSecond sentence here.",
+			expected: "First sentence that is definitely long enough to test.",
+		},
+		{
+			name:     "very long text truncated",
+			input:    "This is the first sentence that provides important context. The second sentence adds more details. The third sentence is also here. And even more content follows.",
+			expected: "This is the first sentence that provides important context.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateToFirstParagraph(tt.input)
+			if got != tt.expected {
+				t.Errorf("truncateToFirstParagraph(%q)\ngot:  %q\nwant: %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
