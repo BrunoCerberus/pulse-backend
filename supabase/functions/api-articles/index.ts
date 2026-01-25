@@ -17,6 +17,7 @@
  * JSON array of article objects with fields:
  * - `id`, `title`, `summary`, `content`, `url`, `image_url`
  * - `published_at`, `source_name`, `source_slug`, `category_name`, `category_slug`
+ * - `media_type`, `media_url`, `media_duration`, `media_mime_type` (for podcasts/videos)
  *
  * ## Caching
  * - Cache-Control: 5 minutes fresh, 15 minutes stale-while-revalidate
@@ -36,13 +37,14 @@ const config: ProxyConfig = {
     "id",
     "source_slug",
     "category_slug",
+    "media_type",
     "order",
     "limit",
     "offset",
     "published_at",
   ],
   defaultSelect:
-    "id,title,summary,content,url,image_url,published_at,source_name,source_slug,category_name,category_slug",
+    "id,title,summary,content,url,image_url,published_at,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
 };
 
 Deno.serve(async (req: Request) => {

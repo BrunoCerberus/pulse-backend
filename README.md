@@ -66,6 +66,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/001_initial_schema.sql` - Core schema
    - `supabase/migrations/002_add_media_support.sql` - Podcast/video support
    - `supabase/migrations/003_add_podcast_video_sources.sql` - Curated sources
+   - `supabase/migrations/004_update_articles_with_source_view.sql` - Expose media fields in API
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -155,7 +156,8 @@ pulse-backend/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
 │   │   ├── 002_add_media_support.sql  # Podcast/video columns
-│   │   └── 003_add_podcast_video_sources.sql  # Curated sources
+│   │   ├── 003_add_podcast_video_sources.sql  # Curated sources
+│   │   └── 004_update_articles_with_source_view.sql  # Expose media in API
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -249,6 +251,10 @@ GET /api-articles?category_slug=eq.podcasts&order=published_at.desc&limit=20
 
 # Get videos
 GET /api-articles?category_slug=eq.videos&order=published_at.desc&limit=20
+
+# Filter by media type
+GET /api-articles?media_type=eq.podcast&limit=20
+GET /api-articles?media_type=eq.video&limit=20
 
 # Search articles (1min private cache)
 GET /api-search?q=climate&limit=20

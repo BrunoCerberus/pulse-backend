@@ -87,7 +87,8 @@ pulse-backend/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
 │   │   ├── 002_add_media_support.sql  # Podcast/video media fields
-│   │   └── 003_add_podcast_video_sources.sql  # Curated sources
+│   │   ├── 003_add_podcast_video_sources.sql  # Curated sources
+│   │   └── 004_update_articles_with_source_view.sql  # Expose media fields in API
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -168,7 +169,7 @@ Key functions:
 - `search_articles(search_query, result_limit)` - Full-text search
 
 View:
-- `articles_with_source` - Joins articles with source and category info
+- `articles_with_source` - Joins articles with source, category, and media info
 
 ## Code Style Guidelines
 

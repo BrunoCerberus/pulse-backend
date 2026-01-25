@@ -93,7 +93,8 @@ pulse-backend/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
 │   │   ├── 002_add_media_support.sql  # Podcast/video media fields
-│   │   └── 003_add_podcast_video_sources.sql  # 34 curated podcast/video sources
+│   │   ├── 003_add_podcast_video_sources.sql  # 34 curated podcast/video sources
+│   │   └── 004_update_articles_with_source_view.sql  # Expose media fields in API view
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -183,7 +184,7 @@ Key functions:
 - `cleanup_old_articles(days_to_keep)` - Called by cleanup command
 - `search_articles(search_query, result_limit)` - Full-text search
 
-View: `articles_with_source` - Joins articles with source and category info
+View: `articles_with_source` - Joins articles with source, category, and media info
 
 ## Configuration
 

@@ -421,6 +421,21 @@ No changes needed - the UI tests should work the same since only the service imp
 
 The backend supports podcasts and YouTube videos alongside articles. This section covers how to handle media content in the iOS app.
 
+### API Media Fields
+
+The `/api-articles` endpoint returns media fields by default:
+- `media_type` - "podcast", "video", or null
+- `media_url` - Direct URL to audio/video file (MP3, etc.)
+- `media_duration` - Duration in seconds
+- `media_mime_type` - MIME type (audio/mpeg, video/mp4, etc.)
+
+You can also filter by media type:
+```
+GET /api-articles?media_type=eq.podcast  # Only podcasts
+GET /api-articles?media_type=eq.video    # Only videos
+GET /api-articles?media_type=is.null     # Only articles
+```
+
 ### Content Types
 
 The API returns a `media_type` field that indicates the content type:
