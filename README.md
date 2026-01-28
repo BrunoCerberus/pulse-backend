@@ -7,7 +7,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                          GitHub Actions (Free)                               │
-│                     Scheduled: Every 15 minutes                              │
+│                      Scheduled: Every 6 hours                                │
 │                                                                              │
 │    ┌─────────────────────────────────────────────────────────────────────┐  │
 │    │                         Go RSS Worker                                │  │
@@ -111,7 +111,7 @@ In your GitHub repo → **Settings** → **Secrets and variables** → **Actions
 ### 6. Enable GitHub Actions
 
 The workflows are already configured:
-- `fetch-rss.yml` - Runs every 15 minutes
+- `fetch-rss.yml` - Runs every 6 hours
 - `cleanup.yml` - Runs daily at 3 AM UTC
 
 Go to **Actions** tab and enable workflows if prompted.
@@ -174,7 +174,7 @@ pulse-backend/
 │       └── database/                  # Supabase client + tests
 └── .github/
     └── workflows/
-        ├── fetch-rss.yml              # RSS fetch job (every 15 min)
+        ├── fetch-rss.yml              # RSS fetch job (every 6 hours)
         ├── cleanup.yml                # Cleanup job (daily)
         └── test.yml                   # Unit tests (on push/PR)
 ```

@@ -11,7 +11,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 ## Architecture
 
 ```
-GitHub Actions (every 15 min)
+GitHub Actions (every 6 hours)
     ↓
 Go RSS Worker (rss-worker/)
     ├─ Fetch RSS feeds (48 sources: articles, podcasts, videos)
@@ -100,7 +100,7 @@ pulse-backend/
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       └── api-search/index.ts        # Search endpoint (1min private)
 ├── .github/workflows/
-│   ├── fetch-rss.yml                  # Runs every 15 minutes
+│   ├── fetch-rss.yml                  # Runs every 6 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
 │   └── test.yml                       # Unit tests on push/PR
 └── docs/ios-integration.md            # iOS app integration guide
@@ -183,7 +183,7 @@ View:
 
 | Workflow | Schedule | Description |
 |----------|----------|-------------|
-| `fetch-rss.yml` | Every 15 min | Fetch RSS feeds |
+| `fetch-rss.yml` | Every 6 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
 | `test.yml` | On push/PR | Run unit tests |
 
