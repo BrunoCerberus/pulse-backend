@@ -11,7 +11,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 ## Architecture
 
 ```
-GitHub Actions (every 15 min)
+GitHub Actions (every 6 hours)
     ↓
 Go RSS Worker (rss-worker/)
     ├─ Fetch RSS feeds (48 sources: articles, podcasts, videos)
@@ -217,7 +217,7 @@ make test-deno      # Deno Edge Function tests
 
 ## GitHub Actions
 
-- **fetch-rss.yml**: Every 15 minutes + manual trigger
+- **fetch-rss.yml**: Every 6 hours + manual trigger
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger
 - **test.yml**: Runs on push/PR to main (Go + Deno tests)
 
