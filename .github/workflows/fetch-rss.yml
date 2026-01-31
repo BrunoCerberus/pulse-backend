@@ -1,9 +1,9 @@
 name: Fetch RSS Feeds
 
 on:
-  # Run every 6 hours
+  # Run every 2 hours
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */2 * * *'
 
   # Allow manual trigger
   workflow_dispatch:
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
-    # Only run on schedule at 3 AM UTC (not on every 6-hour trigger)
+    # Only run on schedule at 3 AM UTC (not on every 2-hour trigger)
     if: github.event.schedule == '0 3 * * *' || github.event.inputs.cleanup == 'true'
 
     steps:
