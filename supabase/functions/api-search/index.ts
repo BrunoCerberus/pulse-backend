@@ -21,7 +21,7 @@
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
@@ -95,4 +95,8 @@ Deno.serve(async (req: Request) => {
       }
     );
   }
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}

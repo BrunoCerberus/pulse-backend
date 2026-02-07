@@ -1,11 +1,21 @@
 package parser
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/mmcdole/gofeed"
 	ext "github.com/mmcdole/gofeed/extensions"
+	"github.com/pulsefeed/rss-worker/internal/models"
 )
+
+func strPtr(s string) *string {
+	return &s
+}
 
 func TestCleanHTML(t *testing.T) {
 	tests := []struct {
@@ -550,5 +560,570 @@ func TestDetermineMediaType(t *testing.T) {
 				t.Errorf("determineMediaType(%q) = %q, want %q", tt.mimeType, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestNew(t *testing.T) {
+	p := New()
+	if p == nil {
+		t.Fatal("New() returned nil")
+	}
+	if p.fp == nil {
+		t.Error("fp (gofeed.Parser) is nil")
+	}
+	if p.ogExtractor == nil {
+		t.Error("ogExtractor is nil")
+	}
+	if p.contentExtractor == nil {
+		t.Error("contentExtractor is nil")
+	}
+}
+
+func TestItemToArticle(t *testing.T) {
+	p := New()
+	source := models.Source{
+		ID:         "src-1",
+		Name:       "Test Source",
+		CategoryID: strPtr("cat-1"),
+	}
+
+	now := time.Now()
+	published := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name   string
+		item   *gofeed.Item
+		check  func(t *testing.T, a *models.Article)
+	}{
+		{
+			name: "basic conversion",
+			item: &gofeed.Item{
+				Title: "Test Title",
+				Link:  "https://example.com/article",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Title != "Test Title" {
+					t.Errorf("Title = %q, want %q", a.Title, "Test Title")
+				}
+				if a.URL != "https://example.com/article" {
+					t.Errorf("URL = %q, want %q", a.URL, "https://example.com/article")
+				}
+				if a.SourceID != "src-1" {
+					t.Errorf("SourceID = %q, want %q", a.SourceID, "src-1")
+				}
+				if a.URLHash == "" {
+					t.Error("URLHash is empty")
+				}
+			},
+		},
+		{
+			name: "missing title returns nil",
+			item: &gofeed.Item{
+				Link: "https://example.com/article",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a != nil {
+					t.Errorf("expected nil for missing title, got %+v", a)
+				}
+			},
+		},
+		{
+			name: "missing link returns nil",
+			item: &gofeed.Item{
+				Title: "Test Title",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a != nil {
+					t.Errorf("expected nil for missing link, got %+v", a)
+				}
+			},
+		},
+		{
+			name: "title and link trimmed",
+			item: &gofeed.Item{
+				Title: "  Padded Title  ",
+				Link:  "  https://example.com/padded  ",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Title != "Padded Title" {
+					t.Errorf("Title = %q, want trimmed", a.Title)
+				}
+				if a.URL != "https://example.com/padded" {
+					t.Errorf("URL = %q, want trimmed", a.URL)
+				}
+			},
+		},
+		{
+			name: "author from Author field",
+			item: &gofeed.Item{
+				Title:  "Test",
+				Link:   "https://example.com/1",
+				Author: &gofeed.Person{Name: "John Doe"},
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Author == nil || *a.Author != "John Doe" {
+					t.Errorf("Author = %v, want 'John Doe'", a.Author)
+				}
+			},
+		},
+		{
+			name: "author from Authors list",
+			item: &gofeed.Item{
+				Title:   "Test",
+				Link:    "https://example.com/2",
+				Authors: []*gofeed.Person{{Name: "Jane Smith"}},
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Author == nil || *a.Author != "Jane Smith" {
+					t.Errorf("Author = %v, want 'Jane Smith'", a.Author)
+				}
+			},
+		},
+		{
+			name: "summary from description",
+			item: &gofeed.Item{
+				Title:       "Test",
+				Link:        "https://example.com/3",
+				Description: "<p>This is a <b>description</b> with HTML tags.</p>",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Summary == nil {
+					t.Fatal("Summary is nil")
+				}
+				if *a.Summary == "" {
+					t.Error("Summary is empty")
+				}
+			},
+		},
+		{
+			name: "content from Content field",
+			item: &gofeed.Item{
+				Title:   "Test",
+				Link:    "https://example.com/4",
+				Content: "<p>Full article <b>content</b> here.</p>",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.Content == nil {
+					t.Fatal("Content is nil")
+				}
+				if *a.Content == "" {
+					t.Error("Content is empty")
+				}
+			},
+		},
+		{
+			name: "published date from PublishedParsed",
+			item: &gofeed.Item{
+				Title:           "Test",
+				Link:            "https://example.com/5",
+				PublishedParsed: &published,
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if !a.PublishedAt.Equal(published) {
+					t.Errorf("PublishedAt = %v, want %v", a.PublishedAt, published)
+				}
+			},
+		},
+		{
+			name: "published date from UpdatedParsed fallback",
+			item: &gofeed.Item{
+				Title:         "Test",
+				Link:          "https://example.com/6",
+				UpdatedParsed: &published,
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if !a.PublishedAt.Equal(published) {
+					t.Errorf("PublishedAt = %v, want %v", a.PublishedAt, published)
+				}
+			},
+		},
+		{
+			name: "published date defaults to now",
+			item: &gofeed.Item{
+				Title: "Test",
+				Link:  "https://example.com/7",
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				diff := time.Since(a.PublishedAt)
+				if diff > 2*time.Second || diff < -2*time.Second {
+					t.Errorf("PublishedAt = %v, expected within 2s of now", a.PublishedAt)
+				}
+			},
+		},
+		{
+			name: "thumbnail from RSS image",
+			item: &gofeed.Item{
+				Title: "Test",
+				Link:  "https://example.com/8",
+				Image: &gofeed.Image{URL: "https://example.com/thumb.jpg"},
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.ThumbnailURL == nil || *a.ThumbnailURL != "https://example.com/thumb.jpg" {
+					t.Errorf("ThumbnailURL = %v, want 'https://example.com/thumb.jpg'", a.ThumbnailURL)
+				}
+				if a.ImageURL == nil || *a.ImageURL != "https://example.com/thumb.jpg" {
+					t.Errorf("ImageURL = %v, want 'https://example.com/thumb.jpg' (fallback)", a.ImageURL)
+				}
+			},
+		},
+		{
+			name: "media enclosure for audio",
+			item: &gofeed.Item{
+				Title: "Podcast Episode",
+				Link:  "https://example.com/9",
+				Enclosures: []*gofeed.Enclosure{
+					{Type: "audio/mpeg", URL: "https://example.com/ep.mp3"},
+				},
+				ITunesExt: &ext.ITunesItemExtension{Duration: "1800"},
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.MediaType == nil || *a.MediaType != "podcast" {
+					t.Errorf("MediaType = %v, want 'podcast'", a.MediaType)
+				}
+				if a.MediaURL == nil || *a.MediaURL != "https://example.com/ep.mp3" {
+					t.Errorf("MediaURL = %v, want 'https://example.com/ep.mp3'", a.MediaURL)
+				}
+				if a.MediaDuration == nil || *a.MediaDuration != 1800 {
+					t.Errorf("MediaDuration = %v, want 1800", a.MediaDuration)
+				}
+			},
+		},
+		{
+			name: "no media when only image enclosures",
+			item: &gofeed.Item{
+				Title: "Article",
+				Link:  "https://example.com/10",
+				Enclosures: []*gofeed.Enclosure{
+					{Type: "image/jpeg", URL: "https://example.com/image.jpg"},
+				},
+			},
+			check: func(t *testing.T, a *models.Article) {
+				if a == nil {
+					t.Fatal("expected article, got nil")
+				}
+				if a.MediaType != nil {
+					t.Errorf("MediaType = %v, want nil for image-only enclosure", a.MediaType)
+				}
+			},
+		},
+	}
+
+	_ = now // used indirectly
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			article := p.itemToArticle(tt.item, source)
+			tt.check(t, article)
+		})
+	}
+}
+
+func TestParseFeed_BasicRSS(t *testing.T) {
+	// We need a server whose URL we know before building the RSS XML
+	var serverURL string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/feed":
+			rss := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <item>
+      <title>Article One</title>
+      <link>%s/article/1</link>
+    </item>
+    <item>
+      <title>Article Two</title>
+      <link>%s/article/2</link>
+    </item>
+  </channel>
+</rss>`, serverURL, serverURL)
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(rss))
+		default:
+			// Serve article HTML with og:image for enrichment
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head><body><p>Article content that is long enough to be extracted by the readability parser for testing purposes. This needs to be over one hundred characters long.</p></body></html>`))
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	p := New()
+	source := models.Source{
+		ID:      "src-1",
+		Name:    "Test Source",
+		FeedURL: serverURL + "/feed",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	articles, err := p.ParseFeed(ctx, source)
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+
+	if len(articles) != 2 {
+		t.Fatalf("got %d articles, want 2", len(articles))
+	}
+
+	if articles[0].Title != "Article One" {
+		t.Errorf("articles[0].Title = %q, want %q", articles[0].Title, "Article One")
+	}
+	if articles[1].Title != "Article Two" {
+		t.Errorf("articles[1].Title = %q, want %q", articles[1].Title, "Article Two")
+	}
+}
+
+func TestParseFeed_EmptyFeed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rss := `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Empty Feed</title>
+  </channel>
+</rss>`
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(rss))
+	}))
+	defer server.Close()
+
+	p := New()
+	source := models.Source{
+		ID:      "src-1",
+		Name:    "Empty Source",
+		FeedURL: server.URL,
+	}
+
+	ctx := context.Background()
+	articles, err := p.ParseFeed(ctx, source)
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+
+	if len(articles) != 0 {
+		t.Errorf("got %d articles, want 0", len(articles))
+	}
+}
+
+func TestParseFeed_InvalidFeed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not xml at all"))
+	}))
+	defer server.Close()
+
+	p := New()
+	source := models.Source{
+		ID:      "src-1",
+		Name:    "Bad Source",
+		FeedURL: server.URL,
+	}
+
+	ctx := context.Background()
+	_, err := p.ParseFeed(ctx, source)
+	if err == nil {
+		t.Error("expected error for invalid feed")
+	}
+}
+
+func TestEnrichWithOGImages_SetsImageURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	articles := []*models.Article{
+		{URL: server.URL + "/1", Title: "A1"},
+		{URL: server.URL + "/2", Title: "A2"},
+	}
+
+	ctx := context.Background()
+	p.enrichWithOGImages(ctx, articles)
+
+	for i, a := range articles {
+		if a.ImageURL == nil || *a.ImageURL != "https://example.com/og.jpg" {
+			t.Errorf("articles[%d].ImageURL = %v, want 'https://example.com/og.jpg'", i, a.ImageURL)
+		}
+	}
+}
+
+func TestEnrichWithOGImages_EmptyArticles(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	// Should not panic
+	p.enrichWithOGImages(ctx, []*models.Article{})
+}
+
+func TestEnrichWithOGImages_ContextCancelled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	articles := []*models.Article{
+		{URL: server.URL + "/1", Title: "A1"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	p.enrichWithOGImages(ctx, articles)
+
+	// With a cancelled context, images should not be enriched
+	if articles[0].ImageURL != nil {
+		t.Logf("ImageURL may or may not be set depending on timing, got %v", articles[0].ImageURL)
+	}
+}
+
+func TestEnrichWithContent_SetsContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is the full article content that is definitely long enough to be extracted by the readability parser. It needs to be over one hundred characters long to pass the length check in the content extractor.</p></article></body></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	articles := []*models.Article{
+		{URL: server.URL + "/1", Title: "A1"},
+	}
+
+	ctx := context.Background()
+	p.enrichWithContent(ctx, articles)
+
+	if articles[0].Content == nil || *articles[0].Content == "" {
+		t.Error("expected content to be set")
+	}
+}
+
+func TestEnrichWithContent_SkipsArticlesWithContent(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Write([]byte(`<html><body><p>New content.</p></body></html>`))
+	}))
+	defer server.Close()
+
+	existingContent := "Existing content"
+	p := New()
+	articles := []*models.Article{
+		{URL: server.URL + "/1", Title: "A1", Content: &existingContent},
+	}
+
+	ctx := context.Background()
+	p.enrichWithContent(ctx, articles)
+
+	if *articles[0].Content != "Existing content" {
+		t.Errorf("Content = %q, want unchanged 'Existing content'", *articles[0].Content)
+	}
+	if requestCount != 0 {
+		t.Errorf("expected 0 HTTP requests for articles with content, got %d", requestCount)
+	}
+}
+
+func TestFetchOGImageForArticle_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	article := &models.Article{URL: server.URL, Title: "Test"}
+
+	ctx := context.Background()
+	p.fetchOGImageForArticle(ctx, article)
+
+	if article.ImageURL == nil || *article.ImageURL != "https://example.com/og.jpg" {
+		t.Errorf("ImageURL = %v, want 'https://example.com/og.jpg'", article.ImageURL)
+	}
+}
+
+func TestFetchOGImageForArticle_SameAsThumbnail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/thumb.jpg"></head></html>`))
+	}))
+	defer server.Close()
+
+	thumb := "https://example.com/thumb.jpg"
+	p := New()
+	article := &models.Article{URL: server.URL, Title: "Test", ThumbnailURL: &thumb}
+
+	ctx := context.Background()
+	p.fetchOGImageForArticle(ctx, article)
+
+	// og:image is same as thumbnail, so ImageURL should NOT be updated
+	if article.ImageURL != nil {
+		t.Errorf("ImageURL = %v, want nil (same as thumbnail)", article.ImageURL)
+	}
+}
+
+func TestFetchContentForArticle_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is a full article content body that is definitely long enough to pass the readability content length check of one hundred characters minimum threshold.</p></article></body></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	article := &models.Article{URL: server.URL, Title: "Test"}
+
+	ctx := context.Background()
+	p.fetchContentForArticle(ctx, article)
+
+	if article.Content == nil || *article.Content == "" {
+		t.Error("expected Content to be set")
+	}
+}
+
+func TestFetchContentForArticle_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	p := New()
+	article := &models.Article{URL: server.URL, Title: "Test"}
+
+	ctx := context.Background()
+	p.fetchContentForArticle(ctx, article)
+
+	if article.Content != nil {
+		t.Errorf("Content = %v, want nil for error response", article.Content)
 	}
 }

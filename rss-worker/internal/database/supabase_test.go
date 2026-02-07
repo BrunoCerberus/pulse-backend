@@ -497,6 +497,52 @@ func TestInsertArticles_Batch(t *testing.T) {
 	}
 }
 
+func TestUpdateSourceLastFetched_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PATCH" {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		if !strings.Contains(r.URL.String(), "id=eq.src-123") {
+			t.Errorf("expected id=eq.src-123 in URL, got %s", r.URL.String())
+		}
+
+		// Verify body contains last_fetched_at and updated_at
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+		if !strings.Contains(bodyStr, "last_fetched_at") {
+			t.Error("expected last_fetched_at in request body")
+		}
+		if !strings.Contains(bodyStr, "updated_at") {
+			t.Error("expected updated_at in request body")
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.UpdateSourceLastFetched("src-123")
+
+	if err != nil {
+		t.Errorf("UpdateSourceLastFetched error: %v", err)
+	}
+}
+
+func TestUpdateSourceLastFetched_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "database error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.UpdateSourceLastFetched("src-123")
+
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
 func TestSetHeaders(t *testing.T) {
 	cfg := &config.Config{
 		SupabaseURL: "https://test.supabase.co",

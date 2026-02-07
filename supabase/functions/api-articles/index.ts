@@ -47,7 +47,7 @@ const config: ProxyConfig = {
     "id,title,summary,content,url,image_url,published_at,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
 };
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
@@ -105,4 +105,8 @@ Deno.serve(async (req: Request) => {
       }
     );
   }
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}

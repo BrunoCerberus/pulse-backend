@@ -36,7 +36,7 @@ const config: ProxyConfig = {
   defaultSelect: "id,name,slug,website_url,logo_url,category_id,is_active",
 };
 
-Deno.serve(async (req: Request) => {
+export async function handler(req: Request): Promise<Response> {
   // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
@@ -70,4 +70,8 @@ Deno.serve(async (req: Request) => {
       }
     );
   }
-});
+}
+
+if (import.meta.main) {
+  Deno.serve(handler);
+}
