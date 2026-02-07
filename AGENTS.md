@@ -80,9 +80,11 @@ pulse-backend/
 │       │   ├── ogimage_test.go        # OG image tests
 │       │   ├── content.go             # Article content extraction (go-readability)
 │       │   └── content_test.go        # Content extraction tests
-│       └── database/
-│           ├── supabase.go            # Supabase REST API client
-│           └── supabase_test.go       # Database client tests (69% coverage)
+│       ├── database/
+│       │   ├── supabase.go            # Supabase REST API client
+│       │   └── supabase_test.go       # Database client tests (69% coverage)
+│       └── httputil/
+│           └── transport.go           # Shared HTTP transport with connection pooling
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
@@ -100,7 +102,7 @@ pulse-backend/
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       └── api-search/index.ts        # Search endpoint (1min private)
 ├── .github/workflows/
-│   ├── fetch-rss.yml                  # Runs every 6 hours
+│   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
 │   └── test.yml                       # Unit tests on push/PR
 └── docs/ios-integration.md            # iOS app integration guide
@@ -119,6 +121,7 @@ pulse-backend/
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
 | Database | `internal/database/supabase.go` | Supabase REST API client with deduplication |
+| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling (used by all HTTP clients) |
 
 ### Edge Functions (`supabase/functions/`)
 
@@ -176,6 +179,7 @@ View:
 - Go code follows standard Go conventions (`go fmt`, `go vet`)
 - Use table-driven tests for comprehensive coverage
 - HTTP calls should be mocked with `httptest.Server` in tests
+- New HTTP clients must use `httputil.NewClient(timeout)` to share the connection pool
 - Edge Functions use TypeScript with Deno
 - All new code should include tests
 

@@ -171,7 +171,8 @@ pulse-backend/
 │       ├── config/                    # Configuration + tests
 │       ├── models/                    # Data models + tests
 │       ├── parser/                    # RSS parsing + tests
-│       └── database/                  # Supabase client + tests
+│       ├── database/                  # Supabase client + tests
+│       └── httputil/                  # Shared HTTP transport + connection pooling
 └── .github/
     └── workflows/
         ├── fetch-rss.yml              # RSS fetch job (every 2 hours)

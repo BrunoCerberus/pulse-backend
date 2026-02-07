@@ -86,9 +86,11 @@ pulse-backend/
 │       │   ├── ogimage_test.go        # OG image tests with httptest
 │       │   ├── content.go             # Full article content extraction (go-readability)
 │       │   └── content_test.go        # Content extraction tests
-│       └── database/
-│           ├── supabase.go            # Supabase REST API client
-│           └── supabase_test.go       # Database client tests (69% coverage)
+│       ├── database/
+│       │   ├── supabase.go            # Supabase REST API client
+│       │   └── supabase_test.go       # Database client tests (69% coverage)
+│       └── httputil/
+│           └── transport.go           # Shared HTTP transport with connection pooling
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
@@ -109,7 +111,7 @@ pulse-backend/
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       └── api-search/index.ts        # Search endpoint (1min private)
 ├── .github/workflows/
-│   ├── fetch-rss.yml                  # Runs every 15 minutes
+│   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
 │   └── test.yml                       # Unit tests on push/PR
 └── docs/ios-integration.md            # iOS app integration guide
@@ -122,14 +124,17 @@ pulse-backend/
 - Concurrent source processing with semaphore (default: 5 concurrent)
 - Fetch logging to `fetch_logs` table
 
+### HTTP Utilities (`internal/httputil/`)
+- `transport.go`: Shared `http.Transport` with tuned connection pooling (`MaxIdleConnsPerHost: 10`, HTTP/2 enabled). All HTTP clients (og:image extractor, content extractor, database client) use this shared transport via `httputil.NewClient(timeout)` to enable connection reuse across workers.
+
 ### Parser Module (`internal/parser/`)
 - `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers). Also extracts media enclosures (audio/video) for podcasts and videos.
-- `ogimage.go`: Extracts og:image/twitter:image from article HTML `<head>` (100KB limit)
-- `content.go`: Uses `go-shiori/go-readability` for article text extraction
+- `ogimage.go`: Extracts og:image/twitter:image from article HTML `<head>` (100KB limit, byte-based regex matching)
+- `content.go`: Uses `go-shiori/go-readability` for article text extraction (5MB response limit)
 - Media extraction: Parses audio/video enclosures and iTunes duration from RSS feeds
 
 ### Database Client (`internal/database/supabase.go`)
-- Direct HTTP calls to Supabase REST API
+- Direct HTTP calls to Supabase REST API (uses shared HTTP transport)
 - Deduplication via `url_hash` (SHA256 of URL) - returns 409 on conflict, updates image_url if better
 - Key methods: `GetActiveSources()`, `InsertArticles()`, `CleanupOldArticles()`, backfill queries
 
