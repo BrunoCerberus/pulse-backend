@@ -51,10 +51,10 @@ func main() {
 			runCleanup(db, cfg.ArticleRetentionDays)
 			return
 		case "backfill-images":
-			runOGImageBackfill(db, rssParser)
+			runOGImageBackfill(db)
 			return
 		case "backfill-content":
-			runContentBackfill(db, rssParser)
+			runContentBackfill(db)
 			return
 		}
 	}
@@ -217,7 +217,7 @@ func runCleanup(db *database.Client, daysToKeep int) {
 // high-resolution images. It processes up to 500 articles per run using
 // 5 concurrent workers, with a 30-minute timeout. Articles are selected
 // based on having NULL or low-quality RSS-provided image URLs.
-func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
+func runOGImageBackfill(db *database.Client) {
 	log.Println("🖼️ Starting og:image backfill for articles missing high-res images")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -235,6 +235,9 @@ func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
 		log.Println("✅ No articles need og:image backfill")
 		return
 	}
+
+	// Create extractor once and share across workers (http.Client is concurrency-safe)
+	ogExtractor := parser.NewOGImageExtractor()
 
 	// Process articles concurrently
 	const maxWorkers = 5
@@ -254,7 +257,7 @@ func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
 					results <- struct{ updated bool }{false}
 					return
 				default:
-					updated := processOGImageBackfill(ctx, db, rssParser, article)
+					updated := processOGImageBackfill(ctx, db, ogExtractor, article)
 					results <- struct{ updated bool }{updated}
 				}
 			}
@@ -288,8 +291,7 @@ func runOGImageBackfill(db *database.Client, rssParser *parser.Parser) {
 // processOGImageBackfill attempts to extract the og:image URL from a single
 // article's webpage. If a valid image is found and differs from the current
 // image, updates the database. Returns true if the article was updated.
-func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForBackfill) bool {
-	ogExtractor := parser.NewOGImageExtractor()
+func processOGImageBackfill(ctx context.Context, db *database.Client, ogExtractor *parser.OGImageExtractor, article database.ArticleForBackfill) bool {
 	ogImage, err := ogExtractor.ExtractOGImage(ctx, article.URL)
 	if err != nil {
 		log.Printf("[BACKFILL] ERROR fetching og:image for %s: %v", article.URL, err)
@@ -321,7 +323,7 @@ func processOGImageBackfill(ctx context.Context, db *database.Client, rssParser 
 // missing the content field. It processes up to 200 articles per run using
 // 3 concurrent workers (lower than og:image due to heavier processing),
 // with a 60-minute timeout.
-func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
+func runContentBackfill(db *database.Client) {
 	log.Println("📝 Starting content backfill for articles missing content")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
@@ -339,6 +341,9 @@ func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
 		log.Println("✅ No articles need content backfill")
 		return
 	}
+
+	// Create extractor once and share across workers (http.Client is concurrency-safe)
+	contentExtractor := parser.NewContentExtractor()
 
 	// Process articles concurrently (lower concurrency for content extraction)
 	const maxWorkers = 3
@@ -358,7 +363,7 @@ func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
 					results <- struct{ updated bool }{false}
 					return
 				default:
-					updated := processContentBackfill(ctx, db, rssParser, article)
+					updated := processContentBackfill(ctx, db, contentExtractor, article)
 					results <- struct{ updated bool }{updated}
 				}
 			}
@@ -392,8 +397,7 @@ func runContentBackfill(db *database.Client, rssParser *parser.Parser) {
 // processContentBackfill uses go-readability to extract the main text content
 // from a single article's webpage. If valid content is extracted, updates
 // the database. Returns true if the article was updated.
-func processContentBackfill(ctx context.Context, db *database.Client, rssParser *parser.Parser, article database.ArticleForContentBackfill) bool {
-	contentExtractor := parser.NewContentExtractor()
+func processContentBackfill(ctx context.Context, db *database.Client, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill) bool {
 	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)
 	if err != nil {
 		log.Printf("[CONTENT-BACKFILL] ERROR fetching content for %s: %v", article.URL, err)

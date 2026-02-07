@@ -286,30 +286,29 @@ func extractImageURL(item *gofeed.Item) string {
 	return ""
 }
 
+// htmlReplacer is a package-level Replacer for HTML entity/tag substitution.
+// It is safe for concurrent use and avoids rebuilding the lookup table on every call.
+var htmlReplacer = strings.NewReplacer(
+	"<br>", "\n",
+	"<br/>", "\n",
+	"<br />", "\n",
+	"<p>", "\n",
+	"</p>", "\n",
+	"&nbsp;", " ",
+	"&amp;", "&",
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", "\"",
+	"&#39;", "'",
+)
+
 // cleanHTML removes HTML tags and cleans up text
 func cleanHTML(s string) string {
-	// Simple HTML tag removal (for basic cases)
-	// For production, consider using a proper HTML parser
-	result := s
-
-	// Remove common HTML tags
-	replacer := strings.NewReplacer(
-		"<br>", "\n",
-		"<br/>", "\n",
-		"<br />", "\n",
-		"<p>", "\n",
-		"</p>", "\n",
-		"&nbsp;", " ",
-		"&amp;", "&",
-		"&lt;", "<",
-		"&gt;", ">",
-		"&quot;", "\"",
-		"&#39;", "'",
-	)
-	result = replacer.Replace(result)
+	result := htmlReplacer.Replace(s)
 
 	// Remove remaining HTML tags (simple regex-like removal)
 	var cleaned strings.Builder
+	cleaned.Grow(len(result))
 	inTag := false
 	for _, r := range result {
 		if r == '<' {

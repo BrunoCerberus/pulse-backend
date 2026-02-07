@@ -2,6 +2,7 @@ package parser
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	readability "github.com/go-shiori/go-readability"
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 )
 
 // ContentExtractor fetches and extracts article content from web pages
@@ -18,17 +20,14 @@ type ContentExtractor struct {
 
 // NewContentExtractor creates a new extractor with a configured HTTP client
 func NewContentExtractor() *ContentExtractor {
-	return &ContentExtractor{
-		client: &http.Client{
-			Timeout: 15 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		},
+	client := httputil.NewClient(15 * time.Second)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return http.ErrUseLastResponse
+		}
+		return nil
 	}
+	return &ContentExtractor{client: client}
 }
 
 // ExtractedContent holds the extracted article data from go-readability.
@@ -64,12 +63,16 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
 		log.Printf("[CONTENT-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return nil, nil
 	}
 
+	// Limit response body to 5MB to prevent OOM from oversized pages
+	limitedBody := io.LimitReader(resp.Body, 5*1024*1024)
+
 	// Use go-readability to extract the article content
-	article, err := readability.FromReader(resp.Body, parsedURL)
+	article, err := readability.FromReader(limitedBody, parsedURL)
 	if err != nil {
 		log.Printf("[CONTENT] Readability failed for %s: %v", articleURL, err)
 		return nil, err

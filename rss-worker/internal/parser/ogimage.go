@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 )
 
 // OGImageExtractor fetches og:image meta tags from article pages
@@ -17,17 +19,14 @@ type OGImageExtractor struct {
 
 // NewOGImageExtractor creates a new extractor with a configured HTTP client
 func NewOGImageExtractor() *OGImageExtractor {
-	return &OGImageExtractor{
-		client: &http.Client{
-			Timeout: 10 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		},
+	client := httputil.NewClient(10 * time.Second)
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return http.ErrUseLastResponse
+		}
+		return nil
 	}
+	return &OGImageExtractor{client: client}
 }
 
 // ogImagePatterns are regex patterns to extract og:image from HTML
@@ -66,6 +65,7 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
 		log.Printf("[OG-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return "", nil // Not an error, just no image found
 	}
@@ -77,13 +77,11 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 		return "", err
 	}
 
-	html := string(body)
-
-	// Try each pattern to find og:image
+	// Try each pattern to find og:image (use byte matching to avoid copying)
 	for _, pattern := range ogImagePatterns {
-		matches := pattern.FindStringSubmatch(html)
+		matches := pattern.FindSubmatch(body)
 		if len(matches) > 1 {
-			imageURL := strings.TrimSpace(matches[1])
+			imageURL := strings.TrimSpace(string(matches[1]))
 			// Validate it looks like a URL
 			if strings.HasPrefix(imageURL, "http://") || strings.HasPrefix(imageURL, "https://") {
 				return imageURL, nil

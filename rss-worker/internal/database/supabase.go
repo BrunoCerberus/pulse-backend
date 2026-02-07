@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/config"
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
@@ -34,11 +35,9 @@ type Client struct {
 // NewClient creates a new Supabase client
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
-		baseURL: cfg.SupabaseURL + "/rest/v1",
-		apiKey:  cfg.SupabaseKey,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		baseURL:    cfg.SupabaseURL + "/rest/v1",
+		apiKey:     cfg.SupabaseKey,
+		httpClient: httputil.NewClient(30 * time.Second),
 	}
 }
 

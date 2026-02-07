@@ -27,8 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: false
+          go-version: '1.23'
 
       - name: Build worker
         working-directory: rss-worker
@@ -64,8 +63,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: false
+          go-version: '1.23'
 
       - name: Build and run cleanup
         working-directory: rss-worker
