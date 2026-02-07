@@ -165,7 +165,7 @@ export async function fetchFromSupabase(
       apikey: supabaseKey,
       Authorization: `Bearer ${supabaseKey}`,
       "Content-Type": "application/json",
-      Prefer: "count=exact",
+      Prefer: "count=estimated",
     },
   });
 

@@ -44,7 +44,7 @@ const config: ProxyConfig = {
     "published_at",
   ],
   defaultSelect:
-    "id,title,summary,content,url,image_url,published_at,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
+    "id,title,summary,url,image_url,published_at,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
 };
 
 export async function handler(req: Request): Promise<Response> {

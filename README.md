@@ -67,6 +67,8 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/002_add_media_support.sql` - Podcast/video support
    - `supabase/migrations/003_add_podcast_video_sources.sql` - Curated sources
    - `supabase/migrations/004_update_articles_with_source_view.sql` - Expose media fields in API
+   - `supabase/migrations/005_fix_security_issues.sql` - Harden RLS, view, and function security
+   - `supabase/migrations/006_add_composite_indexes.sql` - Composite indexes for query performance
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -157,7 +159,9 @@ pulse-backend/
 │   │   ├── 001_initial_schema.sql     # Core database schema
 │   │   ├── 002_add_media_support.sql  # Podcast/video columns
 │   │   ├── 003_add_podcast_video_sources.sql  # Curated sources
-│   │   └── 004_update_articles_with_source_view.sql  # Expose media in API
+│   │   ├── 004_update_articles_with_source_view.sql  # Expose media in API
+│   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
+│   │   └── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)

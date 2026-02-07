@@ -90,7 +90,9 @@ pulse-backend/
 │   │   ├── 001_initial_schema.sql     # Core database schema
 │   │   ├── 002_add_media_support.sql  # Podcast/video media fields
 │   │   ├── 003_add_podcast_video_sources.sql  # Curated sources
-│   │   └── 004_update_articles_with_source_view.sql  # Expose media fields in API
+│   │   ├── 004_update_articles_with_source_view.sql  # Expose media fields in API
+│   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
+│   │   └── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
