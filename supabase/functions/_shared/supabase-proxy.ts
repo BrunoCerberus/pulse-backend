@@ -86,43 +86,6 @@ export function buildProxyUrl(
 }
 
 /**
- * Proxies a request to Supabase without exact count header.
- *
- * @deprecated Use fetchFromSupabase instead for pagination support
- * @param req - The incoming HTTP request
- * @param config - Proxy configuration
- * @returns Raw Response-like object (not a proper Response)
- */
-export async function proxyToSupabase(
-  req: Request,
-  config: ProxyConfig
-): Promise<Response> {
-  const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY");
-  if (!supabaseKey) {
-    throw new Error("SUPABASE_ANON_KEY not configured");
-  }
-
-  const targetUrl = buildProxyUrl(req, config);
-
-  const response = await fetch(targetUrl, {
-    method: "GET",
-    headers: {
-      apikey: supabaseKey,
-      Authorization: `Bearer ${supabaseKey}`,
-      "Content-Type": "application/json",
-    },
-  });
-
-  const data = await response.text();
-
-  return {
-    data,
-    status: response.status,
-    contentRange: response.headers.get("content-range"),
-  } as unknown as Response;
-}
-
-/**
  * Fetches data from Supabase with exact count for pagination support.
  *
  * Adds `Prefer: count=exact` header to get total count in Content-Range

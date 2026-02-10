@@ -19,14 +19,7 @@ type OGImageExtractor struct {
 
 // NewOGImageExtractor creates a new extractor with a configured HTTP client
 func NewOGImageExtractor() *OGImageExtractor {
-	client := httputil.NewClient(10 * time.Second)
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
-	return &OGImageExtractor{client: client}
+	return &OGImageExtractor{client: httputil.NewClientWithRedirectLimit(10*time.Second, 3)}
 }
 
 // ogImagePatterns are regex patterns to extract og:image from HTML

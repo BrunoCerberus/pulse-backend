@@ -31,3 +31,18 @@ func NewClient(timeout time.Duration) *http.Client {
 		Transport: SharedTransport,
 	}
 }
+
+// NewClientWithRedirectLimit creates an http.Client using the shared transport
+// with the given timeout and a maximum number of redirects before stopping.
+func NewClientWithRedirectLimit(timeout time.Duration, maxRedirects int) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: SharedTransport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+}

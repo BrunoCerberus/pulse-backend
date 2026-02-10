@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -58,8 +59,7 @@ func (c *Client) GetActiveSources() ([]models.Source, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get sources: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("failed to get sources: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	var sources []models.Source
@@ -105,16 +105,15 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 			(article.ThumbnailURL == nil || *article.ImageURL != *article.ThumbnailURL)
 
 		if hasOGImage {
-			fmt.Printf("[DB] Updating image_url for existing article: %s\n", article.URL)
+			log.Printf("[DB] Updating image_url for existing article: %s", article.URL)
 			if err := c.UpdateArticleImage(article.URLHash, *article.ImageURL); err != nil {
-				fmt.Printf("[DB] Failed to update image: %v\n", err)
+				log.Printf("[DB] Failed to update image: %v", err)
 			}
 		}
 		return false, nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	return false, fmt.Errorf("failed to insert article: %s - %s", resp.Status, string(body))
+	return false, fmt.Errorf("failed to insert article: %s - %s", resp.Status, readErrorBody(resp))
 }
 
 // UpdateArticleImage updates just the image_url for an existing article
@@ -143,8 +142,7 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update article image: %s - %s", resp.Status, string(respBody))
+		return fmt.Errorf("failed to update article image: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil
@@ -156,7 +154,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 		ok, insertErr := c.InsertArticle(article)
 		if insertErr != nil {
 			// Log error but continue with other articles
-			fmt.Printf("Error inserting article %s: %v\n", article.URL, insertErr)
+			log.Printf("[DB] Error inserting article %s: %v", article.URL, insertErr)
 			continue
 		}
 		if ok {
@@ -195,8 +193,7 @@ func (c *Client) UpdateSourceLastFetched(sourceID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update source: %s - %s", resp.Status, string(respBody))
+		return fmt.Errorf("failed to update source: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil
@@ -231,8 +228,7 @@ func (c *Client) CreateFetchLog() (*models.FetchLog, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to create fetch log: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("failed to create fetch log: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	var logs []models.FetchLog
@@ -272,8 +268,7 @@ func (c *Client) UpdateFetchLog(log *models.FetchLog) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update fetch log: %s - %s", resp.Status, string(body))
+		return fmt.Errorf("failed to update fetch log: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil
@@ -303,8 +298,7 @@ func (c *Client) CleanupOldArticles(daysToKeep int) (int, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("failed to cleanup articles: %s - %s", resp.Status, string(respBody))
+		return 0, fmt.Errorf("failed to cleanup articles: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	var count int
@@ -320,6 +314,13 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("apikey", c.apiKey)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+}
+
+// readErrorBody reads and returns the response body as a string for error reporting.
+// It silently handles read errors since this is only used in error paths.
+func readErrorBody(resp *http.Response) string {
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
 }
 
 // ArticleForBackfill represents minimal article data needed for og:image backfill.
@@ -362,8 +363,7 @@ func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, err
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	var articles []ArticleForBackfill
@@ -392,8 +392,7 @@ func (c *Client) GetArticlesNeedingContent(limit int) ([]ArticleForContentBackfi
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	var articles []ArticleForContentBackfill
@@ -430,8 +429,7 @@ func (c *Client) UpdateArticleContent(urlHash string, content string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to update article content: %s - %s", resp.Status, string(respBody))
+		return fmt.Errorf("failed to update article content: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil

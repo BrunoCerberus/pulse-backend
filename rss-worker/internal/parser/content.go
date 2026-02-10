@@ -20,14 +20,7 @@ type ContentExtractor struct {
 
 // NewContentExtractor creates a new extractor with a configured HTTP client
 func NewContentExtractor() *ContentExtractor {
-	client := httputil.NewClient(15 * time.Second)
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
-	return &ContentExtractor{client: client}
+	return &ContentExtractor{client: httputil.NewClientWithRedirectLimit(15*time.Second, 3)}
 }
 
 // ExtractedContent holds the extracted article data from go-readability.
@@ -74,6 +67,7 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	// Use go-readability to extract the article content
 	article, err := readability.FromReader(limitedBody, parsedURL)
 	if err != nil {
+		io.Copy(io.Discard, resp.Body) // drain remaining body to enable connection reuse
 		log.Printf("[CONTENT] Readability failed for %s: %v", articleURL, err)
 		return nil, err
 	}

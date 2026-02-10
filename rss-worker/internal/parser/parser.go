@@ -197,20 +197,12 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		return nil
 	}
 
-	// Parse published date
-	publishedAt := time.Now()
-	if item.PublishedParsed != nil {
-		publishedAt = *item.PublishedParsed
-	} else if item.UpdatedParsed != nil {
-		publishedAt = *item.UpdatedParsed
-	}
-
 	article := models.NewArticle(
 		strings.TrimSpace(item.Title),
 		strings.TrimSpace(item.Link),
 		source.ID,
 		source.CategoryID,
-		publishedAt,
+		parsePublishedDate(item),
 	)
 
 	// Summary/Description (truncated to first paragraph)
@@ -226,12 +218,7 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		article.Content = &content
 	}
 
-	// Author
-	if item.Author != nil && item.Author.Name != "" {
-		article.Author = &item.Author.Name
-	} else if len(item.Authors) > 0 && item.Authors[0].Name != "" {
-		article.Author = &item.Authors[0].Name
-	}
+	article.Author = extractAuthor(item)
 
 	// Image: Use RSS image as thumbnail, og:image will be fetched later for full-size
 	thumbnailURL := extractImageURL(item)
@@ -241,18 +228,47 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		article.ImageURL = &thumbnailURL
 	}
 
-	// Media: Extract audio/video enclosure for podcasts and videos
-	if media := extractMediaEnclosure(item); media != nil {
-		mediaType := determineMediaType(media.MIMEType)
-		article.MediaType = &mediaType
-		article.MediaURL = &media.URL
-		article.MediaMIMEType = &media.MIMEType
-		if media.Duration > 0 {
-			article.MediaDuration = &media.Duration
-		}
-	}
+	extractMediaInfo(item, article)
 
 	return article
+}
+
+// parsePublishedDate extracts the publication date from a feed item,
+// falling back to UpdatedParsed then time.Now().
+func parsePublishedDate(item *gofeed.Item) time.Time {
+	if item.PublishedParsed != nil {
+		return *item.PublishedParsed
+	}
+	if item.UpdatedParsed != nil {
+		return *item.UpdatedParsed
+	}
+	return time.Now()
+}
+
+// extractAuthor returns the author name from a feed item, or nil if unavailable.
+func extractAuthor(item *gofeed.Item) *string {
+	if item.Author != nil && item.Author.Name != "" {
+		return &item.Author.Name
+	}
+	if len(item.Authors) > 0 && item.Authors[0].Name != "" {
+		return &item.Authors[0].Name
+	}
+	return nil
+}
+
+// extractMediaInfo populates the article's media fields from RSS enclosures.
+func extractMediaInfo(item *gofeed.Item, article *models.Article) {
+	media := extractMediaEnclosure(item)
+	if media == nil {
+		return
+	}
+	mediaType := determineMediaType(media.MIMEType)
+	article.MediaType = &mediaType
+	article.MediaURL = &media.URL
+	article.MediaMIMEType = &media.MIMEType
+	if media.Duration > 0 {
+		article.MediaDuration = &media.Duration
+	}
 }
 
 // extractImageURL tries to find an image URL from the feed item
