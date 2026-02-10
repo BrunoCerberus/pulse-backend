@@ -123,7 +123,7 @@ pulse-backend/
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
 | Database | `internal/database/supabase.go` | Supabase REST API client with deduplication |
-| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling (used by all HTTP clients) |
+| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient(timeout)` and `NewClientWithRedirectLimit(timeout, maxRedirects)` |
 
 ### Edge Functions (`supabase/functions/`)
 
@@ -142,8 +142,10 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 |---------|----------|-------------|
 | `internal/models` | 100% | HashURL, NewArticle |
 | `internal/config` | 100% | Env var loading and validation |
-| `internal/parser` | 43% | HTML cleaning, image extraction, OG/content fetching |
-| `internal/database` | 69% | Supabase client methods with httptest mocking |
+| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
+| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
+| `internal/database` | 77% | Supabase client methods with httptest mocking |
+| `main` | 18% | processSource, processOGImageBackfill, processContentBackfill |
 | `_shared/*.ts` | — | Cache, CORS, ETag utilities |
 
 Run tests before committing:
@@ -181,7 +183,7 @@ View:
 - Go code follows standard Go conventions (`go fmt`, `go vet`)
 - Use table-driven tests for comprehensive coverage
 - HTTP calls should be mocked with `httptest.Server` in tests
-- New HTTP clients must use `httputil.NewClient(timeout)` to share the connection pool
+- New HTTP clients must use `httputil.NewClient(timeout)` or `httputil.NewClientWithRedirectLimit(timeout, maxRedirects)` to share the connection pool
 - Edge Functions use TypeScript with Deno
 - All new code should include tests
 

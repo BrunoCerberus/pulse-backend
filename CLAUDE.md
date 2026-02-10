@@ -127,7 +127,7 @@ pulse-backend/
 - Fetch logging to `fetch_logs` table
 
 ### HTTP Utilities (`internal/httputil/`)
-- `transport.go`: Shared `http.Transport` with tuned connection pooling (`MaxIdleConnsPerHost: 10`, HTTP/2 enabled). All HTTP clients (og:image extractor, content extractor, database client) use this shared transport via `httputil.NewClient(timeout)` to enable connection reuse across workers.
+- `transport.go`: Shared `http.Transport` with tuned connection pooling (`MaxIdleConnsPerHost: 10`, HTTP/2 enabled). All HTTP clients use this shared transport via `httputil.NewClient(timeout)` or `httputil.NewClientWithRedirectLimit(timeout, maxRedirects)` to enable connection reuse across workers.
 
 ### Parser Module (`internal/parser/`)
 - `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers). Also extracts media enclosures (audio/video) for podcasts and videos.
@@ -211,8 +211,10 @@ Unit tests cover Go packages and Deno Edge Functions:
 |---------|----------|-----------|
 | `internal/models` | 100% | HashURL, NewArticle |
 | `internal/config` | 100% | Load with env var validation |
-| `internal/parser` | 43% | cleanHTML, extractImageURL, OG image, content extraction |
-| `internal/database` | 69% | All Supabase client methods with httptest mocking |
+| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
+| `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
+| `internal/database` | 77% | All Supabase client methods with httptest mocking |
+| `main` | 18% | processSource, processOGImageBackfill, processContentBackfill |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:
