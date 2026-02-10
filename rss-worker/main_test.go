@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,4 +428,315 @@ func TestProcessSource_InsertError(t *testing.T) {
 	if result.ArticlesInserted != 0 {
 		t.Errorf("ArticlesInserted = %d, want 0", result.ArticlesInserted)
 	}
+}
+
+// --- mockStore for testing runFetch, runCleanup, and backfill wrappers ---
+
+type mockStore struct {
+	sources         []models.Source
+	sourcesErr      error
+	insertResult    int
+	insertSkipped   int
+	insertErr       error
+	fetchLog        *models.FetchLog
+	fetchLogErr     error
+	updateLogErr    error
+	updateLastErr   error
+	cleanupResult   int
+	cleanupErr      error
+	ogArticles      []database.ArticleForBackfill
+	ogArticlesErr   error
+	contentArticles []database.ArticleForContentBackfill
+	contentErr      error
+	updateImageErr  error
+	updateContentErr error
+}
+
+func (m *mockStore) GetActiveSources() ([]models.Source, error) {
+	return m.sources, m.sourcesErr
+}
+
+func (m *mockStore) InsertArticles(articles []*models.Article) (int, int, error) {
+	return m.insertResult, m.insertSkipped, m.insertErr
+}
+
+func (m *mockStore) UpdateSourceLastFetched(sourceID string) error {
+	return m.updateLastErr
+}
+
+func (m *mockStore) CreateFetchLog() (*models.FetchLog, error) {
+	return m.fetchLog, m.fetchLogErr
+}
+
+func (m *mockStore) UpdateFetchLog(log *models.FetchLog) error {
+	return m.updateLogErr
+}
+
+func (m *mockStore) CleanupOldArticles(daysToKeep int) (int, error) {
+	return m.cleanupResult, m.cleanupErr
+}
+
+func (m *mockStore) GetArticlesNeedingOGImage(limit int) ([]database.ArticleForBackfill, error) {
+	return m.ogArticles, m.ogArticlesErr
+}
+
+func (m *mockStore) UpdateArticleImage(urlHash string, imageURL string) error {
+	return m.updateImageErr
+}
+
+func (m *mockStore) GetArticlesNeedingContent(limit int) ([]database.ArticleForContentBackfill, error) {
+	return m.contentArticles, m.contentErr
+}
+
+func (m *mockStore) UpdateArticleContent(urlHash string, content string) error {
+	return m.updateContentErr
+}
+
+// --- runCleanup tests ---
+
+func TestRunCleanup_Success(t *testing.T) {
+	db := &mockStore{cleanupResult: 42}
+	// runCleanup calls log.Fatalf on error, so we only test the success path
+	runCleanup(db, 30)
+	// If we reach here without panicking, the test passes
+}
+
+// --- runFetch tests ---
+
+func TestRunFetch_Success(t *testing.T) {
+	var serverURL string
+
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/feed":
+			rss := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <item>
+      <title>Test Article</title>
+      <link>%s/article/1</link>
+    </item>
+  </channel>
+</rss>`, serverURL)
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(rss))
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			w.Write([]byte(`<html><head></head><body></body></html>`))
+		}
+	}))
+	defer webServer.Close()
+	serverURL = webServer.URL
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "Test Source", FeedURL: webServer.URL + "/feed", IsActive: true},
+		},
+		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		insertResult: 1,
+	}
+
+	rssParser := parser.New()
+	err := runFetch(db, rssParser, 5)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+func TestRunFetch_GetSourcesError(t *testing.T) {
+	db := &mockStore{
+		sourcesErr: errors.New("db connection failed"),
+		fetchLog:   &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+	}
+
+	rssParser := parser.New()
+	err := runFetch(db, rssParser, 5)
+	if err == nil {
+		t.Fatal("expected error from runFetch, got nil")
+	}
+	if !errors.Is(err, db.sourcesErr) {
+		t.Errorf("expected wrapped error containing %q, got %q", db.sourcesErr, err)
+	}
+}
+
+func TestRunFetch_CreateFetchLogError(t *testing.T) {
+	db := &mockStore{
+		sources:    []models.Source{},
+		fetchLogErr: errors.New("log creation failed"),
+	}
+
+	rssParser := parser.New()
+	// Should continue despite fetch log creation failure
+	err := runFetch(db, rssParser, 5)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+func TestRunFetch_EmptySources(t *testing.T) {
+	db := &mockStore{
+		sources:  []models.Source{},
+		fetchLog: &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+	}
+
+	rssParser := parser.New()
+	err := runFetch(db, rssParser, 5)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+func TestRunFetch_MultipleSources(t *testing.T) {
+	var serverURL string
+
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rss := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Feed</title>
+    <item>
+      <title>Article</title>
+      <link>%s/article/%s</link>
+    </item>
+  </channel>
+</rss>`, serverURL, r.URL.Path)
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(rss))
+	}))
+	defer webServer.Close()
+	serverURL = webServer.URL
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "Source 1", FeedURL: webServer.URL + "/feed1", IsActive: true},
+			{ID: "src-2", Name: "Source 2", FeedURL: webServer.URL + "/feed2", IsActive: true},
+		},
+		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		insertResult: 1,
+	}
+
+	rssParser := parser.New()
+	// Use maxConcurrent=1 to avoid triggering gofeed's lazy-init race
+	// (gofeed.Parser.httpClient() is not goroutine-safe on first use)
+	err := runFetch(db, rssParser, 1)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+func TestRunFetch_SourceParseError(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not valid xml"))
+	}))
+	defer webServer.Close()
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "Bad Source", FeedURL: webServer.URL, IsActive: true},
+		},
+		fetchLog: &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+	}
+
+	rssParser := parser.New()
+	// runFetch should succeed even if individual sources fail
+	err := runFetch(db, rssParser, 5)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+func TestRunFetch_UpdateFetchLogError(t *testing.T) {
+	db := &mockStore{
+		sources:      []models.Source{},
+		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		updateLogErr: errors.New("log update failed"),
+	}
+
+	rssParser := parser.New()
+	// Should complete without error despite log update failure
+	err := runFetch(db, rssParser, 5)
+	if err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+// --- runBackfill tests ---
+
+func TestRunBackfill_Success(t *testing.T) {
+	var processed atomic.Int32
+	cfg := backfillConfig[string]{
+		name:       "test",
+		timeout:    5 * time.Second,
+		limit:      10,
+		maxWorkers: 2,
+		fetch: func(limit int) ([]string, error) {
+			return []string{"a", "b", "c"}, nil
+		},
+		process: func(ctx context.Context, item string) bool {
+			processed.Add(1)
+			return item != "b" // "b" returns false (skipped)
+		},
+	}
+
+	runBackfill(cfg)
+
+	if got := processed.Load(); got != 3 {
+		t.Errorf("processed = %d, want 3", got)
+	}
+}
+
+func TestRunBackfill_EmptyItems(t *testing.T) {
+	cfg := backfillConfig[int]{
+		name:       "empty",
+		timeout:    5 * time.Second,
+		limit:      10,
+		maxWorkers: 2,
+		fetch: func(limit int) ([]int, error) {
+			return []int{}, nil
+		},
+		process: func(ctx context.Context, item int) bool {
+			t.Error("process should not be called for empty items")
+			return false
+		},
+	}
+
+	runBackfill(cfg)
+}
+
+func TestRunBackfill_MoreWorkersThanItems(t *testing.T) {
+	cfg := backfillConfig[string]{
+		name:       "few-items",
+		timeout:    5 * time.Second,
+		limit:      100,
+		maxWorkers: 10,
+		fetch: func(limit int) ([]string, error) {
+			return []string{"only-one"}, nil
+		},
+		process: func(ctx context.Context, item string) bool {
+			return true
+		},
+	}
+
+	runBackfill(cfg)
+}
+
+// --- runOGImageBackfill tests ---
+
+func TestRunOGImageBackfill_EmptyList(t *testing.T) {
+	db := &mockStore{
+		ogArticles: []database.ArticleForBackfill{},
+	}
+	// Should complete without error when no articles need backfill
+	runOGImageBackfill(db)
+}
+
+// --- runContentBackfill tests ---
+
+func TestRunContentBackfill_EmptyList(t *testing.T) {
+	db := &mockStore{
+		contentArticles: []database.ArticleForContentBackfill{},
+	}
+	// Should complete without error when no articles need backfill
+	runContentBackfill(db)
 }
