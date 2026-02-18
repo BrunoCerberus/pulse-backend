@@ -69,6 +69,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/004_update_articles_with_source_view.sql` - Expose media fields in API
    - `supabase/migrations/005_fix_security_issues.sql` - Harden RLS, view, and function security
    - `supabase/migrations/006_add_composite_indexes.sql` - Composite indexes for query performance
+   - `supabase/migrations/007_add_language_support.sql` - Language column on sources & articles
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -161,7 +162,8 @@ pulse-backend/
 │   │   ├── 003_add_podcast_video_sources.sql  # Curated sources
 │   │   ├── 004_update_articles_with_source_view.sql  # Expose media in API
 │   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
-│   │   └── 006_add_composite_indexes.sql  # Composite indexes for performance
+│   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
+│   │   └── 007_add_language_support.sql  # Language column on sources & articles
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -228,6 +230,7 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
    - `slug`: Unique identifier (lowercase, hyphens)
    - `feed_url`: RSS feed URL
    - `category_id`: Select from categories table
+   - `language`: ISO 639-1 code (e.g., `en`, `pt`, `es`) — defaults to `en`
    - `is_active`: true
 
 ## API Endpoints
@@ -260,6 +263,10 @@ GET /api-articles?category_slug=eq.videos&order=published_at.desc&limit=20
 # Filter by media type
 GET /api-articles?media_type=eq.podcast&limit=20
 GET /api-articles?media_type=eq.video&limit=20
+
+# Filter by language
+GET /api-articles?language=eq.en&order=published_at.desc&limit=20
+GET /api-sources?language=eq.pt
 
 # Search articles (1min private cache)
 GET /api-search?q=climate&limit=20
