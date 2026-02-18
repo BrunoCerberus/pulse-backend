@@ -28,7 +28,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
 │   │  articles   │    │   sources   │    │       Edge Functions        │    │
-│   │  (30 days)  │    │ (48 feeds)  │    │    (Caching Proxy Layer)    │    │
+│   │  (30 days)  │    │ (68 feeds)  │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -70,10 +70,11 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/005_fix_security_issues.sql` - Harden RLS, view, and function security
    - `supabase/migrations/006_add_composite_indexes.sql` - Composite indexes for query performance
    - `supabase/migrations/007_add_language_support.sql` - Language column on sources & articles
+   - `supabase/migrations/008_add_pt_es_sources.sql` - Portuguese & Spanish RSS sources
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
-- `sources` table with 48 feeds (articles, podcasts, YouTube channels)
+- `sources` table with 68 feeds (articles, podcasts, YouTube channels)
 - `articles` table with full-text search and media fields
 - `fetch_logs` table for monitoring
 - Row Level Security policies
@@ -163,7 +164,8 @@ pulse-backend/
 │   │   ├── 004_update_articles_with_source_view.sql  # Expose media in API
 │   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
 │   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
-│   │   └── 007_add_language_support.sql  # Language column on sources & articles
+│   │   ├── 007_add_language_support.sql  # Language column on sources & articles
+│   │   └── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -220,6 +222,25 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 | JomBoy Media, Secret Base | Sports |
 | CNBC, Bloomberg | Business |
 | First We Feast, Tonight Show, Hot Ones | Entertainment |
+
+### Portuguese Sources (10 sources)
+| Source | Category |
+|--------|----------|
+| Folha de S.Paulo, G1 (Globo), BBC Brasil | World |
+| Tecnoblog, Olhar Digital, Canaltech | Technology |
+| InfoMoney, Exame | Business |
+| ge (Globo Esporte) | Sports |
+| G1 Ciencia e Saude | Science |
+
+### Spanish Sources (10 sources)
+| Source | Category |
+|--------|----------|
+| El Pais, BBC Mundo, El Mundo | World |
+| Xataka, Hipertextual | Technology |
+| Expansion | Business |
+| Marca, AS | Sports |
+| Muy Interesante | Science |
+| SensaCine | Entertainment |
 
 ### Adding New Sources
 
