@@ -585,6 +585,7 @@ func TestItemToArticle(t *testing.T) {
 		ID:         "src-1",
 		Name:       "Test Source",
 		CategoryID: strPtr("cat-1"),
+		Language:   "en",
 	}
 
 	now := time.Now()
@@ -850,6 +851,29 @@ func TestItemToArticle(t *testing.T) {
 	}
 }
 
+func TestItemToArticle_LanguagePropagation(t *testing.T) {
+	p := New()
+	source := models.Source{
+		ID:         "src-pt",
+		Name:       "Folha de S.Paulo",
+		CategoryID: strPtr("cat-1"),
+		Language:   "pt",
+	}
+
+	item := &gofeed.Item{
+		Title: "Notícia do Brasil",
+		Link:  "https://example.com/noticia",
+	}
+
+	article := p.itemToArticle(item, source)
+	if article == nil {
+		t.Fatal("expected article, got nil")
+	}
+	if article.Language != "pt" {
+		t.Errorf("Language = %q, want %q", article.Language, "pt")
+	}
+}
+
 func TestParseFeed_BasicRSS(t *testing.T) {
 	// We need a server whose URL we know before building the RSS XML
 	var serverURL string
@@ -884,9 +908,10 @@ func TestParseFeed_BasicRSS(t *testing.T) {
 
 	p := New()
 	source := models.Source{
-		ID:      "src-1",
-		Name:    "Test Source",
-		FeedURL: serverURL + "/feed",
+		ID:       "src-1",
+		Name:     "Test Source",
+		FeedURL:  serverURL + "/feed",
+		Language: "en",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -924,9 +949,10 @@ func TestParseFeed_EmptyFeed(t *testing.T) {
 
 	p := New()
 	source := models.Source{
-		ID:      "src-1",
-		Name:    "Empty Source",
-		FeedURL: server.URL,
+		ID:       "src-1",
+		Name:     "Empty Source",
+		FeedURL:  server.URL,
+		Language: "en",
 	}
 
 	ctx := context.Background()
@@ -948,9 +974,10 @@ func TestParseFeed_InvalidFeed(t *testing.T) {
 
 	p := New()
 	source := models.Source{
-		ID:      "src-1",
-		Name:    "Bad Source",
-		FeedURL: server.URL,
+		ID:       "src-1",
+		Name:     "Bad Source",
+		FeedURL:  server.URL,
+		Language: "en",
 	}
 
 	ctx := context.Background()

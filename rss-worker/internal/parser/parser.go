@@ -202,6 +202,7 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		strings.TrimSpace(item.Link),
 		source.ID,
 		source.CategoryID,
+		source.Language,
 		parsePublishedDate(item),
 	)
 

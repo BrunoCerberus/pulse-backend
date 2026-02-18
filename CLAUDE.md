@@ -98,7 +98,8 @@ pulse-backend/
 │   │   ├── 003_add_podcast_video_sources.sql  # 34 curated podcast/video sources
 │   │   ├── 004_update_articles_with_source_view.sql  # Expose media fields in API view
 │   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
-│   │   └── 006_add_composite_indexes.sql  # Composite indexes for performance
+│   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
+│   │   └── 007_add_language_support.sql   # Language column on sources & articles
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -141,7 +142,9 @@ pulse-backend/
 - Key methods: `GetActiveSources()`, `InsertArticles()`, `CleanupOldArticles()`, backfill queries
 
 ### Data Models (`internal/models/models.go`)
+- `Source` and `Article` structs with `Language` field (ISO 639-1, e.g. `"en"`, `"pt"`)
 - `Article` struct with media fields: `MediaType`, `MediaURL`, `MediaDuration`, `MediaMIMEType`
+- `NewArticle()` accepts language parameter — articles inherit language from their source
 - `HashURL()` function for SHA256-based URL deduplication
 - `FetchResult` for concurrent processing results
 
@@ -181,6 +184,10 @@ curl -i http://localhost:54321/functions/v1/api-articles?limit=5
 
 Tables: `categories` (10, including Podcasts & Videos), `sources` (48 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
 
+Language support:
+- `sources.language`: ISO 639-1 code (VARCHAR(5), default `'en'`), e.g. `'en'`, `'pt'`, `'es'`
+- `articles.language`: Inherited from source at insert time, indexed for filtering
+
 Article media fields (for podcasts/videos):
 - `media_type`: 'podcast' or 'video'
 - `media_url`: Direct URL to audio/video file
@@ -191,7 +198,7 @@ Key functions:
 - `cleanup_old_articles(days_to_keep)` - Called by cleanup command
 - `search_articles(search_query, result_limit)` - Full-text search
 
-View: `articles_with_source` - Joins articles with source, category, and media info
+View: `articles_with_source` - Joins articles with source, category, media info, and language
 
 ## Configuration
 

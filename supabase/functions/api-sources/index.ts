@@ -32,8 +32,8 @@ import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.t
 
 const config: ProxyConfig = {
   table: "sources",
-  allowedParams: ["select", "id", "slug", "category_id", "is_active", "order"],
-  defaultSelect: "id,name,slug,website_url,logo_url,category_id,is_active",
+  allowedParams: ["select", "id", "slug", "category_id", "language", "is_active", "order"],
+  defaultSelect: "id,name,slug,website_url,logo_url,category_id,language,is_active",
 };
 
 export async function handler(req: Request): Promise<Response> {

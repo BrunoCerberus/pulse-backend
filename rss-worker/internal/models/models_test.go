@@ -87,6 +87,7 @@ func TestNewArticle(t *testing.T) {
 		"https://example.com/test",
 		"source-123",
 		&categoryID,
+		"en",
 		publishedAt,
 	)
 
@@ -110,6 +111,10 @@ func TestNewArticle(t *testing.T) {
 		t.Errorf("CategoryID = %v, want %q", article.CategoryID, categoryID)
 	}
 
+	if article.Language != "en" {
+		t.Errorf("Language = %q, want %q", article.Language, "en")
+	}
+
 	if !article.PublishedAt.Equal(publishedAt) {
 		t.Errorf("PublishedAt = %v, want %v", article.PublishedAt, publishedAt)
 	}
@@ -129,6 +134,7 @@ func TestNewArticle_NilCategoryID(t *testing.T) {
 		"https://example.com/test",
 		"source-456",
 		nil,
+		"pt",
 		publishedAt,
 	)
 
@@ -139,6 +145,10 @@ func TestNewArticle_NilCategoryID(t *testing.T) {
 	if article.CategoryID != nil {
 		t.Errorf("CategoryID = %v, want nil", article.CategoryID)
 	}
+
+	if article.Language != "pt" {
+		t.Errorf("Language = %q, want %q", article.Language, "pt")
+	}
 }
 
 func TestNewArticle_URLHashNotEmpty(t *testing.T) {
@@ -147,6 +157,7 @@ func TestNewArticle_URLHashNotEmpty(t *testing.T) {
 		"https://example.com/any-url",
 		"source-789",
 		nil,
+		"en",
 		time.Now(),
 	)
 
@@ -161,6 +172,7 @@ func TestNewArticle_EmptyFields(t *testing.T) {
 		"",
 		"",
 		nil,
+		"",
 		time.Time{},
 	)
 

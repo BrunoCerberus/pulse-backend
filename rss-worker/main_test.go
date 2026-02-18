@@ -323,6 +323,7 @@ func TestProcessSource_Success(t *testing.T) {
 		ID:       "src-1",
 		Name:     "Test Source",
 		FeedURL:  webServer.URL + "/feed",
+		Language: "en",
 		IsActive: true,
 	}
 
@@ -360,6 +361,7 @@ func TestProcessSource_ParseError(t *testing.T) {
 		ID:       "src-1",
 		Name:     "Bad Source",
 		FeedURL:  webServer.URL,
+		Language: "en",
 		IsActive: true,
 	}
 
@@ -417,6 +419,7 @@ func TestProcessSource_InsertError(t *testing.T) {
 		ID:       "src-1",
 		Name:     "Error Source",
 		FeedURL:  webServer.URL + "/feed",
+		Language: "en",
 		IsActive: true,
 	}
 
@@ -531,7 +534,7 @@ func TestRunFetch_Success(t *testing.T) {
 
 	db := &mockStore{
 		sources: []models.Source{
-			{ID: "src-1", Name: "Test Source", FeedURL: webServer.URL + "/feed", IsActive: true},
+			{ID: "src-1", Name: "Test Source", FeedURL: webServer.URL + "/feed", Language: "en", IsActive: true},
 		},
 		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
 		insertResult: 1,
@@ -609,8 +612,8 @@ func TestRunFetch_MultipleSources(t *testing.T) {
 
 	db := &mockStore{
 		sources: []models.Source{
-			{ID: "src-1", Name: "Source 1", FeedURL: webServer.URL + "/feed1", IsActive: true},
-			{ID: "src-2", Name: "Source 2", FeedURL: webServer.URL + "/feed2", IsActive: true},
+			{ID: "src-1", Name: "Source 1", FeedURL: webServer.URL + "/feed1", Language: "en", IsActive: true},
+			{ID: "src-2", Name: "Source 2", FeedURL: webServer.URL + "/feed2", Language: "en", IsActive: true},
 		},
 		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
 		insertResult: 1,
@@ -633,7 +636,7 @@ func TestRunFetch_SourceParseError(t *testing.T) {
 
 	db := &mockStore{
 		sources: []models.Source{
-			{ID: "src-1", Name: "Bad Source", FeedURL: webServer.URL, IsActive: true},
+			{ID: "src-1", Name: "Bad Source", FeedURL: webServer.URL, Language: "en", IsActive: true},
 		},
 		fetchLog: &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
 	}

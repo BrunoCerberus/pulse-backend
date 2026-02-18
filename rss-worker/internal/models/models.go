@@ -23,6 +23,7 @@ type Source struct {
 	WebsiteURL  *string    `json:"website_url"`
 	LogoURL     *string    `json:"logo_url"`
 	CategoryID  *string    `json:"category_id"`
+	Language    string     `json:"language"`
 	IsActive    bool       `json:"is_active"`
 	LastFetched *time.Time `json:"last_fetched_at"`
 }
@@ -43,6 +44,7 @@ type Article struct {
 	Author        *string   `json:"author"`                        // Article author name
 	SourceID      string    `json:"source_id"`                     // FK to sources table
 	CategoryID    *string   `json:"category_id"`                   // FK to categories table (inherited from source)
+	Language      string    `json:"language"`                      // ISO 639-1 language code (inherited from source)
 	PublishedAt   time.Time `json:"published_at"`                  // Original publication timestamp
 	MediaType     *string   `json:"media_type,omitempty"`          // "podcast" or "video", nil for articles
 	MediaURL      *string   `json:"media_url,omitempty"`           // Direct URL to audio/video file
@@ -51,13 +53,14 @@ type Article struct {
 }
 
 // NewArticle creates a new Article with computed URL hash
-func NewArticle(title, url, sourceID string, categoryID *string, publishedAt time.Time) *Article {
+func NewArticle(title, url, sourceID string, categoryID *string, language string, publishedAt time.Time) *Article {
 	return &Article{
 		Title:       title,
 		URL:         url,
 		URLHash:     HashURL(url),
 		SourceID:    sourceID,
 		CategoryID:  categoryID,
+		Language:    language,
 		PublishedAt: publishedAt,
 	}
 }
