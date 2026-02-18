@@ -250,7 +250,7 @@ Deno.test("fetchFromSupabase proxies non-200 status", async () => {
   }
 });
 
-Deno.test("fetchFromSupabase sends Prefer count=exact header", async () => {
+Deno.test("fetchFromSupabase sends Prefer count=estimated header", async () => {
   const originalUrl = Deno.env.get("SUPABASE_URL");
   const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
   const originalFetch = globalThis.fetch;
@@ -272,7 +272,7 @@ Deno.test("fetchFromSupabase sends Prefer count=exact header", async () => {
     const config = { table: "articles", allowedParams: [] };
     await fetchFromSupabase(req, config);
 
-    assertEquals(capturedHeaders?.get("Prefer"), "count=exact");
+    assertEquals(capturedHeaders?.get("Prefer"), "count=estimated");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
