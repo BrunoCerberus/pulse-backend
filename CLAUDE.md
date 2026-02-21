@@ -14,7 +14,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 2 hours)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (68 sources: articles, podcasts, videos)
+    ├─ Fetch RSS feeds (87 sources: articles, podcasts, videos)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
@@ -100,7 +100,8 @@ pulse-backend/
 │   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
 │   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   │   ├── 007_add_language_support.sql   # Language column on sources & articles
-│   │   └── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
+│   │   ├── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
+│   │   └── 009_add_more_pt_es_sources.sql  # More PT & ES sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -183,7 +184,7 @@ curl -i http://localhost:54321/functions/v1/api-articles?limit=5
 
 ## Database Schema
 
-Tables: `categories` (10, including Podcasts & Videos), `sources` (68 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
+Tables: `categories` (10, including Podcasts & Videos), `sources` (87 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
 
 Language support:
 - `sources.language`: ISO 639-1 code (VARCHAR(5), default `'en'`), e.g. `'en'`, `'pt'`, `'es'`

@@ -28,7 +28,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
 │   │  articles   │    │   sources   │    │       Edge Functions        │    │
-│   │  (30 days)  │    │ (68 feeds)  │    │    (Caching Proxy Layer)    │    │
+│   │  (30 days)  │    │ (87 feeds)  │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -74,7 +74,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
-- `sources` table with 68 feeds (articles, podcasts, YouTube channels)
+- `sources` table with 87 feeds (articles, podcasts, YouTube channels)
 - `articles` table with full-text search and media fields
 - `fetch_logs` table for monitoring
 - Row Level Security policies
@@ -165,7 +165,8 @@ pulse-backend/
 │   │   ├── 005_fix_security_issues.sql  # Harden RLS, view, function security
 │   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   │   ├── 007_add_language_support.sql  # Language column on sources & articles
-│   │   └── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
+│   │   ├── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
+│   │   └── 009_add_more_pt_es_sources.sql  # More PT & ES sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -223,24 +224,27 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 | CNBC, Bloomberg | Business |
 | First We Feast, Tonight Show, Hot Ones | Entertainment |
 
-### Portuguese Sources (10 sources)
+### Portuguese Sources (20 sources)
 | Source | Category |
 |--------|----------|
-| Folha de S.Paulo, G1 (Globo), BBC Brasil | World |
+| Folha de S.Paulo, G1 (Globo), BBC Brasil, UOL Noticias | World |
 | Tecnoblog, Olhar Digital, Canaltech | Technology |
-| InfoMoney, Exame | Business |
-| ge (Globo Esporte) | Sports |
-| G1 Ciencia e Saude | Science |
+| InfoMoney, Exame, Valor Economico | Business |
+| ge (Globo Esporte), Gazeta Esportiva, UOL Esporte | Sports |
+| G1 Ciencia e Saude, Revista Galileu, Superinteressante | Science |
+| Veja Saude, Metropoles Saude | Health |
+| CinePOP, PapelPop | Entertainment |
 
-### Spanish Sources (10 sources)
+### Spanish Sources (19 sources)
 | Source | Category |
 |--------|----------|
-| El Pais, BBC Mundo, El Mundo | World |
+| El Pais, BBC Mundo, El Mundo, Infobae | World |
 | Xataka, Hipertextual | Technology |
-| Expansion | Business |
-| Marca, AS | Sports |
-| Muy Interesante | Science |
-| SensaCine | Entertainment |
+| Expansion, Cinco Dias, El Economista | Business |
+| Marca, AS, Mundo Deportivo | Sports |
+| Muy Interesante, National Geographic Espana | Science |
+| 20 Minutos Salud | Health |
+| SensaCine, Espinof, 20 Minutos Cine | Entertainment |
 
 ### Adding New Sources
 
