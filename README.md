@@ -28,7 +28,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
 │   │  articles   │    │   sources   │    │       Edge Functions        │    │
-│   │  (30 days)  │    │ (87 feeds)  │    │    (Caching Proxy Layer)    │    │
+│   │  (30 days)  │    │ (133 feeds) │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -71,10 +71,12 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/006_add_composite_indexes.sql` - Composite indexes for query performance
    - `supabase/migrations/007_add_language_support.sql` - Language column on sources & articles
    - `supabase/migrations/008_add_pt_es_sources.sql` - Portuguese & Spanish RSS sources
+   - `supabase/migrations/009_add_more_pt_es_sources.sql` - More PT & ES sources
+   - `supabase/migrations/010_add_pt_es_podcasts_videos.sql` - PT & ES podcasts, videos, politics
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
-- `sources` table with 87 feeds (articles, podcasts, YouTube channels)
+- `sources` table with 133 feeds (articles, podcasts, YouTube channels)
 - `articles` table with full-text search and media fields
 - `fetch_logs` table for monitoring
 - Row Level Security policies
@@ -166,7 +168,8 @@ pulse-backend/
 │   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   │   ├── 007_add_language_support.sql  # Language column on sources & articles
 │   │   ├── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
-│   │   └── 009_add_more_pt_es_sources.sql  # More PT & ES sources
+│   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
+│   │   └── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -224,7 +227,7 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 | CNBC, Bloomberg | Business |
 | First We Feast, Tonight Show, Hot Ones | Entertainment |
 
-### Portuguese Sources (20 sources)
+### Portuguese Articles (20 sources)
 | Source | Category |
 |--------|----------|
 | Folha de S.Paulo, G1 (Globo), BBC Brasil, UOL Noticias | World |
@@ -235,7 +238,33 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 | Veja Saude, Metropoles Saude | Health |
 | CinePOP, PapelPop | Entertainment |
 
-### Spanish Sources (19 sources)
+### Portuguese Podcasts (10 sources)
+| Source | Topic |
+|--------|-------|
+| Braincast, Hipsters Ponto Tech, Tecnocast | Technology |
+| Cafe da Manha | News |
+| NerdCast, Flow Podcast | Entertainment |
+| Naruhodo, Dragoes de Garagem | Science |
+| PrimoCast | Business |
+| Xadrez Verbal | Politics |
+
+### Portuguese Videos (10 sources)
+| Source | Topic |
+|--------|-------|
+| TecMundo, Filipe Deschamps | Technology |
+| Manual do Mundo, Nerdologia | Science |
+| BBC News Brasil | News |
+| Desimpedidos | Sports |
+| Porta dos Fundos | Entertainment |
+| Me Poupe!, O Primo Rico | Business |
+| Drauzio Varella | Health |
+
+### Portuguese Politics (3 sources)
+| Source | Category |
+|--------|----------|
+| Poder360, Congresso em Foco, Folha de S.Paulo Poder | Politics |
+
+### Spanish Articles (19 sources)
 | Source | Category |
 |--------|----------|
 | El Pais, BBC Mundo, El Mundo, Infobae | World |
@@ -245,6 +274,32 @@ Pre-configured sources (edit in Supabase Dashboard → **sources** table):
 | Muy Interesante, National Geographic Espana | Science |
 | 20 Minutos Salud | Health |
 | SensaCine, Espinof, 20 Minutos Cine | Entertainment |
+
+### Spanish Podcasts (10 sources)
+| Source | Topic |
+|--------|-------|
+| Despeja la X | Technology |
+| Radio Ambulante | News |
+| Se Regalan Dudas, Nadie Sabe Nada, The Wild Project | Entertainment |
+| TED en Espanol | Science |
+| Entiende Tu Mente, Cristina Mitre | Health |
+| El Partidazo de COPE | Sports |
+| BBVA Blink | Business |
+
+### Spanish Videos (10 sources)
+| Source | Topic |
+|--------|-------|
+| Nate Gentile, Dot CSV | Technology |
+| QuantumFracture, CdeCiencia | Science |
+| BBC News Mundo, DW Espanol | News |
+| Ibai, Luisito Comunica | Entertainment |
+| Value School | Business |
+| FisioOnline | Health |
+
+### Spanish Politics (3 sources)
+| Source | Category |
+|--------|----------|
+| elDiario.es Politica, La Vanguardia Politica, El Confidencial | Politics |
 
 ### Adding New Sources
 

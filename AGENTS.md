@@ -14,7 +14,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 2 hours)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (87 sources: articles, podcasts, videos)
+    ├─ Fetch RSS feeds (133 sources: articles, podcasts, videos)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
@@ -95,7 +95,8 @@ pulse-backend/
 │   │   ├── 006_add_composite_indexes.sql  # Composite indexes for performance
 │   │   ├── 007_add_language_support.sql   # Language column on sources & articles
 │   │   ├── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
-│   │   └── 009_add_more_pt_es_sources.sql  # More PT & ES sources
+│   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
+│   │   └── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -170,7 +171,7 @@ Defaults in `internal/config/config.go`:
 
 Tables:
 - `categories` - 10 categories (including Podcasts & Videos)
-- `sources` - 87 pre-configured feeds (articles, podcasts, YouTube channels)
+- `sources` - 133 pre-configured feeds (articles, podcasts, YouTube channels)
 - `articles` - News articles with full-text search (tsvector) and media fields (media_type, media_url, media_duration, media_mime_type)
 - `fetch_logs` - Monitoring records
 
