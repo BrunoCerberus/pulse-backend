@@ -14,8 +14,8 @@ Deno.test("setCached and getCached round-trip", () => {
 
 Deno.test("getCached returns null for expired entry", () => {
   clearCache();
-  // Set with TTL of 0ms (already expired)
-  setCached("expired", "old", 0);
+  // Set with negative TTL (already expired)
+  setCached("expired", "old", -1);
   assertEquals(getCached("expired"), null);
 });
 
