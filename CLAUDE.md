@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. It uses Go for RSS fetching and Supabase (PostgreSQL) for database and auto-generated REST API.
 
-**Tech Stack:** Go 1.23 | Supabase | GitHub Actions | PostgreSQL
+**Tech Stack:** Go 1.24 | Supabase | GitHub Actions | PostgreSQL
 
 ## Architecture
 
