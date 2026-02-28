@@ -16,13 +16,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/config"
 	"github.com/pulsefeed/rss-worker/internal/httputil"
+	"github.com/pulsefeed/rss-worker/internal/logger"
 	"github.com/pulsefeed/rss-worker/internal/models"
+)
+
+const (
+	maxRetries    = 3
+	retryBaseWait = 500 * time.Millisecond
 )
 
 // Client handles all Supabase database operations via the REST API.
@@ -46,13 +51,7 @@ func NewClient(cfg *config.Config) *Client {
 func (c *Client) GetActiveSources() ([]models.Source, error) {
 	url := fmt.Sprintf("%s/sources?is_active=eq.true&select=*", c.baseURL)
 
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -80,14 +79,7 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 		return false, err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
-	if err != nil {
-		return false, err
-	}
-	c.setHeaders(req)
-	req.Header.Set("Prefer", "return=minimal")
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry("POST", url, data, map[string]string{"Prefer": "return=minimal"})
 	if err != nil {
 		return false, err
 	}
@@ -105,9 +97,9 @@ func (c *Client) InsertArticle(article *models.Article) (bool, error) {
 			(article.ThumbnailURL == nil || *article.ImageURL != *article.ThumbnailURL)
 
 		if hasOGImage {
-			log.Printf("[DB] Updating image_url for existing article: %s", article.URL)
+			logger.Debugf("[DB] Updating image_url for existing article: %s", article.URL)
 			if err := c.UpdateArticleImage(article.URLHash, *article.ImageURL); err != nil {
-				log.Printf("[DB] Failed to update image: %v", err)
+				logger.Warnf("[DB] Failed to update image: %v", err)
 			}
 		}
 		return false, nil
@@ -154,7 +146,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 		ok, insertErr := c.InsertArticle(article)
 		if insertErr != nil {
 			// Log error but continue with other articles
-			log.Printf("[DB] Error inserting article %s: %v", article.URL, insertErr)
+			logger.Errorf("[DB] Error inserting article %s: %v", article.URL, insertErr)
 			continue
 		}
 		if ok {
@@ -307,6 +299,94 @@ func (c *Client) CleanupOldArticles(daysToKeep int) (int, error) {
 	}
 
 	return count, nil
+}
+
+// isRetryable returns true for HTTP status codes that indicate a transient error.
+func isRetryable(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		statusCode == http.StatusBadGateway ||
+		statusCode == http.StatusServiceUnavailable ||
+		statusCode == http.StatusGatewayTimeout
+}
+
+// doWithRetry executes an HTTP request with exponential backoff retry for transient errors.
+// Retries up to maxRetries times on 429/502/503/504 with 500ms, 1s, 2s delays.
+// Optional extraHeaders are applied to each request attempt.
+func (c *Client) doWithRetry(method, url string, body []byte, extraHeaders ...map[string]string) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		var reqBody io.Reader
+		if body != nil {
+			reqBody = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest(method, url, reqBody)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(req)
+		for _, headers := range extraHeaders {
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < maxRetries {
+				time.Sleep(retryBaseWait * time.Duration(1<<uint(attempt)))
+			}
+			continue
+		}
+
+		if !isRetryable(resp.StatusCode) {
+			return resp, nil
+		}
+
+		// Drain and close body before retrying
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		lastErr = fmt.Errorf("retryable status: %s", resp.Status)
+
+		if attempt < maxRetries {
+			wait := retryBaseWait * time.Duration(1<<uint(attempt))
+			logger.Warnf("[DB] Retryable error %d on %s %s, retrying in %v", resp.StatusCode, method, url, wait)
+			time.Sleep(wait)
+		}
+	}
+	return nil, fmt.Errorf("request failed after %d retries: %w", maxRetries, lastErr)
+}
+
+// CleanupOldFetchLogs removes fetch log entries older than the specified days.
+// Uses Supabase REST API DELETE with date filter.
+func (c *Client) CleanupOldFetchLogs(daysToKeep int) (int, error) {
+	cutoff := time.Now().UTC().AddDate(0, 0, -daysToKeep).Format(time.RFC3339)
+	url := fmt.Sprintf("%s/fetch_logs?started_at=lt.%s", c.baseURL, cutoff)
+
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	c.setHeaders(req)
+	req.Header.Set("Prefer", "return=representation")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to cleanup fetch logs: %s - %s", resp.Status, readErrorBody(resp))
+	}
+
+	var deleted []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&deleted); err != nil {
+		return 0, err
+	}
+
+	return len(deleted), nil
 }
 
 // setHeaders sets the required Supabase headers

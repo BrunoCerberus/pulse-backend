@@ -35,7 +35,7 @@ ORDER BY started_at DESC;
 
 View workflow runs:
 1. Go to Repository → Actions tab
-2. Check `fetch-rss.yml` for RSS fetching (every 15 minutes)
+2. Check `fetch-rss.yml` for RSS fetching (every 2 hours)
 3. Check `cleanup.yml` for article cleanup (daily at 3 AM UTC)
 
 ### Key Metrics to Monitor
@@ -43,7 +43,7 @@ View workflow runs:
 | Metric | Normal Range | Alert Threshold |
 |--------|--------------|-----------------|
 | Articles inserted per run | 5-50 | 0 for 3+ consecutive runs |
-| Sources processed | 14 (all sources) | < 10 |
+| Sources processed | 133 (all sources) | < 100 |
 | Errors per run | 0-2 | > 5 |
 | Fetch duration | 1-3 minutes | > 10 minutes |
 
@@ -137,13 +137,14 @@ This extracts full text using go-readability for up to 200 articles per run.
 
 1. Insert via Supabase Table Editor or SQL:
    ```sql
-   INSERT INTO sources (name, slug, feed_url, website_url, category_id, is_active)
+   INSERT INTO sources (name, slug, feed_url, website_url, category_id, language, is_active)
    VALUES (
        'Source Name',
        'source-slug',
        'https://example.com/feed.xml',
        'https://example.com',
        (SELECT id FROM categories WHERE slug = 'technology'),
+       'en',
        true
    );
    ```
@@ -176,6 +177,8 @@ go run . cleanup
 -- Keep only last 7 days of logs
 DELETE FROM fetch_logs WHERE started_at < NOW() - INTERVAL '7 days';
 ```
+
+> **Note:** As of the latest update, fetch log cleanup is automated as part of the daily cleanup job.
 
 ---
 

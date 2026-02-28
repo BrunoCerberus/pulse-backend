@@ -436,23 +436,25 @@ func TestProcessSource_InsertError(t *testing.T) {
 // --- mockStore for testing runFetch, runCleanup, and backfill wrappers ---
 
 type mockStore struct {
-	sources         []models.Source
-	sourcesErr      error
-	insertResult    int
-	insertSkipped   int
-	insertErr       error
-	fetchLog        *models.FetchLog
-	fetchLogErr     error
-	updateLogErr    error
-	updateLastErr   error
-	cleanupResult   int
-	cleanupErr      error
-	ogArticles      []database.ArticleForBackfill
-	ogArticlesErr   error
-	contentArticles []database.ArticleForContentBackfill
-	contentErr      error
-	updateImageErr  error
-	updateContentErr error
+	sources            []models.Source
+	sourcesErr         error
+	insertResult       int
+	insertSkipped      int
+	insertErr          error
+	fetchLog           *models.FetchLog
+	fetchLogErr        error
+	updateLogErr       error
+	updateLastErr      error
+	cleanupResult      int
+	cleanupErr         error
+	cleanupLogsResult  int
+	cleanupLogsErr     error
+	ogArticles         []database.ArticleForBackfill
+	ogArticlesErr      error
+	contentArticles    []database.ArticleForContentBackfill
+	contentErr         error
+	updateImageErr     error
+	updateContentErr   error
 }
 
 func (m *mockStore) GetActiveSources() ([]models.Source, error) {
@@ -477,6 +479,10 @@ func (m *mockStore) UpdateFetchLog(log *models.FetchLog) error {
 
 func (m *mockStore) CleanupOldArticles(daysToKeep int) (int, error) {
 	return m.cleanupResult, m.cleanupErr
+}
+
+func (m *mockStore) CleanupOldFetchLogs(daysToKeep int) (int, error) {
+	return m.cleanupLogsResult, m.cleanupLogsErr
 }
 
 func (m *mockStore) GetArticlesNeedingOGImage(limit int) ([]database.ArticleForBackfill, error) {
@@ -682,10 +688,33 @@ func TestRunBackfill_Success(t *testing.T) {
 		},
 	}
 
-	runBackfill(cfg)
+	if err := runBackfill(cfg); err != nil {
+		t.Fatalf("runBackfill returned error: %v", err)
+	}
 
 	if got := processed.Load(); got != 3 {
 		t.Errorf("processed = %d, want 3", got)
+	}
+}
+
+func TestRunBackfill_FetchError(t *testing.T) {
+	cfg := backfillConfig[string]{
+		name:       "test",
+		timeout:    5 * time.Second,
+		limit:      10,
+		maxWorkers: 2,
+		fetch: func(limit int) ([]string, error) {
+			return nil, errors.New("fetch failed")
+		},
+		process: func(ctx context.Context, item string) bool {
+			t.Error("process should not be called on fetch error")
+			return false
+		},
+	}
+
+	err := runBackfill(cfg)
+	if err == nil {
+		t.Fatal("expected error from runBackfill, got nil")
 	}
 }
 
@@ -704,7 +733,9 @@ func TestRunBackfill_EmptyItems(t *testing.T) {
 		},
 	}
 
-	runBackfill(cfg)
+	if err := runBackfill(cfg); err != nil {
+		t.Fatalf("runBackfill returned error: %v", err)
+	}
 }
 
 func TestRunBackfill_MoreWorkersThanItems(t *testing.T) {
@@ -721,7 +752,9 @@ func TestRunBackfill_MoreWorkersThanItems(t *testing.T) {
 		},
 	}
 
-	runBackfill(cfg)
+	if err := runBackfill(cfg); err != nil {
+		t.Fatalf("runBackfill returned error: %v", err)
+	}
 }
 
 // --- runOGImageBackfill tests ---
@@ -730,8 +763,18 @@ func TestRunOGImageBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		ogArticles: []database.ArticleForBackfill{},
 	}
-	// Should complete without error when no articles need backfill
-	runOGImageBackfill(db)
+	if err := runOGImageBackfill(db); err != nil {
+		t.Fatalf("runOGImageBackfill returned error: %v", err)
+	}
+}
+
+func TestRunOGImageBackfill_FetchError(t *testing.T) {
+	db := &mockStore{
+		ogArticlesErr: errors.New("db error"),
+	}
+	if err := runOGImageBackfill(db); err == nil {
+		t.Fatal("expected error from runOGImageBackfill, got nil")
+	}
 }
 
 // --- runContentBackfill tests ---
@@ -740,6 +783,16 @@ func TestRunContentBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		contentArticles: []database.ArticleForContentBackfill{},
 	}
-	// Should complete without error when no articles need backfill
-	runContentBackfill(db)
+	if err := runContentBackfill(db); err != nil {
+		t.Fatalf("runContentBackfill returned error: %v", err)
+	}
+}
+
+func TestRunContentBackfill_FetchError(t *testing.T) {
+	db := &mockStore{
+		contentErr: errors.New("db error"),
+	}
+	if err := runContentBackfill(db); err == nil {
+		t.Fatal("expected error from runContentBackfill, got nil")
+	}
 }

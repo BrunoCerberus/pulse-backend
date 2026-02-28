@@ -19,7 +19,7 @@ News categories for organizing articles and sources.
 **Constraints:**
 - `name` and `slug` are unique
 
-**Default Data:** 8 categories (World, Technology, Business, Sports, Entertainment, Science, Health, Politics)
+**Default Data:** 10 categories (World, Technology, Business, Sports, Entertainment, Science, Health, Politics, Podcasts, Videos)
 
 ---
 
@@ -37,16 +37,16 @@ RSS feed configurations for news sources.
 | `logo_url` | TEXT | Source logo image URL |
 | `category_id` | UUID | FK to categories |
 | `is_active` | BOOLEAN | Whether to fetch this source |
-| `fetch_interval_minutes` | INT | Fetch frequency (default: 15) |
 | `last_fetched_at` | TIMESTAMPTZ | Last successful fetch time |
 | `created_at` | TIMESTAMPTZ | Row creation timestamp |
 | `updated_at` | TIMESTAMPTZ | Last update timestamp |
+| `language` | VARCHAR(5) | ISO 639-1 language code (default: 'en') |
 
 **Constraints:**
 - `slug` is unique
 - `category_id` references `categories(id)`
 
-**Default Data:** 14 pre-configured sources (Guardian, BBC, NPR, Ars Technica, TechCrunch, The Verge, Science Daily)
+**Default Data:** 133 pre-configured sources across articles, podcasts, and videos in English, Portuguese, and Spanish
 
 ---
 
@@ -67,6 +67,11 @@ News articles fetched from RSS feeds.
 | `author` | VARCHAR(255) | Article author name |
 | `source_id` | UUID | FK to sources |
 | `category_id` | UUID | FK to categories (inherited from source) |
+| `language` | VARCHAR(5) | ISO 639-1 language code (inherited from source) |
+| `media_type` | VARCHAR(20) | Media type: 'podcast' or 'video' |
+| `media_url` | TEXT | Direct URL to audio/video file |
+| `media_duration` | INT | Duration in seconds |
+| `media_mime_type` | VARCHAR(50) | MIME type (audio/mpeg, video/mp4, etc.) |
 | `published_at` | TIMESTAMPTZ | Original publication date |
 | `created_at` | TIMESTAMPTZ | When article was inserted |
 | `search_vector` | tsvector | Auto-generated full-text search index |
@@ -77,7 +82,7 @@ News articles fetched from RSS feeds.
 - `category_id` references `categories(id)`
 
 **Generated Column:**
-- `search_vector`: Automatically computed from `title` (weight A) and `summary` (weight B) for full-text search
+- `search_vector`: Automatically computed from `title` (weight A), `summary` (weight B), and `content` (weight C) for full-text search
 
 ---
 
@@ -109,6 +114,10 @@ Monitoring records for RSS fetch operations.
 | articles | `idx_articles_url_hash` | B-tree | Deduplication lookups |
 | articles | `idx_articles_created_at` | B-tree DESC | Cleanup queries |
 | articles | `idx_articles_search` | GIN | Full-text search |
+| articles | `idx_articles_category_published` | B-tree | Composite: category + date |
+| articles | `idx_articles_source_published` | B-tree | Composite: source + date |
+| articles | `idx_articles_language` | B-tree | Filter by language |
+| articles | `idx_articles_media_type` | B-tree | Filter by media type |
 | fetch_logs | `idx_fetch_logs_started_at` | B-tree DESC | Recent logs |
 
 ---
@@ -124,6 +133,8 @@ SELECT
     a.id, a.title, a.summary, a.content, a.url,
     a.image_url, a.thumbnail_url, a.author,
     a.published_at, a.created_at,
+    a.language,
+    a.media_type, a.media_url, a.media_duration, a.media_mime_type,
     s.name as source_name,
     s.slug as source_slug,
     s.logo_url as source_logo_url,
@@ -182,8 +193,6 @@ RLS is enabled on all tables with the following policies:
 - `articles`: All rows readable
 
 ### Service Role Write Access (service_role key)
-- `articles`: INSERT allowed
-- `sources`: UPDATE allowed
 - `fetch_logs`: ALL operations allowed
 
 ---

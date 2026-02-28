@@ -10,13 +10,13 @@ package parser
 
 import (
 	"context"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/mmcdole/gofeed"
 	"github.com/pulsefeed/rss-worker/internal/httputil"
+	"github.com/pulsefeed/rss-worker/internal/logger"
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
@@ -67,10 +67,10 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 // enrichWithOGImages fetches og:image for each article in parallel
 // Uses a worker pool to avoid overwhelming servers
 func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Article) {
-	log.Printf("[OG] Starting og:image enrichment for %d articles", len(articles))
+	logger.Infof("[OG] Starting og:image enrichment for %d articles", len(articles))
 
 	if len(articles) == 0 {
-		log.Printf("[OG] No articles to process")
+		logger.Debugf("[OG] No articles to process")
 		return
 	}
 
@@ -105,14 +105,14 @@ func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Arti
 
 	// Wait for completion
 	wg.Wait()
-	log.Printf("[OG] Completed og:image enrichment")
+	logger.Infof("[OG] Completed og:image enrichment")
 }
 
 // fetchOGImageForArticle fetches the og:image for a single article
 func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Article) {
 	ogImage, err := p.ogExtractor.ExtractOGImage(ctx, article.URL)
 	if err != nil {
-		log.Printf("[OG] ERROR fetching %s: %v", article.URL, err)
+		logger.Debugf("[OG] ERROR fetching %s: %v", article.URL, err)
 		return
 	}
 
@@ -120,12 +120,12 @@ func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Art
 		// Only update if og:image is different from the RSS thumbnail
 		if article.ThumbnailURL == nil || ogImage != *article.ThumbnailURL {
 			article.ImageURL = &ogImage
-			log.Printf("[OG] SUCCESS %s -> %s", article.URL, ogImage)
+			logger.Debugf("[OG] SUCCESS %s -> %s", article.URL, ogImage)
 		} else {
-			log.Printf("[OG] SAME as thumbnail for %s", article.URL)
+			logger.Debugf("[OG] SAME as thumbnail for %s", article.URL)
 		}
 	} else {
-		log.Printf("[OG] NOT FOUND for %s", article.URL)
+		logger.Debugf("[OG] NOT FOUND for %s", article.URL)
 	}
 }
 
@@ -140,11 +140,11 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 	}
 
 	if len(needsContent) == 0 {
-		log.Printf("[CONTENT] All articles have content from RSS")
+		logger.Debugf("[CONTENT] All articles have content from RSS")
 		return
 	}
 
-	log.Printf("[CONTENT] Starting content extraction for %d articles", len(needsContent))
+	logger.Infof("[CONTENT] Starting content extraction for %d articles", len(needsContent))
 
 	const maxWorkers = 3 // Lower than og:image since content extraction is heavier
 	numWorkers := min(maxWorkers, len(needsContent))
@@ -175,22 +175,22 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 	close(work)
 
 	wg.Wait()
-	log.Printf("[CONTENT] Completed content extraction")
+	logger.Infof("[CONTENT] Completed content extraction")
 }
 
 // fetchContentForArticle extracts content for a single article
 func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Article) {
 	content, err := p.contentExtractor.ExtractTextContent(ctx, article.URL)
 	if err != nil {
-		log.Printf("[CONTENT] ERROR fetching %s: %v", article.URL, err)
+		logger.Debugf("[CONTENT] ERROR fetching %s: %v", article.URL, err)
 		return
 	}
 
 	if content != "" {
 		article.Content = &content
-		log.Printf("[CONTENT] SUCCESS %s (%d chars)", article.URL, len(content))
+		logger.Debugf("[CONTENT] SUCCESS %s (%d chars)", article.URL, len(content))
 	} else {
-		log.Printf("[CONTENT] NOT FOUND for %s", article.URL)
+		logger.Debugf("[CONTENT] NOT FOUND for %s", article.URL)
 	}
 }
 
@@ -322,8 +322,49 @@ var htmlReplacer = strings.NewReplacer(
 	"&#39;", "'",
 )
 
+// removeTagWithContent strips a given HTML tag and its contents (case-insensitive).
+// For example, removeTagWithContent(s, "script") removes <script>...</script> blocks.
+func removeTagWithContent(s, tagName string) string {
+	lower := strings.ToLower(s)
+	tag := strings.ToLower(tagName)
+	openTag := "<" + tag
+	closeTag := "</" + tag + ">"
+
+	var result strings.Builder
+	result.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		lowerRest := lower[i:]
+		idx := strings.Index(lowerRest, openTag)
+		if idx == -1 {
+			result.WriteString(s[i:])
+			break
+		}
+		// Check that the open tag is followed by '>' or whitespace (not a partial match)
+		afterTag := i + idx + len(openTag)
+		if afterTag < len(s) && s[afterTag] != '>' && s[afterTag] != ' ' && s[afterTag] != '\t' && s[afterTag] != '\n' {
+			result.WriteString(s[i : i+idx+len(openTag)])
+			i = afterTag
+			continue
+		}
+		result.WriteString(s[i : i+idx])
+		// Find closing tag
+		closeIdx := strings.Index(lower[i+idx:], closeTag)
+		if closeIdx == -1 {
+			// No closing tag found, skip to end
+			break
+		}
+		i = i + idx + closeIdx + len(closeTag)
+	}
+	return result.String()
+}
+
 // cleanHTML removes HTML tags and cleans up text
 func cleanHTML(s string) string {
+	// Strip script and style tags with their contents before tag removal
+	s = removeTagWithContent(s, "script")
+	s = removeTagWithContent(s, "style")
+
 	result := htmlReplacer.Replace(s)
 
 	// Remove remaining HTML tags (simple regex-like removal)

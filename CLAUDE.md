@@ -27,7 +27,8 @@ Edge Functions (caching proxy with Cache-Control headers)
     ├── /api-categories  → Cache: 24h
     ├── /api-sources     → Cache: 1h
     ├── /api-articles    → Cache: 5min + ETag
-    └── /api-search      → Cache: 1min (private)
+    ├── /api-search      → Cache: 1min (private)
+    └── /api-health      → Cache: no-store
         ↓
 Pulse iOS App
 ```
@@ -87,10 +88,13 @@ pulse-backend/
 │       │   ├── content.go             # Full article content extraction (go-readability)
 │       │   └── content_test.go        # Content extraction tests
 │       ├── database/
-│       │   ├── supabase.go            # Supabase REST API client
-│       │   └── supabase_test.go       # Database client tests (69% coverage)
-│       └── httputil/
-│           └── transport.go           # Shared HTTP transport with connection pooling
+│       │   ├── supabase.go            # Supabase REST API client (with retry logic)
+│       │   └── supabase_test.go       # Database client tests
+│       ├── httputil/
+│       │   └── transport.go           # Shared HTTP transport with connection pooling
+│       └── logger/
+│           ├── logger.go              # Structured logging with level support
+│           └── logger_test.go         # Logger tests
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
@@ -103,7 +107,9 @@ pulse-backend/
 │   │   ├── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
 │   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
 │   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
-│   │   └── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 012_add_content_to_search_vector.sql  # Include content in full-text search
+│   │   └── 013_drop_fetch_interval_minutes.sql   # Remove unused column
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -116,11 +122,13 @@ pulse-backend/
 │       ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
-│       └── api-search/index.ts        # Search endpoint (1min private)
+│       ├── api-search/index.ts        # Search endpoint (1min private)
+│       └── api-health/index.ts        # Health check endpoint (no-store)
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
-│   └── test.yml                       # Unit tests on push/PR
+│   ├── test.yml                       # Unit tests + lint + govulncheck on push/PR
+│   └── deploy-functions.yml           # Auto-deploy Edge Functions on push
 └── docs/ios-integration.md            # iOS app integration guide
 ```
 
@@ -142,8 +150,9 @@ pulse-backend/
 
 ### Database Client (`internal/database/supabase.go`)
 - Direct HTTP calls to Supabase REST API (uses shared HTTP transport)
+- Retry with exponential backoff on 429/502/503/504 (up to 3 retries)
 - Deduplication via `url_hash` (SHA256 of URL) - returns 409 on conflict, updates image_url if better
-- Key methods: `GetActiveSources()`, `InsertArticles()`, `CleanupOldArticles()`, backfill queries
+- Key methods: `GetActiveSources()`, `InsertArticles()`, `CleanupOldArticles()`, `CleanupOldFetchLogs()`, backfill queries
 
 ### Data Models (`internal/models/models.go`)
 - `Source` and `Article` structs with `Language` field (ISO 639-1, e.g. `"en"`, `"pt"`)
@@ -161,6 +170,7 @@ Caching proxy layer for iOS app with Cache-Control headers:
 | `/api-sources` | 1h public | RSS source list |
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
+| `/api-health` | no-store | Health check (status + timestamp) |
 
 **Deployment:**
 ```bash
@@ -209,6 +219,7 @@ View: `articles_with_source` - Joins articles with source, category, media info,
 Environment variables:
 - `SUPABASE_URL` - Required
 - `SUPABASE_SERVICE_ROLE_KEY` - Required (keep secret, needed for writes)
+- `LOG_LEVEL` - Optional: DEBUG, INFO (default), WARN, ERROR
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
@@ -224,8 +235,9 @@ Unit tests cover Go packages and Deno Edge Functions:
 | `internal/config` | 100% | Load with env var validation |
 | `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
 | `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
-| `internal/database` | 77% | All Supabase client methods with httptest mocking |
-| `main` | 18% | processSource, processOGImageBackfill, processContentBackfill |
+| `internal/database` | 77% | All Supabase client methods with httptest mocking, retry logic |
+| `internal/logger` | 94% | Level filtering, output format, env var parsing |
+| `main` | 80% | processSource, processOGImageBackfill, processContentBackfill, runBackfill |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:
@@ -239,9 +251,10 @@ make test-deno      # Deno Edge Function tests
 
 - **fetch-rss.yml**: Every 2 hours + manual trigger
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger
-- **test.yml**: Runs on push/PR to main (Go + Deno tests)
+- **test.yml**: Runs on push/PR to main (Go tests, lint, govulncheck, Deno tests)
+- **deploy-functions.yml**: Auto-deploys Edge Functions on push to main
 
-Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
 
 ## Monitoring
 

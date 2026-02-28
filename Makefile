@@ -1,4 +1,4 @@
-.PHONY: help test test-go test-go-cover test-go-race test-deno build run clean deploy deploy-all deploy-categories deploy-sources deploy-articles deploy-search functions-serve cleanup backfill-images backfill-content
+.PHONY: help test test-go test-go-cover test-go-race test-deno build run clean deploy deploy-all deploy-categories deploy-sources deploy-articles deploy-search deploy-health functions-serve cleanup backfill-images backfill-content
 
 # Default target
 help:
@@ -24,6 +24,7 @@ help:
 	@echo "  make deploy-sources     Deploy api-sources function"
 	@echo "  make deploy-articles    Deploy api-articles function"
 	@echo "  make deploy-search      Deploy api-search function"
+	@echo "  make deploy-health      Deploy api-health function"
 	@echo "  make functions-serve    Run Edge Functions locally"
 	@echo ""
 	@echo "Utilities:"
@@ -46,7 +47,7 @@ test-go-race:
 	cd rss-worker && go test -v -race ./...
 
 test-deno:
-	cd supabase/functions && deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/
+	cd supabase/functions && deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/
 
 # =============================================================================
 # Build & Run
@@ -91,6 +92,9 @@ deploy-articles:
 
 deploy-search:
 	supabase functions deploy api-search
+
+deploy-health:
+	supabase functions deploy api-health
 
 functions-serve:
 	supabase functions serve

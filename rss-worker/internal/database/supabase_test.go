@@ -543,6 +543,98 @@ func TestUpdateSourceLastFetched_Error(t *testing.T) {
 	}
 }
 
+func TestCleanupOldFetchLogs_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "DELETE" {
+			t.Errorf("method = %s, want DELETE", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/fetch_logs") {
+			t.Errorf("path = %s, want to contain /fetch_logs", r.URL.Path)
+		}
+		if !strings.Contains(r.URL.String(), "started_at=lt.") {
+			t.Error("expected started_at date filter in URL")
+		}
+		if r.Header.Get("Prefer") != "return=representation" {
+			t.Error("expected Prefer: return=representation header")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"id":"log-1"},{"id":"log-2"},{"id":"log-3"}]`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	deleted, err := client.CleanupOldFetchLogs(30)
+
+	if err != nil {
+		t.Fatalf("CleanupOldFetchLogs error: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("deleted = %d, want 3", deleted)
+	}
+}
+
+func TestCleanupOldFetchLogs_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "database error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	_, err := client.CleanupOldFetchLogs(30)
+
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestDoWithRetry_RetriesOnTransientError(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error": "service unavailable"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]models.Source{
+			{ID: "src-1", Name: "Test", IsActive: true},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	sources, err := client.GetActiveSources()
+
+	if err != nil {
+		t.Fatalf("expected success after retries, got error: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Errorf("got %d sources, want 1", len(sources))
+	}
+	if attempt != 3 {
+		t.Errorf("expected 3 attempts, got %d", attempt)
+	}
+}
+
+func TestIsRetryable(t *testing.T) {
+	retryable := []int{429, 502, 503, 504}
+	for _, code := range retryable {
+		if !isRetryable(code) {
+			t.Errorf("expected %d to be retryable", code)
+		}
+	}
+
+	nonRetryable := []int{200, 201, 400, 401, 403, 404, 409, 500}
+	for _, code := range nonRetryable {
+		if isRetryable(code) {
+			t.Errorf("expected %d to NOT be retryable", code)
+		}
+	}
+}
+
 func TestSetHeaders(t *testing.T) {
 	cfg := &config.Config{
 		SupabaseURL: "https://test.supabase.co",

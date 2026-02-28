@@ -76,12 +76,12 @@ func TestCleanHTML(t *testing.T) {
 		{
 			name:     "script tags removed",
 			input:    "<script>alert('xss')</script>Safe content",
-			expected: "alert('xss')Safe content",
+			expected: "Safe content",
 		},
 		{
 			name:     "style tags removed",
 			input:    "<style>.class{color:red}</style>Visible content",
-			expected: ".class{color:red}Visible content",
+			expected: "Visible content",
 		},
 		{
 			name:     "complex HTML",

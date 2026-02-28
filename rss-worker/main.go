@@ -52,6 +52,7 @@ type Store interface {
 	CreateFetchLog() (*models.FetchLog, error)
 	UpdateFetchLog(log *models.FetchLog) error
 	CleanupOldArticles(daysToKeep int) (int, error)
+	CleanupOldFetchLogs(daysToKeep int) (int, error)
 	GetArticlesNeedingOGImage(limit int) ([]database.ArticleForBackfill, error)
 	UpdateArticleImage(urlHash string, imageURL string) error
 	GetArticlesNeedingContent(limit int) ([]database.ArticleForContentBackfill, error)
@@ -69,8 +70,8 @@ type backfillConfig[T any] struct {
 }
 
 // runBackfill executes a generic backfill operation: fetch items, then process
-// them concurrently with a worker pool.
-func runBackfill[T any](cfg backfillConfig[T]) {
+// them concurrently with a worker pool. Returns an error if fetching items fails.
+func runBackfill[T any](cfg backfillConfig[T]) error {
 	log.Printf("Starting %s backfill", cfg.name)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
@@ -78,14 +79,14 @@ func runBackfill[T any](cfg backfillConfig[T]) {
 
 	items, err := cfg.fetch(cfg.limit)
 	if err != nil {
-		log.Fatalf("Failed to get items for %s backfill: %v", cfg.name, err)
+		return fmt.Errorf("failed to get items for %s backfill: %w", cfg.name, err)
 	}
 
 	log.Printf("Found %d items needing %s backfill", len(items), cfg.name)
 
 	if len(items) == 0 {
 		log.Printf("No items need %s backfill", cfg.name)
-		return
+		return nil
 	}
 
 	numWorkers := min(cfg.maxWorkers, len(items))
@@ -129,6 +130,7 @@ func runBackfill[T any](cfg backfillConfig[T]) {
 	}
 
 	log.Printf("%s backfill complete: updated=%d, skipped=%d", cfg.name, updatedCount, skippedCount)
+	return nil
 }
 
 func main() {
@@ -151,10 +153,14 @@ func main() {
 			runCleanup(db, cfg.ArticleRetentionDays)
 			return
 		case "backfill-images":
-			runOGImageBackfill(db)
+			if err := runOGImageBackfill(db); err != nil {
+				log.Fatalf("Image backfill failed: %v", err)
+			}
 			return
 		case "backfill-content":
-			runContentBackfill(db)
+			if err := runContentBackfill(db); err != nil {
+				log.Fatalf("Content backfill failed: %v", err)
+			}
 			return
 		}
 	}
@@ -315,13 +321,21 @@ func runCleanup(db Store, daysToKeep int) {
 	}
 
 	log.Printf("✅ Cleanup complete: deleted %d old articles", deleted)
+
+	// Clean up old fetch logs (non-fatal on error)
+	logsDeleted, err := db.CleanupOldFetchLogs(daysToKeep)
+	if err != nil {
+		log.Printf("Warning: Failed to cleanup old fetch logs: %v", err)
+	} else {
+		log.Printf("🧹 Cleaned up %d old fetch logs", logsDeleted)
+	}
 }
 
 // runOGImageBackfill fetches og:image URLs for articles that are missing
 // high-resolution images using the generic backfill runner.
-func runOGImageBackfill(db Store) {
+func runOGImageBackfill(db Store) error {
 	ogExtractor := parser.NewOGImageExtractor()
-	runBackfill(backfillConfig[database.ArticleForBackfill]{
+	return runBackfill(backfillConfig[database.ArticleForBackfill]{
 		name:       "og:image",
 		timeout:    ogImageBackfillTimeout,
 		limit:      ogImageBackfillLimit,
@@ -366,9 +380,9 @@ func processOGImageBackfill(ctx context.Context, db Store, ogExtractor *parser.O
 
 // runContentBackfill extracts full article content for articles that are
 // missing the content field using the generic backfill runner.
-func runContentBackfill(db Store) {
+func runContentBackfill(db Store) error {
 	contentExtractor := parser.NewContentExtractor()
-	runBackfill(backfillConfig[database.ArticleForContentBackfill]{
+	return runBackfill(backfillConfig[database.ArticleForContentBackfill]{
 		name:       "content",
 		timeout:    contentBackfillTimeout,
 		limit:      contentBackfillLimit,
