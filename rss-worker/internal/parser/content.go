@@ -53,7 +53,7 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 		log.Printf("[CONTENT-HTTP] Request failed for %s: %v", articleURL, err)
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse

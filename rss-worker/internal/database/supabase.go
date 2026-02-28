@@ -439,7 +439,7 @@ func (c *Client) doWithRetry(method, url string, body []byte, extraHeaders ...ma
 
 		// Drain and close body before retrying
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		lastErr = fmt.Errorf("retryable status: %s", resp.Status)
 
 		if attempt < maxRetries {
