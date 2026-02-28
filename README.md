@@ -74,6 +74,8 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/009_add_more_pt_es_sources.sql` - More PT & ES sources
    - `supabase/migrations/010_add_pt_es_podcasts_videos.sql` - PT & ES podcasts, videos, politics
    - `supabase/migrations/011_revoke_cleanup_from_anon.sql` - Restrict cleanup function to service role only
+   - `supabase/migrations/012_add_content_to_search_vector.sql` - Include content in full-text search
+   - `supabase/migrations/013_drop_fetch_interval_minutes.sql` - Remove unused column
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -171,13 +173,16 @@ pulse-backend/
 │   │   ├── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
 │   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
 │   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
-│   │   └── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 012_add_content_to_search_vector.sql  # Include content in full-text search
+│   │   └── 013_drop_fetch_interval_minutes.sql   # Remove unused column
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
 │       ├── api-sources/               # Sources endpoint (1h cache)
 │       ├── api-articles/              # Articles endpoint (5min + ETag)
-│       └── api-search/                # Search endpoint (1min private)
+│       ├── api-search/                # Search endpoint (1min private)
+│       └── api-health/                # Health check endpoint (no-store)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
@@ -185,13 +190,16 @@ pulse-backend/
 │       ├── config/                    # Configuration + tests
 │       ├── models/                    # Data models + tests
 │       ├── parser/                    # RSS parsing + tests
-│       ├── database/                  # Supabase client + tests
-│       └── httputil/                  # Shared HTTP transport + connection pooling
+│       ├── database/                  # Supabase client + tests (with retry logic)
+│       ├── httputil/                  # Shared HTTP transport + connection pooling
+│       └── logger/                    # Structured logging with level support
 └── .github/
-    └── workflows/
-        ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
-        ├── cleanup.yml                # Cleanup job (daily)
-        └── test.yml                   # Unit tests (on push/PR)
+    ├── workflows/
+    │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
+    │   ├── cleanup.yml                # Cleanup job (daily)
+    │   ├── test.yml                   # Unit tests + lint + govulncheck (on push/PR)
+    │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
+    └── dependabot.yml                 # Weekly dependency updates
 ```
 
 ## Content Sources
@@ -352,6 +360,9 @@ GET /api-sources?language=eq.pt
 
 # Search articles (1min private cache)
 GET /api-search?q=climate&limit=20
+
+# Health check (no caching)
+GET /api-health
 ```
 
 No authentication required - endpoints are public read-only.
@@ -421,6 +432,7 @@ make deploy-categories # Deploy api-categories
 make deploy-sources    # Deploy api-sources
 make deploy-articles   # Deploy api-articles
 make deploy-search     # Deploy api-search
+make deploy-health     # Deploy api-health
 make functions-serve   # Run Edge Functions locally
 
 # Utilities

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/config"
@@ -47,9 +48,11 @@ func NewClient(cfg *config.Config) *Client {
 	}
 }
 
-// GetActiveSources retrieves all active RSS sources
+// GetActiveSources retrieves all active RSS sources with embedded category info.
+// Uses PostgREST embedding to include category name and slug.
+// Filters out sources that aren't due for fetching based on their fetch_interval_hours.
 func (c *Client) GetActiveSources() ([]models.Source, error) {
-	url := fmt.Sprintf("%s/sources?is_active=eq.true&select=*", c.baseURL)
+	url := fmt.Sprintf("%s/sources?is_active=eq.true&select=*,categories(name,slug)", c.baseURL)
 
 	resp, err := c.doWithRetry("GET", url, nil)
 	if err != nil {
@@ -61,54 +64,156 @@ func (c *Client) GetActiveSources() ([]models.Source, error) {
 		return nil, fmt.Errorf("failed to get sources: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
-	var sources []models.Source
-	if err := json.NewDecoder(resp.Body).Decode(&sources); err != nil {
+	var allSources []models.Source
+	if err := json.NewDecoder(resp.Body).Decode(&allSources); err != nil {
 		return nil, err
+	}
+
+	// Filter to sources due for fetching
+	sources := make([]models.Source, 0, len(allSources))
+	for _, s := range allSources {
+		if s.ShouldFetch() {
+			sources = append(sources, s)
+		}
 	}
 
 	return sources, nil
 }
 
-// InsertArticle inserts a new article or updates image_url if it already exists
-// Returns true if inserted (new), false if updated/skipped (existing)
-func (c *Client) InsertArticle(article *models.Article) (bool, error) {
-	url := fmt.Sprintf("%s/articles", c.baseURL)
+// ImageUpdate holds a url_hash and image_url pair for batch image updates.
+type ImageUpdate struct {
+	URLHash  string `json:"url_hash"`
+	ImageURL string `json:"image_url"`
+}
 
-	data, err := json.Marshal(article)
-	if err != nil {
-		return false, err
+const batchSize = 50
+
+// InsertArticles inserts multiple articles in batches via POST with JSON arrays.
+// Uses PostgREST's on_conflict=url_hash with ignore-duplicates to handle deduplication.
+// After inserting, batch-updates image_url for any articles where og:image differs from thumbnail.
+func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipped int, err error) {
+	if len(articles) == 0 {
+		return 0, 0, nil
 	}
 
-	resp, err := c.doWithRetry("POST", url, data, map[string]string{"Prefer": "return=minimal"})
+	// Build a set of all url_hashes being inserted
+	allHashes := make(map[string]*models.Article, len(articles))
+	for _, a := range articles {
+		allHashes[a.URLHash] = a
+	}
+
+	// Insert in batches of batchSize
+	insertedHashes := make(map[string]struct{})
+	for i := 0; i < len(articles); i += batchSize {
+		end := i + batchSize
+		if end > len(articles) {
+			end = len(articles)
+		}
+		batch := articles[i:end]
+
+		hashes, batchErr := c.insertArticleBatch(batch)
+		if batchErr != nil {
+			logger.Errorf("[DB] Error inserting batch of %d articles: %v", len(batch), batchErr)
+			continue
+		}
+		for _, h := range hashes {
+			insertedHashes[h] = struct{}{}
+		}
+	}
+
+	inserted = len(insertedHashes)
+	skipped = len(articles) - inserted
+
+	// Batch-update image_url for skipped articles that have a better og:image
+	var imageUpdates []ImageUpdate
+	for _, article := range articles {
+		if _, wasInserted := insertedHashes[article.URLHash]; wasInserted {
+			continue
+		}
+		hasOGImage := article.ImageURL != nil && *article.ImageURL != "" &&
+			(article.ThumbnailURL == nil || *article.ImageURL != *article.ThumbnailURL)
+		if hasOGImage {
+			imageUpdates = append(imageUpdates, ImageUpdate{
+				URLHash:  article.URLHash,
+				ImageURL: *article.ImageURL,
+			})
+		}
+	}
+
+	if len(imageUpdates) > 0 {
+		if updateErr := c.BatchUpdateArticleImages(imageUpdates); updateErr != nil {
+			logger.Warnf("[DB] Failed to batch-update images: %v", updateErr)
+		}
+	}
+
+	return inserted, skipped, nil
+}
+
+// insertArticleBatch inserts a batch of articles and returns the url_hashes of newly inserted rows.
+func (c *Client) insertArticleBatch(batch []*models.Article) ([]string, error) {
+	url := fmt.Sprintf("%s/articles?on_conflict=url_hash&select=url_hash", c.baseURL)
+
+	data, err := json.Marshal(batch)
 	if err != nil {
-		return false, err
+		return nil, err
+	}
+
+	resp, err := c.doWithRetry("POST", url, data, map[string]string{
+		"Prefer": "resolution=ignore-duplicates,return=representation",
+	})
+	if err != nil {
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// 201 = created (new article)
-	if resp.StatusCode == http.StatusCreated {
-		return true, nil
+	if resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("batch insert failed: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
-	// 409 = conflict (duplicate url_hash) - try to update image_url if we have an og:image
-	if resp.StatusCode == http.StatusConflict {
-		// Only update if we have a real og:image (different from thumbnail)
-		hasOGImage := article.ImageURL != nil && *article.ImageURL != "" &&
-			(article.ThumbnailURL == nil || *article.ImageURL != *article.ThumbnailURL)
-
-		if hasOGImage {
-			logger.Debugf("[DB] Updating image_url for existing article: %s", article.URL)
-			if err := c.UpdateArticleImage(article.URLHash, *article.ImageURL); err != nil {
-				logger.Warnf("[DB] Failed to update image: %v", err)
-			}
-		}
-		return false, nil
+	var inserted []struct {
+		URLHash string `json:"url_hash"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&inserted); err != nil {
+		return nil, fmt.Errorf("failed to decode batch response: %w", err)
 	}
 
-	return false, fmt.Errorf("failed to insert article: %s - %s", resp.Status, readErrorBody(resp))
+	hashes := make([]string, len(inserted))
+	for i, row := range inserted {
+		hashes[i] = row.URLHash
+	}
+	return hashes, nil
 }
 
-// UpdateArticleImage updates just the image_url for an existing article
+// BatchUpdateArticleImages updates image_url for multiple articles via RPC.
+func (c *Client) BatchUpdateArticleImages(updates []ImageUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+
+	url := fmt.Sprintf("%s/rpc/batch_update_article_images", c.baseURL)
+
+	payload := map[string]interface{}{
+		"updates": updates,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doWithRetry("POST", url, data)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("batch image update failed: %s - %s", resp.Status, readErrorBody(resp))
+	}
+
+	return nil
+}
+
+// UpdateArticleImage updates just the image_url for an existing article.
 func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
 
@@ -140,31 +245,19 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	return nil
 }
 
-// InsertArticles inserts multiple articles in batch
-func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipped int, err error) {
-	for _, article := range articles {
-		ok, insertErr := c.InsertArticle(article)
-		if insertErr != nil {
-			// Log error but continue with other articles
-			logger.Errorf("[DB] Error inserting article %s: %v", article.URL, insertErr)
-			continue
-		}
-		if ok {
-			inserted++
-		} else {
-			skipped++
-		}
+// UpdateSourcesLastFetched updates last_fetched_at for multiple sources in a single PATCH.
+// Uses PostgREST's `in` filter to update all sources at once.
+func (c *Client) UpdateSourcesLastFetched(sourceIDs []string) error {
+	if len(sourceIDs) == 0 {
+		return nil
 	}
-	return inserted, skipped, nil
-}
 
-// UpdateSourceLastFetched updates the last_fetched_at timestamp for a source
-func (c *Client) UpdateSourceLastFetched(sourceID string) error {
-	url := fmt.Sprintf("%s/sources?id=eq.%s", c.baseURL, sourceID)
+	url := fmt.Sprintf("%s/sources?id=in.(%s)", c.baseURL, strings.Join(sourceIDs, ","))
 
+	now := time.Now().UTC().Format(time.RFC3339)
 	data := map[string]interface{}{
-		"last_fetched_at": time.Now().UTC().Format(time.RFC3339),
-		"updated_at":      time.Now().UTC().Format(time.RFC3339),
+		"last_fetched_at": now,
+		"updated_at":      now,
 	}
 
 	body, err := json.Marshal(data)
@@ -185,7 +278,7 @@ func (c *Client) UpdateSourceLastFetched(sourceID string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("failed to update source: %s - %s", resp.Status, readErrorBody(resp))
+		return fmt.Errorf("failed to batch update sources: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil
@@ -345,7 +438,7 @@ func (c *Client) doWithRetry(method, url string, body []byte, extraHeaders ...ma
 		}
 
 		// Drain and close body before retrying
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		lastErr = fmt.Errorf("retryable status: %s", resp.Status)
 

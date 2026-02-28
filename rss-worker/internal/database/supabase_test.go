@@ -58,7 +58,6 @@ func TestGetActiveSources_Success(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request
 		if r.Method != "GET" {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
@@ -68,8 +67,10 @@ func TestGetActiveSources_Success(t *testing.T) {
 		if r.URL.Query().Get("is_active") != "eq.true" {
 			t.Error("expected is_active=eq.true query param")
 		}
+		if r.URL.Query().Get("select") != "*,categories(name,slug)" {
+			t.Errorf("expected select=*,categories(name,slug), got %q", r.URL.Query().Get("select"))
+		}
 
-		// Verify headers
 		if r.Header.Get("apikey") != "test-api-key" {
 			t.Error("missing apikey header")
 		}
@@ -89,12 +90,42 @@ func TestGetActiveSources_Success(t *testing.T) {
 		t.Fatalf("GetActiveSources error: %v", err)
 	}
 
+	// Both sources have nil LastFetched, so ShouldFetch() returns true
 	if len(sources) != 2 {
 		t.Errorf("got %d sources, want 2", len(sources))
 	}
 
 	if sources[0].Name != "BBC News" {
 		t.Errorf("first source name = %q, want 'BBC News'", sources[0].Name)
+	}
+}
+
+func TestGetActiveSources_FiltersByInterval(t *testing.T) {
+	recentFetch := time.Now().Add(-1 * time.Hour) // 1 hour ago
+	allSources := []models.Source{
+		{ID: "src-1", Name: "Fresh", IsActive: true, FetchIntervalHours: 2},                        // nil LastFetched → should fetch
+		{ID: "src-2", Name: "Recent", IsActive: true, FetchIntervalHours: 6, LastFetched: &recentFetch}, // 1h ago, interval=6h → skip
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(allSources)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	sources, err := client.GetActiveSources()
+
+	if err != nil {
+		t.Fatalf("GetActiveSources error: %v", err)
+	}
+
+	if len(sources) != 1 {
+		t.Errorf("got %d sources, want 1 (filtered by interval)", len(sources))
+	}
+
+	if len(sources) > 0 && sources[0].Name != "Fresh" {
+		t.Errorf("expected 'Fresh' source, got %q", sources[0].Name)
 	}
 }
 
@@ -113,122 +144,194 @@ func TestGetActiveSources_Error(t *testing.T) {
 	}
 }
 
-func TestInsertArticle_Created(t *testing.T) {
+func TestInsertArticles_BatchInsert(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request
 		if r.Method != "POST" {
 			t.Errorf("method = %s, want POST", r.Method)
+			return
 		}
 		if !strings.Contains(r.URL.Path, "/articles") {
 			t.Errorf("path = %s, want to contain /articles", r.URL.Path)
 		}
-		if r.Header.Get("Prefer") != "return=minimal" {
-			t.Error("expected Prefer: return=minimal header")
+		if !strings.Contains(r.URL.String(), "on_conflict=url_hash") {
+			t.Error("expected on_conflict=url_hash query param")
+		}
+		if r.Header.Get("Prefer") != "resolution=ignore-duplicates,return=representation" {
+			t.Errorf("Prefer = %q, want resolution=ignore-duplicates,return=representation", r.Header.Get("Prefer"))
 		}
 
+		// Verify body is a JSON array
+		body, _ := io.ReadAll(r.Body)
+		var articles []json.RawMessage
+		if err := json.Unmarshal(body, &articles); err != nil {
+			t.Errorf("expected JSON array body, got: %s", string(body))
+		}
+
+		// Return 2 of 3 as inserted (one was duplicate)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`[{"url_hash":"hash1"},{"url_hash":"hash2"}]`))
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	article := &models.Article{
-		Title:       "Test Article",
-		URL:         "https://example.com/test",
-		URLHash:     models.HashURL("https://example.com/test"),
-		SourceID:    "src-1",
-		PublishedAt: time.Now(),
+	articles := []*models.Article{
+		{Title: "Article 1", URL: "https://example.com/1", URLHash: "hash1"},
+		{Title: "Article 2", URL: "https://example.com/2", URLHash: "hash2"},
+		{Title: "Article 3", URL: "https://example.com/3", URLHash: "hash3"},
 	}
 
-	inserted, err := client.InsertArticle(article)
+	inserted, skipped, err := client.InsertArticles(articles)
 
 	if err != nil {
-		t.Fatalf("InsertArticle error: %v", err)
+		t.Fatalf("InsertArticles error: %v", err)
 	}
-	if !inserted {
-		t.Error("expected inserted=true for new article")
+	if inserted != 2 {
+		t.Errorf("inserted = %d, want 2", inserted)
+	}
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
 	}
 }
 
-func TestInsertArticle_Conflict(t *testing.T) {
+func TestInsertArticles_EmptyList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusConflict)
+		t.Error("no HTTP calls expected for empty list")
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	article := &models.Article{
-		Title:       "Test Article",
-		URL:         "https://example.com/test",
-		URLHash:     models.HashURL("https://example.com/test"),
-		SourceID:    "src-1",
-		PublishedAt: time.Now(),
-	}
-
-	inserted, err := client.InsertArticle(article)
+	inserted, skipped, err := client.InsertArticles(nil)
 
 	if err != nil {
-		t.Fatalf("InsertArticle error: %v", err)
+		t.Fatalf("InsertArticles error: %v", err)
 	}
-	if inserted {
-		t.Error("expected inserted=false for conflict")
+	if inserted != 0 || skipped != 0 {
+		t.Errorf("expected 0/0, got inserted=%d, skipped=%d", inserted, skipped)
 	}
 }
 
-func TestInsertArticle_ConflictWithOGImage(t *testing.T) {
-	patchCalled := false
-
+func TestInsertArticles_BatchError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" {
-			w.WriteHeader(http.StatusConflict)
-		} else if r.Method == "PATCH" {
-			patchCalled = true
-			w.WriteHeader(http.StatusNoContent)
+		if strings.Contains(r.URL.Path, "/articles") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"error": "bad request"}`))
+			return
 		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	articles := []*models.Article{
+		{Title: "Article 1", URL: "https://example.com/1", URLHash: "hash1"},
+	}
+
+	inserted, skipped, err := client.InsertArticles(articles)
+
+	// InsertArticles logs errors but doesn't return them
+	if err != nil {
+		t.Fatalf("InsertArticles error: %v", err)
+	}
+	if inserted != 0 {
+		t.Errorf("inserted = %d, want 0", inserted)
+	}
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
+	}
+}
+
+func TestInsertArticles_WithOGImageUpdate(t *testing.T) {
+	rpcCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/rpc/batch_update_article_images") {
+			rpcCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte("1"))
+			return
+		}
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/articles") {
+			// Return empty array = no inserts (all duplicates)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
 	imageURL := "https://example.com/og-image.jpg"
 	thumbURL := "https://example.com/thumb.jpg"
-	article := &models.Article{
-		Title:        "Test Article",
-		URL:          "https://example.com/test",
-		URLHash:      models.HashURL("https://example.com/test"),
-		SourceID:     "src-1",
-		ImageURL:     &imageURL,
-		ThumbnailURL: &thumbURL,
-		PublishedAt:  time.Now(),
+	articles := []*models.Article{
+		{
+			Title:        "Test Article",
+			URL:          "https://example.com/test",
+			URLHash:      "hash1",
+			ImageURL:     &imageURL,
+			ThumbnailURL: &thumbURL,
+		},
 	}
 
-	inserted, err := client.InsertArticle(article)
+	inserted, skipped, err := client.InsertArticles(articles)
 
 	if err != nil {
-		t.Fatalf("InsertArticle error: %v", err)
+		t.Fatalf("InsertArticles error: %v", err)
 	}
-	if inserted {
-		t.Error("expected inserted=false for conflict")
+	if inserted != 0 {
+		t.Errorf("inserted = %d, want 0", inserted)
 	}
-	if !patchCalled {
-		t.Error("expected PATCH to be called for og:image update")
+	if skipped != 1 {
+		t.Errorf("skipped = %d, want 1", skipped)
+	}
+	if !rpcCalled {
+		t.Error("expected batch_update_article_images RPC to be called")
 	}
 }
 
-func TestInsertArticle_Error(t *testing.T) {
+func TestBatchUpdateArticleImages_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error": "bad request"}`))
+		if r.Method != "POST" {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/rpc/batch_update_article_images") {
+			t.Errorf("path = %s, want /rpc/batch_update_article_images", r.URL.Path)
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "url_hash") {
+			t.Error("expected url_hash in request body")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("2"))
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	article := &models.Article{
-		Title: "Test",
+	updates := []ImageUpdate{
+		{URLHash: "hash1", ImageURL: "https://example.com/img1.jpg"},
+		{URLHash: "hash2", ImageURL: "https://example.com/img2.jpg"},
 	}
 
-	_, err := client.InsertArticle(article)
+	err := client.BatchUpdateArticleImages(updates)
+	if err != nil {
+		t.Errorf("BatchUpdateArticleImages error: %v", err)
+	}
+}
 
-	if err == nil {
-		t.Error("expected error for bad request")
+func TestBatchUpdateArticleImages_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no HTTP calls expected for empty updates")
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.BatchUpdateArticleImages(nil)
+	if err != nil {
+		t.Errorf("BatchUpdateArticleImages error: %v", err)
 	}
 }
 
@@ -241,7 +344,6 @@ func TestUpdateArticleImage_Success(t *testing.T) {
 			t.Error("expected url_hash filter in URL")
 		}
 
-		// Verify body contains image_url
 		body, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(body), "image_url") {
 			t.Error("expected image_url in request body")
@@ -462,51 +564,18 @@ func TestUpdateFetchLog_Success(t *testing.T) {
 	}
 }
 
-func TestInsertArticles_Batch(t *testing.T) {
-	insertCount := 0
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		insertCount++
-		if insertCount <= 2 {
-			w.WriteHeader(http.StatusCreated)
-		} else {
-			w.WriteHeader(http.StatusConflict)
-		}
-	}))
-	defer server.Close()
-
-	client := newTestClient(server)
-	articles := []*models.Article{
-		{Title: "Article 1", URL: "https://example.com/1", URLHash: "hash1"},
-		{Title: "Article 2", URL: "https://example.com/2", URLHash: "hash2"},
-		{Title: "Article 3", URL: "https://example.com/3", URLHash: "hash3"},
-	}
-
-	inserted, skipped, err := client.InsertArticles(articles)
-
-	if err != nil {
-		t.Fatalf("InsertArticles error: %v", err)
-	}
-
-	if inserted != 2 {
-		t.Errorf("inserted = %d, want 2", inserted)
-	}
-
-	if skipped != 1 {
-		t.Errorf("skipped = %d, want 1", skipped)
-	}
-}
-
-func TestUpdateSourceLastFetched_Success(t *testing.T) {
+func TestUpdateSourcesLastFetched_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "PATCH" {
 			t.Errorf("method = %s, want PATCH", r.Method)
 		}
-		if !strings.Contains(r.URL.String(), "id=eq.src-123") {
-			t.Errorf("expected id=eq.src-123 in URL, got %s", r.URL.String())
+		if !strings.Contains(r.URL.String(), "id=in.") {
+			t.Errorf("expected id=in. in URL, got %s", r.URL.String())
+		}
+		if !strings.Contains(r.URL.String(), "src-1") || !strings.Contains(r.URL.String(), "src-2") {
+			t.Error("expected both source IDs in URL")
 		}
 
-		// Verify body contains last_fetched_at and updated_at
 		body, _ := io.ReadAll(r.Body)
 		bodyStr := string(body)
 		if !strings.Contains(bodyStr, "last_fetched_at") {
@@ -521,14 +590,28 @@ func TestUpdateSourceLastFetched_Success(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateSourceLastFetched("src-123")
+	err := client.UpdateSourcesLastFetched([]string{"src-1", "src-2"})
 
 	if err != nil {
-		t.Errorf("UpdateSourceLastFetched error: %v", err)
+		t.Errorf("UpdateSourcesLastFetched error: %v", err)
 	}
 }
 
-func TestUpdateSourceLastFetched_Error(t *testing.T) {
+func TestUpdateSourcesLastFetched_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no HTTP calls expected for empty IDs")
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.UpdateSourcesLastFetched(nil)
+
+	if err != nil {
+		t.Errorf("UpdateSourcesLastFetched error: %v", err)
+	}
+}
+
+func TestUpdateSourcesLastFetched_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error": "database error"}`))
@@ -536,7 +619,7 @@ func TestUpdateSourceLastFetched_Error(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateSourceLastFetched("src-123")
+	err := client.UpdateSourcesLastFetched([]string{"src-123"})
 
 	if err == nil {
 		t.Error("expected error for 500 response")

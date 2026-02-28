@@ -185,3 +185,71 @@ func TestNewArticle_EmptyFields(t *testing.T) {
 		t.Error("URLHash should be computed even for empty URL")
 	}
 }
+
+func TestSource_ShouldFetch(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   Source
+		expected bool
+	}{
+		{
+			name:     "nil LastFetched always fetches",
+			source:   Source{FetchIntervalHours: 2},
+			expected: true,
+		},
+		{
+			name: "recently fetched within interval",
+			source: Source{
+				FetchIntervalHours: 6,
+				LastFetched:        timePtr(time.Now().Add(-1 * time.Hour)),
+			},
+			expected: false,
+		},
+		{
+			name: "past interval should fetch",
+			source: Source{
+				FetchIntervalHours: 2,
+				LastFetched:        timePtr(time.Now().Add(-3 * time.Hour)),
+			},
+			expected: true,
+		},
+		{
+			name: "zero interval defaults to 2 hours",
+			source: Source{
+				FetchIntervalHours: 0,
+				LastFetched:        timePtr(time.Now().Add(-1 * time.Hour)),
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.source.ShouldFetch(); got != tt.expected {
+				t.Errorf("ShouldFetch() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSource_CategoryName(t *testing.T) {
+	s1 := Source{Categories: &EmbeddedCategory{Name: "Tech", Slug: "tech"}}
+	if s1.CategoryName() != "Tech" {
+		t.Errorf("CategoryName() = %q, want 'Tech'", s1.CategoryName())
+	}
+	if s1.CategorySlug() != "tech" {
+		t.Errorf("CategorySlug() = %q, want 'tech'", s1.CategorySlug())
+	}
+
+	s2 := Source{}
+	if s2.CategoryName() != "" {
+		t.Errorf("CategoryName() = %q, want empty", s2.CategoryName())
+	}
+	if s2.CategorySlug() != "" {
+		t.Errorf("CategorySlug() = %q, want empty", s2.CategorySlug())
+	}
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
