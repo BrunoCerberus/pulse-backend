@@ -8,30 +8,8 @@ ALTER TABLE articles ADD COLUMN IF NOT EXISTS source_slug VARCHAR(100);
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS category_name VARCHAR(100);
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS category_slug VARCHAR(100);
 
--- Populate from existing data in batches to avoid statement timeout
-DO $$
-DECLARE
-  batch_size INT := 5000;
-  rows_updated INT;
-BEGIN
-  LOOP
-    UPDATE articles a SET
-      source_name = s.name,
-      source_slug = s.slug,
-      category_name = c.name,
-      category_slug = c.slug
-    FROM sources s
-    LEFT JOIN categories c ON s.category_id = c.id
-    WHERE a.source_id = s.id
-      AND a.source_name IS NULL
-      AND a.id IN (
-        SELECT id FROM articles WHERE source_name IS NULL LIMIT batch_size
-      );
-    GET DIAGNOSTICS rows_updated = ROW_COUNT;
-    EXIT WHEN rows_updated = 0;
-    RAISE NOTICE 'Updated % rows', rows_updated;
-  END LOOP;
-END $$;
+-- Backfill is done via 017_backfill_denormalized_articles.sql
+-- (separate migration to keep each statement within timeout)
 
 -- Recreate view without JOINs
 DROP VIEW IF EXISTS articles_with_source;
