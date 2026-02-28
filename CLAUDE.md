@@ -112,7 +112,8 @@ pulse-backend/
 │   │   ├── 013_drop_fetch_interval_minutes.sql   # Remove unused column
 │   │   ├── 014_add_batch_image_update_rpc.sql    # RPC for batch image updates
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
-│   │   └── 016_denormalize_articles.sql          # Denormalize source/category into articles
+│   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
+│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers

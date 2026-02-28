@@ -14,18 +14,18 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 2 hours)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (133 sources: articles, podcasts, videos)
+    ├─ Fetch RSS feeds (133 sources, adaptive intervals)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
     ├─ Extract: media enclosures (audio/video URLs, duration)
-    └─ Insert to Supabase (dedup via url_hash)
+    └─ Batch insert to Supabase (50/batch, dedup via url_hash)
         ↓
 PostgreSQL (articles, sources, categories, fetch_logs)
         ↓
-Edge Functions (caching proxy with Cache-Control headers)
-    ├── /api-categories  → Cache: 24h
-    ├── /api-sources     → Cache: 1h
+Edge Functions (caching proxy + in-memory cache)
+    ├── /api-categories  → Cache: 24h + 1h memory
+    ├── /api-sources     → Cache: 1h + 30min memory
     ├── /api-articles    → Cache: 5min + ETag
     ├── /api-search      → Cache: 1min (private)
     └── /api-health      → Cache: no-store
@@ -103,12 +103,17 @@ pulse-backend/
 │   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
 │   │   ├── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
 │   │   ├── 012_add_content_to_search_vector.sql  # Include content in full-text search
-│   │   └── 013_drop_fetch_interval_minutes.sql   # Remove unused column
+│   │   ├── 013_drop_fetch_interval_minutes.sql   # Remove unused column
+│   │   ├── 014_add_batch_image_update_rpc.sql    # RPC for batch image updates
+│   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
+│   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
+│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
 │       │   ├── cache.ts / cache_test.ts
 │       │   ├── etag.ts / etag_test.ts
+│       │   ├── memory-cache.ts / memory-cache_test.ts
 │       │   └── supabase-proxy.ts
 │       ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
@@ -133,11 +138,11 @@ pulse-backend/
 |-----------|------|-------------|
 | Entry Point | `main.go` | Command routing: fetch, cleanup, backfill-images, backfill-content |
 | Config | `internal/config/config.go` | Loads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY from env |
-| Models | `internal/models/models.go` | Article (with media fields), Source, Category, FetchLog structs; HashURL() for dedup |
+| Models | `internal/models/models.go` | Article (with media + denormalized fields), Source (with EmbeddedCategory, ShouldFetch()), FetchLog; HashURL() for dedup |
 | Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction |
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
-| Database | `internal/database/supabase.go` | Supabase REST API client with deduplication and retry logic (exponential backoff on 429/5xx) |
+| Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, batch source updates, retry logic (exponential backoff on 429/5xx) |
 | HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient(timeout)` and `NewClientWithRedirectLimit(timeout, maxRedirects)` |
 | Logger | `internal/logger/logger.go` | Structured logging with level support (LOG_LEVEL env var) |
 
@@ -157,14 +162,14 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 
 | Package | Coverage | Description |
 |---------|----------|-------------|
-| `internal/models` | 100% | HashURL, NewArticle |
+| `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
 | `internal/config` | 100% | Env var loading and validation |
 | `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
 | `internal/parser` | 93% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
-| `internal/database` | 79% | Supabase client methods with httptest mocking, retry logic |
+| `internal/database` | 81% | Batch inserts, batch image RPC, batch source updates, retry logic |
 | `internal/logger` | 94% | Level filtering, output format, env var parsing |
-| `main` | 80% | processSource, processOGImageBackfill, processContentBackfill, runBackfill |
-| `_shared/*.ts` | — | Cache, CORS, ETag utilities |
+| `main` | 80% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
+| `_shared/*.ts` | — | Cache, CORS, ETag, memory cache utilities |
 
 Run tests before committing:
 ```bash
@@ -186,16 +191,17 @@ Defaults in `internal/config/config.go`:
 
 Tables:
 - `categories` - 10 categories (including Podcasts & Videos)
-- `sources` - 133 pre-configured feeds (articles, podcasts, YouTube channels)
-- `articles` - News articles with full-text search (tsvector) and media fields (media_type, media_url, media_duration, media_mime_type)
+- `sources` - 133 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6)
+- `articles` - News articles with full-text search (tsvector), media fields, and denormalized source/category columns
 - `fetch_logs` - Monitoring records
 
 Key functions:
 - `cleanup_old_articles(days_to_keep)` - Remove old articles
 - `search_articles(search_query, result_limit)` - Full-text search
+- `batch_update_article_images(updates)` - Batch image URL updates
 
 View:
-- `articles_with_source` - Joins articles with source, category, and media info
+- `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
 
 ## Code Style Guidelines
 

@@ -47,7 +47,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 | Service | Limit | Our Usage | Status |
 |---------|-------|-----------|--------|
 | Supabase DB | 500 MB | ~50 MB | ✅ |
-| Supabase API | 500K req/mo | ~100K | ✅ |
+| Supabase API | 500K req/mo | ~200K | ✅ |
 | Supabase Edge Functions | 500K invocations/mo | Varies | ✅ |
 | GitHub Actions | 2,000 min/mo | ~720 min | ✅ |
 
@@ -76,6 +76,10 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/011_revoke_cleanup_from_anon.sql` - Restrict cleanup function to service role only
    - `supabase/migrations/012_add_content_to_search_vector.sql` - Include content in full-text search
    - `supabase/migrations/013_drop_fetch_interval_minutes.sql` - Remove unused column
+   - `supabase/migrations/014_add_batch_image_update_rpc.sql` - Batch image update RPC
+   - `supabase/migrations/015_add_fetch_interval_hours.sql` - Adaptive fetch frequency
+   - `supabase/migrations/016_denormalize_articles.sql` - Denormalize source/category into articles
+   - `supabase/migrations/017_backfill_denormalized_articles.sql` - Backfill denormalized columns
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -175,9 +179,13 @@ pulse-backend/
 │   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
 │   │   ├── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
 │   │   ├── 012_add_content_to_search_vector.sql  # Include content in full-text search
-│   │   └── 013_drop_fetch_interval_minutes.sql   # Remove unused column
+│   │   ├── 013_drop_fetch_interval_minutes.sql   # Remove unused column
+│   │   ├── 014_add_batch_image_update_rpc.sql    # Batch image update RPC
+│   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
+│   │   ├── 016_denormalize_articles.sql          # Denormalize source/category
+│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
 │   └── functions/                     # Edge Functions (caching proxy)
-│       ├── _shared/                   # Shared utilities + tests
+│       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
 │       ├── api-sources/               # Sources endpoint (1h cache)
 │       ├── api-articles/              # Articles endpoint (5min + ETag)
