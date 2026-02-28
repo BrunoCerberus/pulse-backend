@@ -1,9 +1,13 @@
--- Migration 017: Backfill denormalized columns and recreate view.
--- Also recreates the view in case 016 was repaired before the view was created.
--- Each UPDATE targets one source_id, keeping each statement fast and
--- well within Supabase's statement timeout.
--- New articles inserted after migration 016 already have these fields set
--- by the Go worker, so this only needs to run once for historical data.
+-- Migration 017: Add denormalized columns, backfill, and recreate view.
+-- 016 was repaired as applied but its DDL was rolled back on failure,
+-- so we re-add the columns here with IF NOT EXISTS.
+
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS source_name VARCHAR(255);
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS source_slug VARCHAR(100);
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS category_name VARCHAR(100);
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS category_slug VARCHAR(100);
+
+-- Backfill in batches of 2000 (each is a separate statement with its own timeout)
 
 UPDATE articles a SET
   source_name = s.name, source_slug = s.slug,
