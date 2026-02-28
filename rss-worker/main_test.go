@@ -306,7 +306,10 @@ func TestProcessSource_Success(t *testing.T) {
 	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "POST":
+			// Batch insert returns array of inserted url_hashes
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`[{"url_hash":"abc123"}]`))
 		case "PATCH":
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -322,6 +325,7 @@ func TestProcessSource_Success(t *testing.T) {
 	source := models.Source{
 		ID:       "src-1",
 		Name:     "Test Source",
+		Slug:     "test-source",
 		FeedURL:  webServer.URL + "/feed",
 		Language: "en",
 		IsActive: true,
@@ -401,6 +405,7 @@ func TestProcessSource_InsertError(t *testing.T) {
 	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "POST":
+			// Batch insert returns 400 error
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte(`{"error": "bad request"}`))
 		case "PATCH":
@@ -418,6 +423,7 @@ func TestProcessSource_InsertError(t *testing.T) {
 	source := models.Source{
 		ID:       "src-1",
 		Name:     "Error Source",
+		Slug:     "error-source",
 		FeedURL:  webServer.URL + "/feed",
 		Language: "en",
 		IsActive: true,
@@ -444,7 +450,7 @@ type mockStore struct {
 	fetchLog           *models.FetchLog
 	fetchLogErr        error
 	updateLogErr       error
-	updateLastErr      error
+	updateSourcesErr   error
 	cleanupResult      int
 	cleanupErr         error
 	cleanupLogsResult  int
@@ -465,8 +471,8 @@ func (m *mockStore) InsertArticles(articles []*models.Article) (int, int, error)
 	return m.insertResult, m.insertSkipped, m.insertErr
 }
 
-func (m *mockStore) UpdateSourceLastFetched(sourceID string) error {
-	return m.updateLastErr
+func (m *mockStore) UpdateSourcesLastFetched(sourceIDs []string) error {
+	return m.updateSourcesErr
 }
 
 func (m *mockStore) CreateFetchLog() (*models.FetchLog, error) {
