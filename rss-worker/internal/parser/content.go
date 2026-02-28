@@ -56,7 +56,7 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
+		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
 		log.Printf("[CONTENT-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return nil, nil
 	}
@@ -67,7 +67,7 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	// Use go-readability to extract the article content
 	article, err := readability.FromReader(limitedBody, parsedURL)
 	if err != nil {
-		io.Copy(io.Discard, resp.Body) // drain remaining body to enable connection reuse
+		_, _ = io.Copy(io.Discard, resp.Body) // drain remaining body to enable connection reuse
 		log.Printf("[CONTENT] Readability failed for %s: %v", articleURL, err)
 		return nil, err
 	}

@@ -345,7 +345,7 @@ func (c *Client) doWithRetry(method, url string, body []byte, extraHeaders ...ma
 		}
 
 		// Drain and close body before retrying
-		io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		lastErr = fmt.Errorf("retryable status: %s", resp.Status)
 

@@ -41,7 +41,7 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:
-          work-directory: ./rss-worker
+          work-dir: ./rss-worker
 
   lint:
     name: Go Lint
