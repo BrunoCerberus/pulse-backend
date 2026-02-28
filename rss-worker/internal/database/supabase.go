@@ -58,7 +58,7 @@ func (c *Client) GetActiveSources() ([]models.Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get sources: %s - %s", resp.Status, readErrorBody(resp))
@@ -164,7 +164,7 @@ func (c *Client) insertArticleBatch(batch []*models.Article) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("batch insert failed: %s - %s", resp.Status, readErrorBody(resp))
@@ -204,7 +204,7 @@ func (c *Client) BatchUpdateArticleImages(updates []ImageUpdate) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("batch image update failed: %s - %s", resp.Status, readErrorBody(resp))
@@ -236,7 +236,7 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("failed to update article image: %s - %s", resp.Status, readErrorBody(resp))
@@ -275,7 +275,7 @@ func (c *Client) UpdateSourcesLastFetched(sourceIDs []string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("failed to batch update sources: %s - %s", resp.Status, readErrorBody(resp))
@@ -310,7 +310,7 @@ func (c *Client) CreateFetchLog() (*models.FetchLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("failed to create fetch log: %s - %s", resp.Status, readErrorBody(resp))
@@ -350,7 +350,7 @@ func (c *Client) UpdateFetchLog(log *models.FetchLog) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("failed to update fetch log: %s - %s", resp.Status, readErrorBody(resp))
@@ -380,7 +380,7 @@ func (c *Client) CleanupOldArticles(daysToKeep int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("failed to cleanup articles: %s - %s", resp.Status, readErrorBody(resp))
@@ -468,7 +468,7 @@ func (c *Client) CleanupOldFetchLogs(daysToKeep int) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("failed to cleanup fetch logs: %s - %s", resp.Status, readErrorBody(resp))
@@ -533,7 +533,7 @@ func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, err
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, readErrorBody(resp))
@@ -562,7 +562,7 @@ func (c *Client) GetArticlesNeedingContent(limit int) ([]ArticleForContentBackfi
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get articles: %s - %s", resp.Status, readErrorBody(resp))
@@ -599,7 +599,7 @@ func (c *Client) UpdateArticleContent(urlHash string, content string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("failed to update article content: %s - %s", resp.Status, readErrorBody(resp))
