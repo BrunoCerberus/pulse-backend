@@ -55,7 +55,7 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 		log.Printf("[OG-HTTP] Request failed for %s: %v", articleURL, err)
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse

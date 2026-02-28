@@ -879,8 +879,8 @@ func TestParseFeed_BasicRSS(t *testing.T) {
 	var serverURL string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/feed":
+		switch r.URL.Path {
+		case "/feed":
 			rss := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0">
   <channel>
