@@ -96,7 +96,8 @@ pulse-backend/
 │   │   ├── 007_add_language_support.sql   # Language column on sources & articles
 │   │   ├── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
 │   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
-│   │   └── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
+│   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
+│   │   └── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts

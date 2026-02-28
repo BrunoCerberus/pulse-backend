@@ -73,6 +73,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/008_add_pt_es_sources.sql` - Portuguese & Spanish RSS sources
    - `supabase/migrations/009_add_more_pt_es_sources.sql` - More PT & ES sources
    - `supabase/migrations/010_add_pt_es_podcasts_videos.sql` - PT & ES podcasts, videos, politics
+   - `supabase/migrations/011_revoke_cleanup_from_anon.sql` - Restrict cleanup function to service role only
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -169,7 +170,8 @@ pulse-backend/
 │   │   ├── 007_add_language_support.sql  # Language column on sources & articles
 │   │   ├── 008_add_pt_es_sources.sql    # Portuguese & Spanish RSS sources
 │   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
-│   │   └── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
+│   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
+│   │   └── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
