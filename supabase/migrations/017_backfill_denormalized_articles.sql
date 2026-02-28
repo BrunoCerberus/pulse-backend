@@ -79,12 +79,75 @@ FROM sources s LEFT JOIN categories c ON s.category_id = c.id
 WHERE a.source_id = s.id AND a.source_name IS NULL
   AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
 
--- Final sweep for any remaining rows
 UPDATE articles a SET
   source_name = s.name, source_slug = s.slug,
   category_name = c.name, category_slug = c.slug
 FROM sources s LEFT JOIN categories c ON s.category_id = c.id
-WHERE a.source_id = s.id AND a.source_name IS NULL;
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
+
+UPDATE articles a SET
+  source_name = s.name, source_slug = s.slug,
+  category_name = c.name, category_slug = c.slug
+FROM sources s LEFT JOIN categories c ON s.category_id = c.id
+WHERE a.source_id = s.id AND a.source_name IS NULL
+  AND a.id IN (SELECT id FROM articles WHERE source_name IS NULL LIMIT 2000);
 
 -- Recreate view without JOINs (idempotent)
 DROP VIEW IF EXISTS articles_with_source;
