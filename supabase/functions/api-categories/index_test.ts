@@ -1,5 +1,6 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import { handler } from "./index.ts";
+import { clearCache } from "../_shared/memory-cache.ts";
 
 function setupEnv() {
   Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
@@ -7,6 +8,7 @@ function setupEnv() {
 }
 
 Deno.test("GET success with 24h cache", async () => {
+  clearCache();
   const originalUrl = Deno.env.get("SUPABASE_URL");
   const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
   const originalFetch = globalThis.fetch;
@@ -39,6 +41,7 @@ Deno.test("GET success with 24h cache", async () => {
 });
 
 Deno.test("non-GET returns 405", async () => {
+  clearCache();
   const req = new Request("http://localhost/api-categories", {
     method: "POST",
   });
@@ -49,6 +52,7 @@ Deno.test("non-GET returns 405", async () => {
 });
 
 Deno.test("OPTIONS returns CORS 204", async () => {
+  clearCache();
   const req = new Request("http://localhost/api-categories", {
     method: "OPTIONS",
   });
@@ -58,6 +62,7 @@ Deno.test("OPTIONS returns CORS 204", async () => {
 });
 
 Deno.test("error returns 500", async () => {
+  clearCache();
   const originalUrl = Deno.env.get("SUPABASE_URL");
   const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
   const originalFetch = globalThis.fetch;
@@ -73,6 +78,43 @@ Deno.test("error returns 500", async () => {
     assertEquals(res.status, 500);
     const body = await res.json();
     assertEquals(body.error, "Internal server error");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("serves from cache on second request", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    let fetchCount = 0;
+    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+      fetchCount++;
+      return Promise.resolve(
+        new Response('[{"id":"1","name":"Technology","slug":"technology"}]', {
+          status: 200,
+        }),
+      );
+    };
+
+    // First request populates cache
+    const req1 = new Request("http://localhost/api-categories");
+    const res1 = await handler(req1);
+    assertEquals(res1.status, 200);
+    assertEquals(fetchCount, 1);
+
+    // Second request should use cache
+    const req2 = new Request("http://localhost/api-categories");
+    const res2 = await handler(req2);
+    assertEquals(res2.status, 200);
+    assertEquals(fetchCount, 1, "expected no additional fetch for cached response");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
