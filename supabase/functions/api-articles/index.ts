@@ -11,7 +11,6 @@
  * - `category_slug` - Filter by category (e.g., `category_slug=eq.technology`)
  * - `order` - Sort order (e.g., `order=published_at.desc`)
  * - `published_at` - Date filter (e.g., `published_at=gte.2024-01-01`)
- * - `select` - Custom field selection
  *
  * ## Response
  * JSON array of article objects with fields:
@@ -33,7 +32,6 @@ import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.t
 const config: ProxyConfig = {
   table: "articles_with_source",
   allowedParams: [
-    "select",
     "id",
     "source_slug",
     "category_slug",

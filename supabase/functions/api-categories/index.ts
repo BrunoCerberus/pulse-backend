@@ -6,7 +6,6 @@
  *
  * ## Query Parameters
  * - `order` - Sort order (e.g., `order=display_order.asc`)
- * - `select` - Custom field selection
  *
  * ## Response
  * JSON array of category objects with fields:
@@ -25,7 +24,7 @@ import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.t
 
 const config: ProxyConfig = {
   table: "categories",
-  allowedParams: ["select", "id", "order"],
+  allowedParams: ["id", "order"],
   defaultSelect: "id,name,slug",
 };
 

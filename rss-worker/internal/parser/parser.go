@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
@@ -29,8 +30,10 @@ type Parser struct {
 
 // New creates a new Parser instance
 func New() *Parser {
+	fp := gofeed.NewParser()
+	fp.Client = httputil.NewClientWithRedirectLimit(30*time.Second, 5)
 	return &Parser{
-		fp:               gofeed.NewParser(),
+		fp:               fp,
 		ogExtractor:      NewOGImageExtractor(),
 		contentExtractor: NewContentExtractor(),
 	}

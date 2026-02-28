@@ -9,7 +9,6 @@
  * - `is_active` - Filter by active status (e.g., `is_active=eq.true`)
  * - `slug` - Filter by source slug
  * - `order` - Sort order
- * - `select` - Custom field selection
  *
  * ## Response
  * JSON array of source objects with fields:
@@ -32,7 +31,7 @@ import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.t
 
 const config: ProxyConfig = {
   table: "sources",
-  allowedParams: ["select", "id", "slug", "category_id", "language", "is_active", "order"],
+  allowedParams: ["id", "slug", "category_id", "language", "is_active", "order"],
   defaultSelect: "id,name,slug,website_url,logo_url,category_id,language,is_active",
 };
 

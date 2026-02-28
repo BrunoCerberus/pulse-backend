@@ -319,7 +319,7 @@ func (c *Client) setHeaders(req *http.Request) {
 // readErrorBody reads and returns the response body as a string for error reporting.
 // It silently handles read errors since this is only used in error paths.
 func readErrorBody(resp *http.Response) string {
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return string(body)
 }
 
