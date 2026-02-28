@@ -58,7 +58,7 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
+		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
 		log.Printf("[OG-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return "", nil // Not an error, just no image found
 	}

@@ -48,7 +48,7 @@ const (
 type Store interface {
 	GetActiveSources() ([]models.Source, error)
 	InsertArticles(articles []*models.Article) (inserted int, skipped int, err error)
-	UpdateSourceLastFetched(sourceID string) error
+	UpdateSourcesLastFetched(sourceIDs []string) error
 	CreateFetchLog() (*models.FetchLog, error)
 	UpdateFetchLog(log *models.FetchLog) error
 	CleanupOldArticles(daysToKeep int) (int, error)
@@ -235,6 +235,7 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 	// Collect results
 	var totalFetched, totalInserted, totalSkipped int
 	var errors []string
+	var successSourceIDs []string
 
 	for result := range results {
 		fetchLog.SourcesProcessed++
@@ -247,8 +248,16 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 			errors = append(errors, errMsg)
 			log.Printf("❌ %s", errMsg)
 		} else {
+			successSourceIDs = append(successSourceIDs, result.Source.ID)
 			log.Printf("✓ %s: fetched=%d, inserted=%d, skipped=%d",
 				result.Source.Name, result.ArticlesFetched, result.ArticlesInserted, result.ArticlesSkipped)
+		}
+	}
+
+	// Batch-update last_fetched_at for all successful sources
+	if len(successSourceIDs) > 0 {
+		if err := db.UpdateSourcesLastFetched(successSourceIDs); err != nil {
+			log.Printf("Warning: Failed to batch update last_fetched_at: %v", err)
 		}
 	}
 
@@ -300,11 +309,6 @@ func processSource(ctx context.Context, db Store, rssParser *parser.Parser, sour
 
 	result.ArticlesInserted = inserted
 	result.ArticlesSkipped = skipped
-
-	// Update source last_fetched_at
-	if err := db.UpdateSourceLastFetched(source.ID); err != nil {
-		log.Printf("Warning: Failed to update last_fetched_at for %s: %v", source.Name, err)
-	}
 
 	return result
 }

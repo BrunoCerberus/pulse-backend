@@ -16,16 +16,53 @@ import (
 
 // Source represents an RSS feed source from the database
 type Source struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Slug        string     `json:"slug"`
-	FeedURL     string     `json:"feed_url"`
-	WebsiteURL  *string    `json:"website_url"`
-	LogoURL     *string    `json:"logo_url"`
-	CategoryID  *string    `json:"category_id"`
-	Language    string     `json:"language"`
-	IsActive    bool       `json:"is_active"`
-	LastFetched *time.Time `json:"last_fetched_at"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Slug               string     `json:"slug"`
+	FeedURL            string     `json:"feed_url"`
+	WebsiteURL         *string    `json:"website_url"`
+	LogoURL            *string    `json:"logo_url"`
+	CategoryID         *string    `json:"category_id"`
+	Language           string     `json:"language"`
+	IsActive           bool       `json:"is_active"`
+	LastFetched        *time.Time `json:"last_fetched_at"`
+	FetchIntervalHours int        `json:"fetch_interval_hours"`
+	// Embedded category info from PostgREST ?select=*,categories(name,slug)
+	Categories *EmbeddedCategory `json:"categories,omitempty"`
+}
+
+// EmbeddedCategory holds category name/slug from PostgREST embedding.
+type EmbeddedCategory struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// CategoryName returns the category name from embedded category data.
+func (s *Source) CategoryName() string {
+	if s.Categories != nil {
+		return s.Categories.Name
+	}
+	return ""
+}
+
+// CategorySlug returns the category slug from embedded category data.
+func (s *Source) CategorySlug() string {
+	if s.Categories != nil {
+		return s.Categories.Slug
+	}
+	return ""
+}
+
+// ShouldFetch returns true if the source is due for fetching based on its interval.
+func (s *Source) ShouldFetch() bool {
+	if s.LastFetched == nil {
+		return true
+	}
+	interval := s.FetchIntervalHours
+	if interval <= 0 {
+		interval = 2 // default 2 hours
+	}
+	return time.Since(*s.LastFetched) >= time.Duration(interval)*time.Hour
 }
 
 // Article represents a news article to be stored in the database.
@@ -50,6 +87,10 @@ type Article struct {
 	MediaURL      *string   `json:"media_url,omitempty"`           // Direct URL to audio/video file
 	MediaDuration *int      `json:"media_duration,omitempty"`      // Duration in seconds
 	MediaMIMEType *string   `json:"media_mime_type,omitempty"`     // MIME type (audio/mpeg, video/mp4, etc.)
+	SourceName    *string   `json:"source_name,omitempty"`         // Denormalized source name
+	SourceSlug    *string   `json:"source_slug,omitempty"`         // Denormalized source slug
+	CategoryName  *string   `json:"category_name,omitempty"`       // Denormalized category name
+	CategorySlug  *string   `json:"category_slug,omitempty"`       // Denormalized category slug
 }
 
 // NewArticle creates a new Article with computed URL hash

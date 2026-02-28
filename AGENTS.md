@@ -6,7 +6,7 @@ This file provides guidance to AI coding agents when working with this repositor
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. It uses Go for RSS fetching and Supabase (PostgreSQL) for database and auto-generated REST API.
 
-**Tech Stack:** Go 1.23 | Supabase | GitHub Actions | PostgreSQL | Deno (Edge Functions)
+**Tech Stack:** Go 1.24 | Supabase | GitHub Actions | PostgreSQL | Deno (Edge Functions)
 
 ## Architecture
 
@@ -27,7 +27,8 @@ Edge Functions (caching proxy with Cache-Control headers)
     ├── /api-categories  → Cache: 24h
     ├── /api-sources     → Cache: 1h
     ├── /api-articles    → Cache: 5min + ETag
-    └── /api-search      → Cache: 1min (private)
+    ├── /api-search      → Cache: 1min (private)
+    └── /api-health      → Cache: no-store
         ↓
 Pulse iOS App
 ```
@@ -81,10 +82,13 @@ pulse-backend/
 │       │   ├── content.go             # Article content extraction (go-readability)
 │       │   └── content_test.go        # Content extraction tests
 │       ├── database/
-│       │   ├── supabase.go            # Supabase REST API client
-│       │   └── supabase_test.go       # Database client tests (69% coverage)
-│       └── httputil/
-│           └── transport.go           # Shared HTTP transport with connection pooling
+│       │   ├── supabase.go            # Supabase REST API client (with retry logic)
+│       │   └── supabase_test.go       # Database client tests
+│       ├── httputil/
+│       │   └── transport.go           # Shared HTTP transport with connection pooling
+│       └── logger/
+│           ├── logger.go              # Structured logging with level support
+│           └── logger_test.go         # Logger tests
 ├── supabase/
 │   ├── migrations/
 │   │   ├── 001_initial_schema.sql     # Core database schema
@@ -97,7 +101,9 @@ pulse-backend/
 │   │   ├── 008_add_pt_es_sources.sql     # Portuguese & Spanish RSS sources
 │   │   ├── 009_add_more_pt_es_sources.sql  # More PT & ES sources
 │   │   ├── 010_add_pt_es_podcasts_videos.sql  # PT & ES podcasts, videos, politics
-│   │   └── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 011_revoke_cleanup_from_anon.sql   # Restrict cleanup function access
+│   │   ├── 012_add_content_to_search_vector.sql  # Include content in full-text search
+│   │   └── 013_drop_fetch_interval_minutes.sql   # Remove unused column
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -107,11 +113,15 @@ pulse-backend/
 │       ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
-│       └── api-search/index.ts        # Search endpoint (1min private)
-├── .github/workflows/
-│   ├── fetch-rss.yml                  # Runs every 2 hours
-│   ├── cleanup.yml                    # Runs daily at 3 AM UTC
-│   └── test.yml                       # Unit tests on push/PR
+│       ├── api-search/index.ts        # Search endpoint (1min private)
+│       └── api-health/index.ts        # Health check endpoint (no-store)
+├── .github/
+│   ├── workflows/
+│   │   ├── fetch-rss.yml              # Runs every 2 hours
+│   │   ├── cleanup.yml                # Runs daily at 3 AM UTC
+│   │   ├── test.yml                   # Unit tests + lint + govulncheck on push/PR
+│   │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
+│   └── dependabot.yml                 # Weekly dependency updates
 └── docs/ios-integration.md            # iOS app integration guide
 ```
 
@@ -127,8 +137,9 @@ pulse-backend/
 | Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction |
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
-| Database | `internal/database/supabase.go` | Supabase REST API client with deduplication |
+| Database | `internal/database/supabase.go` | Supabase REST API client with deduplication and retry logic (exponential backoff on 429/5xx) |
 | HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient(timeout)` and `NewClientWithRedirectLimit(timeout, maxRedirects)` |
+| Logger | `internal/logger/logger.go` | Structured logging with level support (LOG_LEVEL env var) |
 
 ### Edge Functions (`supabase/functions/`)
 
@@ -138,6 +149,7 @@ pulse-backend/
 | `/api-sources` | 1h public | RSS source list |
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
+| `/api-health` | no-store | Health check (status + timestamp) |
 
 ## Testing
 
@@ -148,9 +160,10 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 | `internal/models` | 100% | HashURL, NewArticle |
 | `internal/config` | 100% | Env var loading and validation |
 | `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
-| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
-| `internal/database` | 77% | Supabase client methods with httptest mocking |
-| `main` | 18% | processSource, processOGImageBackfill, processContentBackfill |
+| `internal/parser` | 93% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
+| `internal/database` | 79% | Supabase client methods with httptest mocking, retry logic |
+| `internal/logger` | 94% | Level filtering, output format, env var parsing |
+| `main` | 80% | processSource, processOGImageBackfill, processContentBackfill, runBackfill |
 | `_shared/*.ts` | — | Cache, CORS, ETag utilities |
 
 Run tests before committing:
@@ -163,6 +176,7 @@ make test
 Required environment variables:
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` - Service role key (keep secret, needed for writes)
+- `LOG_LEVEL` - Optional: DEBUG, INFO (default), WARN, ERROR
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
@@ -198,6 +212,7 @@ View:
 |----------|----------|-------------|
 | `fetch-rss.yml` | Every 2 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
-| `test.yml` | On push/PR | Run unit tests |
+| `test.yml` | On push/PR | Unit tests + lint + govulncheck |
+| `deploy-functions.yml` | On push to main | Auto-deploy Edge Functions |
 
-Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`

@@ -209,6 +209,16 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		parsePublishedDate(item),
 	)
 
+	// Set denormalized source/category fields
+	article.SourceName = &source.Name
+	article.SourceSlug = &source.Slug
+	if catName := source.CategoryName(); catName != "" {
+		article.CategoryName = &catName
+	}
+	if catSlug := source.CategorySlug(); catSlug != "" {
+		article.CategorySlug = &catSlug
+	}
+
 	// Summary/Description (truncated to first paragraph)
 	if item.Description != "" {
 		desc := cleanHTML(item.Description)
