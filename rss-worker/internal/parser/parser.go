@@ -110,7 +110,10 @@ func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Arti
 	}
 
 	for _, article := range articles {
-		work <- article
+		select {
+		case work <- article:
+		case <-ctx.Done():
+		}
 	}
 	close(work)
 
@@ -186,7 +189,10 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 	}
 
 	for _, article := range needsContent {
-		work <- article
+		select {
+		case work <- article:
+		case <-ctx.Done():
+		}
 	}
 	close(work)
 

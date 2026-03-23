@@ -111,7 +111,10 @@ func runBackfill[T any](cfg backfillConfig[T]) error {
 	}
 
 	for _, item := range items {
-		work <- item
+		select {
+		case work <- item:
+		case <-ctx.Done():
+		}
 	}
 	close(work)
 
