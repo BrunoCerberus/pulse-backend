@@ -452,7 +452,7 @@ make clean             # Remove build artifacts
 ### Fetch Logs
 
 Check the `fetch_logs` table in Supabase:
-- `status`: running / completed / failed
+- `status`: running / completed / partial_failure / failed
 - `articles_inserted`: New articles added
 - `articles_skipped`: Duplicates skipped
 - `errors`: Any errors encountered

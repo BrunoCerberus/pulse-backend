@@ -165,10 +165,10 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
 | `internal/config` | 100% | Env var loading and validation |
 | `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
-| `internal/parser` | 93% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
-| `internal/database` | 81% | Batch inserts, batch image RPC, batch source updates, retry logic |
-| `internal/logger` | 94% | Level filtering, output format, env var parsing |
-| `main` | 80% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
+| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
+| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic |
+| `internal/logger` | 94% | Level filtering, output format, env var parsing (thread-safe via atomic) |
+| `main` | 81% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
 | `_shared/*.ts` | — | Cache, CORS, ETag, memory cache utilities |
 
 Run tests before committing:

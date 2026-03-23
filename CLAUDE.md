@@ -251,10 +251,10 @@ Unit tests cover Go packages and Deno Edge Functions:
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
 | `internal/config` | 100% | Load with env var validation |
 | `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
-| `internal/parser` | 93% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
-| `internal/database` | 81% | Batch inserts, batch image RPC, batch source updates, retry logic |
+| `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
+| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic |
 | `internal/logger` | 94% | Level filtering, output format, env var parsing |
-| `main` | 80% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
+| `main` | 81% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:
@@ -276,7 +276,7 @@ Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TO
 ## Monitoring
 
 Check `fetch_logs` table in Supabase Table Editor for:
-- `status`: running / completed / failed
+- `status`: running / completed / partial_failure / failed
 - `articles_inserted`, `articles_skipped`, `errors`
 
 GitHub Actions logs: Repository → Actions tab
