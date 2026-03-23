@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // Level represents a logging severity level.
@@ -17,41 +18,41 @@ const (
 	LevelFatal Level = 4
 )
 
-var currentLevel Level
+var currentLevel atomic.Int32
 
 func init() {
-	currentLevel = parseLevel(os.Getenv("LOG_LEVEL"))
+	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
 }
 
-// SetLevel sets the current logging level. Useful for testing.
+// SetLevel sets the current logging level. Safe for concurrent use.
 func SetLevel(level Level) {
-	currentLevel = level
+	currentLevel.Store(int32(level))
 }
 
 // Debugf logs a message at DEBUG level.
 func Debugf(format string, args ...interface{}) {
-	if currentLevel <= LevelDebug {
+	if Level(currentLevel.Load()) <= LevelDebug {
 		log.Printf("[DEBUG] "+format, args...)
 	}
 }
 
 // Infof logs a message at INFO level.
 func Infof(format string, args ...interface{}) {
-	if currentLevel <= LevelInfo {
+	if Level(currentLevel.Load()) <= LevelInfo {
 		log.Printf("[INFO] "+format, args...)
 	}
 }
 
 // Warnf logs a message at WARN level.
 func Warnf(format string, args ...interface{}) {
-	if currentLevel <= LevelWarn {
+	if Level(currentLevel.Load()) <= LevelWarn {
 		log.Printf("[WARN] "+format, args...)
 	}
 }
 
 // Errorf logs a message at ERROR level.
 func Errorf(format string, args ...interface{}) {
-	if currentLevel <= LevelError {
+	if Level(currentLevel.Load()) <= LevelError {
 		log.Printf("[ERROR] "+format, args...)
 	}
 }

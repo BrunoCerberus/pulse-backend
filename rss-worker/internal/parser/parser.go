@@ -12,6 +12,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mmcdole/gofeed"
@@ -64,25 +65,30 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 	return articles, nil
 }
 
-// enrichWithOGImages fetches og:image for each article in parallel
-// Uses a worker pool to avoid overwhelming servers
-func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Article) {
+// enrichStats holds success/failure counts from an enrichment pass.
+type enrichStats struct {
+	Success int
+	Failed  int
+}
+
+// enrichWithOGImages fetches og:image for each article in parallel.
+// Uses a worker pool to avoid overwhelming servers.
+func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Article) enrichStats {
 	logger.Infof("[OG] Starting og:image enrichment for %d articles", len(articles))
 
 	if len(articles) == 0 {
 		logger.Debugf("[OG] No articles to process")
-		return
+		return enrichStats{}
 	}
 
 	const maxWorkers = 5
 	numWorkers := min(maxWorkers, len(articles))
 
-	// Channel for work items
-	work := make(chan *models.Article, len(articles))
+	work := make(chan *models.Article, maxWorkers*2)
 	var wg sync.WaitGroup
+	var success, failed atomic.Int32
 
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -91,21 +97,27 @@ func (p *Parser) enrichWithOGImages(ctx context.Context, articles []*models.Arti
 				case <-ctx.Done():
 					return
 				default:
+					before := article.ImageURL
 					p.fetchOGImageForArticle(ctx, article)
+					if article.ImageURL != before {
+						success.Add(1)
+					} else {
+						failed.Add(1)
+					}
 				}
 			}
 		}()
 	}
 
-	// Send work
 	for _, article := range articles {
 		work <- article
 	}
 	close(work)
 
-	// Wait for completion
 	wg.Wait()
-	logger.Infof("[OG] Completed og:image enrichment")
+	stats := enrichStats{Success: int(success.Load()), Failed: int(failed.Load())}
+	logger.Infof("[OG] Completed og:image enrichment: success=%d, failed=%d", stats.Success, stats.Failed)
+	return stats
 }
 
 // fetchOGImageForArticle fetches the og:image for a single article
@@ -129,9 +141,8 @@ func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Art
 	}
 }
 
-// enrichWithContent extracts full article content for articles that don't have it
-func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Article) {
-	// Filter to only articles without content
+// enrichWithContent extracts full article content for articles that don't have it.
+func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Article) enrichStats {
 	var needsContent []*models.Article
 	for _, article := range articles {
 		if article.Content == nil || *article.Content == "" {
@@ -141,7 +152,7 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 
 	if len(needsContent) == 0 {
 		logger.Debugf("[CONTENT] All articles have content from RSS")
-		return
+		return enrichStats{}
 	}
 
 	logger.Infof("[CONTENT] Starting content extraction for %d articles", len(needsContent))
@@ -149,11 +160,11 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 	const maxWorkers = 3 // Lower than og:image since content extraction is heavier
 	numWorkers := min(maxWorkers, len(needsContent))
 
-	work := make(chan *models.Article, len(needsContent))
+	work := make(chan *models.Article, maxWorkers*2)
 	var wg sync.WaitGroup
+	var success, failed atomic.Int32
 
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -162,20 +173,27 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 				case <-ctx.Done():
 					return
 				default:
+					before := article.Content
 					p.fetchContentForArticle(ctx, article)
+					if article.Content != before {
+						success.Add(1)
+					} else {
+						failed.Add(1)
+					}
 				}
 			}
 		}()
 	}
 
-	// Send work
 	for _, article := range needsContent {
 		work <- article
 	}
 	close(work)
 
 	wg.Wait()
-	logger.Infof("[CONTENT] Completed content extraction")
+	stats := enrichStats{Success: int(success.Load()), Failed: int(failed.Load())}
+	logger.Infof("[CONTENT] Completed content extraction: success=%d, failed=%d", stats.Success, stats.Failed)
+	return stats
 }
 
 // fetchContentForArticle extracts content for a single article

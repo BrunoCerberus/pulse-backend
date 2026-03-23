@@ -229,9 +229,9 @@ func TestInsertArticles_BatchError(t *testing.T) {
 
 	inserted, skipped, err := client.InsertArticles(articles)
 
-	// InsertArticles logs errors but doesn't return them
-	if err != nil {
-		t.Fatalf("InsertArticles error: %v", err)
+	// InsertArticles now returns accumulated batch errors
+	if err == nil {
+		t.Fatal("expected error from InsertArticles, got nil")
 	}
 	if inserted != 0 {
 		t.Errorf("inserted = %d, want 0", inserted)

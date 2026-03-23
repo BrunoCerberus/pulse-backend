@@ -14,6 +14,7 @@ package database
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,6 +105,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 
 	// Insert in batches of batchSize
 	insertedHashes := make(map[string]struct{})
+	var batchErrors []error
 	for i := 0; i < len(articles); i += batchSize {
 		end := i + batchSize
 		if end > len(articles) {
@@ -114,6 +116,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 		hashes, batchErr := c.insertArticleBatch(batch)
 		if batchErr != nil {
 			logger.Errorf("[DB] Error inserting batch of %d articles: %v", len(batch), batchErr)
+			batchErrors = append(batchErrors, fmt.Errorf("batch %d-%d: %w", i, end, batchErr))
 			continue
 		}
 		for _, h := range hashes {
@@ -146,7 +149,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 		}
 	}
 
-	return inserted, skipped, nil
+	return inserted, skipped, errors.Join(batchErrors...)
 }
 
 // insertArticleBatch inserts a batch of articles and returns the url_hashes of newly inserted rows.

@@ -154,10 +154,10 @@ func TestInit_ReadsLOG_LEVEL(t *testing.T) {
 
 	os.Setenv("LOG_LEVEL", "DEBUG")
 	// Re-run init logic manually
-	currentLevel = parseLevel(os.Getenv("LOG_LEVEL"))
+	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
 
-	if currentLevel != LevelDebug {
-		t.Errorf("currentLevel = %d after LOG_LEVEL=DEBUG, want %d", currentLevel, LevelDebug)
+	if Level(currentLevel.Load()) != LevelDebug {
+		t.Errorf("currentLevel = %d after LOG_LEVEL=DEBUG, want %d", currentLevel.Load(), LevelDebug)
 	}
 }
 
@@ -166,9 +166,9 @@ func TestInit_DefaultsToInfo(t *testing.T) {
 	defer os.Setenv("LOG_LEVEL", origLevel)
 
 	os.Unsetenv("LOG_LEVEL")
-	currentLevel = parseLevel(os.Getenv("LOG_LEVEL"))
+	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
 
-	if currentLevel != LevelInfo {
-		t.Errorf("currentLevel = %d with no LOG_LEVEL, want %d", currentLevel, LevelInfo)
+	if Level(currentLevel.Load()) != LevelInfo {
+		t.Errorf("currentLevel = %d with no LOG_LEVEL, want %d", currentLevel.Load(), LevelInfo)
 	}
 }

@@ -3,13 +3,13 @@ package parser
 import (
 	"context"
 	"io"
-	"log"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/httputil"
+	"github.com/pulsefeed/rss-worker/internal/logger"
 )
 
 // OGImageExtractor fetches og:image meta tags from article pages
@@ -52,14 +52,14 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		log.Printf("[OG-HTTP] Request failed for %s: %v", articleURL, err)
+		logger.Debugf("[OG-HTTP] Request failed for %s: %v", articleURL, err)
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
-		log.Printf("[OG-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
+		logger.Debugf("[OG-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return "", nil // Not an error, just no image found
 	}
 

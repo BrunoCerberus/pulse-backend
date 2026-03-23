@@ -3,7 +3,6 @@ package parser
 import (
 	"context"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	readability "github.com/go-shiori/go-readability"
 	"github.com/pulsefeed/rss-worker/internal/httputil"
+	"github.com/pulsefeed/rss-worker/internal/logger"
 )
 
 // ContentExtractor fetches and extracts article content from web pages
@@ -50,14 +50,14 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		log.Printf("[CONTENT-HTTP] Request failed for %s: %v", articleURL, err)
+		logger.Debugf("[CONTENT-HTTP] Request failed for %s: %v", articleURL, err)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body) // drain body to enable connection reuse
-		log.Printf("[CONTENT-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
+		logger.Debugf("[CONTENT-HTTP] Non-200 status %d for %s", resp.StatusCode, articleURL)
 		return nil, nil
 	}
 
@@ -67,8 +67,8 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	// Use go-readability to extract the article content
 	article, err := readability.FromReader(limitedBody, parsedURL)
 	if err != nil {
-		_, _ = io.Copy(io.Discard, resp.Body) // drain remaining body to enable connection reuse
-		log.Printf("[CONTENT] Readability failed for %s: %v", articleURL, err)
+		_, _ = io.Copy(io.Discard, limitedBody) // drain remaining body to enable connection reuse
+		logger.Debugf("[CONTENT] Readability failed for %s: %v", articleURL, err)
 		return nil, err
 	}
 
@@ -79,7 +79,7 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 
 	// Skip if content is too short (likely extraction failed)
 	if len(textContent) < 100 {
-		log.Printf("[CONTENT] Content too short for %s (len=%d)", articleURL, len(textContent))
+		logger.Debugf("[CONTENT] Content too short for %s (len=%d)", articleURL, len(textContent))
 		return nil, nil
 	}
 

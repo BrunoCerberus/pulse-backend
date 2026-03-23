@@ -90,21 +90,21 @@ func runBackfill[T any](cfg backfillConfig[T]) error {
 	}
 
 	numWorkers := min(cfg.maxWorkers, len(items))
-	work := make(chan T, len(items))
-	results := make(chan struct{ updated bool }, len(items))
+	work := make(chan T, numWorkers*2)
+	results := make(chan bool, numWorkers*2)
 	var wg sync.WaitGroup
 
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for item := range work {
 				select {
 				case <-ctx.Done():
-					results <- struct{ updated bool }{false}
+					results <- false
 					return
 				default:
-					results <- struct{ updated bool }{cfg.process(ctx, item)}
+					results <- cfg.process(ctx, item)
 				}
 			}
 		}()
@@ -121,8 +121,8 @@ func runBackfill[T any](cfg backfillConfig[T]) error {
 	}()
 
 	var updatedCount, skippedCount int
-	for result := range results {
-		if result.updated {
+	for updated := range results {
+		if updated {
 			updatedCount++
 		} else {
 			skippedCount++
@@ -220,6 +220,14 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 			defer wg.Done()
 			semaphore <- struct{}{}        // Acquire
 			defer func() { <-semaphore }() // Release
+			defer func() {
+				if r := recover(); r != nil {
+					results <- models.FetchResult{
+						Source: s,
+						Error:  fmt.Errorf("panic in processSource: %v", r),
+					}
+				}
+			}()
 
 			result := processSource(ctx, db, rssParser, s)
 			results <- result
@@ -267,8 +275,12 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 	fetchLog.ArticlesSkipped = totalSkipped
 	fetchLog.Errors = errors
 	fetchLog.Status = "completed"
-	if len(errors) > 0 && fetchLog.SourcesProcessed == len(errors) {
-		fetchLog.Status = "failed"
+	if len(errors) > 0 {
+		if fetchLog.SourcesProcessed == len(errors) {
+			fetchLog.Status = "failed"
+		} else {
+			fetchLog.Status = "partial_failure"
+		}
 	}
 
 	if fetchLog.ID != "" {
@@ -300,15 +312,13 @@ func processSource(ctx context.Context, db Store, rssParser *parser.Parser, sour
 
 	result.ArticlesFetched = len(articles)
 
-	// Insert articles
+	// Insert articles (may return partial results alongside an error)
 	inserted, skipped, err := db.InsertArticles(articles)
-	if err != nil {
-		result.Error = fmt.Errorf("insert error: %w", err)
-		return result
-	}
-
 	result.ArticlesInserted = inserted
 	result.ArticlesSkipped = skipped
+	if err != nil {
+		result.Error = fmt.Errorf("insert error (partial): %w", err)
+	}
 
 	return result
 }
