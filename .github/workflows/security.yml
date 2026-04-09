@@ -53,9 +53,9 @@ jobs:
       - name: Run TruffleHog
         uses: trufflesecurity/trufflehog@main
         with:
-          path: ./
-          # --fail makes the step exit non-zero when secrets are found.
-          extra_args: --results=verified,unknown --fail
+          # The action injects --fail automatically; adding it to extra_args
+          # causes "flag 'fail' cannot be repeated".
+          extra_args: --results=verified,unknown
 
   # ---------------------------------------------------------------------------
   # Go SAST (gosec)
@@ -79,7 +79,16 @@ jobs:
           cache-dependency-path: rss-worker/go.sum
 
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        env:
+          # Pinned — bump periodically (see https://github.com/securego/gosec/releases).
+          # Using the prebuilt binary avoids `go install`'s strict toolchain
+          # check, which rejects gosec releases that bump their own go.mod
+          # past the project's Go version.
+          GOSEC_VERSION: "v2.22.2"
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
+            | sudo sh -s -- -b /usr/local/bin "${GOSEC_VERSION}"
+          gosec --version
 
       - name: Run gosec
         working-directory: ./rss-worker
