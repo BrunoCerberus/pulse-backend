@@ -206,6 +206,7 @@ pulse-backend/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily)
     │   ├── test.yml                   # Unit tests + lint + govulncheck (on push/PR)
+    │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
     │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
     └── dependabot.yml                 # Weekly dependency updates
 ```
@@ -461,6 +462,20 @@ Check the `fetch_logs` table in Supabase:
 
 View workflow runs at:
 `https://github.com/YOUR_USERNAME/pulse-backend/actions`
+
+## Security
+
+The `security.yml` workflow runs on every push/PR to `main` and weekly on Mondays (06:00 UTC) to catch newly disclosed CVEs in existing dependencies. Jobs:
+
+| Job | Tool | What it catches |
+|-----|------|-----------------|
+| Secret Scan | gitleaks + TruffleHog | Leaked API keys, tokens, and credentials in code and full git history (TruffleHog validates against live APIs to cut false positives) |
+| Go SAST | gosec | SQL injection, hardcoded credentials, weak crypto, unsafe HTTP clients, and other insecure Go patterns |
+| Go Vulnerabilities | govulncheck | Known CVEs in Go module dependencies |
+| Trivy Filesystem | Trivy | Dependency CVEs (all ecosystems), additional secret patterns, and misconfigurations in Dockerfiles / GitHub workflows / IaC |
+| SBOM | Trivy (CycloneDX) | Generates a Software Bill of Materials as a workflow artifact for supply-chain audits |
+
+All jobs run in parallel and fail the build on any finding. The weekly schedule ensures that vulnerabilities disclosed after merge still surface. Dependabot (weekly) handles automated dependency bumps for both Go modules and GitHub Actions.
 
 ## Troubleshooting
 

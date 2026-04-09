@@ -1,0 +1,168 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly on Mondays at 06:00 UTC — catches newly disclosed CVEs
+    # in dependencies even when no new commits land.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+# Default to least privilege. Individual jobs widen this when they need to
+# (e.g. to write SARIF results to the Security tab — currently unused because
+# this repo is private and does not have GitHub Advanced Security enabled).
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Secret scanning
+  # Detects leaked credentials in source code and full git history.
+  # Two tools are used together because they complement each other:
+  #   - gitleaks: fast regex-based scanner; sweeps the entire commit history.
+  #   - TruffleHog: verifies detected secrets against live APIs
+  #     (--results=verified,unknown) to drastically reduce false positives.
+  # ---------------------------------------------------------------------------
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # Full git history is required so gitleaks can scan all commits.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        env:
+          # Bump periodically — see https://github.com/gitleaks/gitleaks/releases
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        # Exits non-zero on any finding. --redact hides secret values in logs.
+        run: gitleaks detect --source . --verbose --redact --no-banner
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          # --fail makes the step exit non-zero when secrets are found.
+          extra_args: --results=verified,unknown --fail
+
+  # ---------------------------------------------------------------------------
+  # Go SAST (gosec)
+  # Static analysis for Go source — flags SQL injection, hardcoded
+  # credentials, weak crypto, unsafe HTTP clients, and other insecure patterns.
+  # Severity/confidence filters keep the signal-to-noise ratio high.
+  # ---------------------------------------------------------------------------
+  go-sast:
+    name: Go SAST (gosec)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.24"
+          cache: true
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        working-directory: ./rss-worker
+        run: gosec -severity medium -confidence medium ./...
+
+  # ---------------------------------------------------------------------------
+  # Go dependency vulnerabilities (govulncheck)
+  # Scans go.mod against the official Go vulnerability database. Runs on
+  # schedule so that newly disclosed CVEs surface even without new commits.
+  # (test.yml also runs this on every PR for fast feedback.)
+  # ---------------------------------------------------------------------------
+  go-vuln:
+    name: Go Vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.24"
+          cache: true
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          work-dir: ./rss-worker
+
+  # ---------------------------------------------------------------------------
+  # Trivy filesystem scan
+  # Single tool, three scanners: vuln (dependency CVEs across ecosystems),
+  # secret (additional secret regex patterns), and misconfig (Dockerfiles,
+  # GitHub workflows, IaC). Covers what Go-only tools miss — Deno Edge
+  # Functions, workflow files, and config drift.
+  # ---------------------------------------------------------------------------
+  trivy:
+    name: Trivy Filesystem Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: "1"
+          # Ignore CVEs that have no fix available — keeps the report actionable.
+          ignore-unfixed: true
+
+  # ---------------------------------------------------------------------------
+  # Software Bill of Materials (SBOM)
+  # Generates a CycloneDX SBOM for the whole repo and stores it as a workflow
+  # artifact. Useful for supply-chain audits and downstream vulnerability
+  # monitoring (the artifact can be scanned later without the original source).
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: Generate SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          retention-days: 90

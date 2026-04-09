@@ -134,6 +134,7 @@ pulse-backend/
 │   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
 │   ├── test.yml                       # Unit tests + lint + govulncheck on push/PR
+│   ├── security.yml                   # Secret scan, SAST, deps, SBOM (push/PR + weekly)
 │   └── deploy-functions.yml           # Auto-deploy Edge Functions on push
 └── docs/ios-integration.md            # iOS app integration guide
 ```
@@ -269,6 +270,7 @@ make test-deno      # Deno Edge Function tests
 - **fetch-rss.yml**: Every 2 hours + manual trigger
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger
 - **test.yml**: Runs on push/PR to main (Go tests, lint, govulncheck, Deno tests)
+- **security.yml**: Runs on push/PR to main + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact
 - **deploy-functions.yml**: Auto-deploys Edge Functions on push to main
 
 Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`

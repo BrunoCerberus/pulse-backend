@@ -125,6 +125,7 @@ pulse-backend/
 │   │   ├── fetch-rss.yml              # Runs every 2 hours
 │   │   ├── cleanup.yml                # Runs daily at 3 AM UTC
 │   │   ├── test.yml                   # Unit tests + lint + govulncheck on push/PR
+│   │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
 │   │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
 │   └── dependabot.yml                 # Weekly dependency updates
 └── docs/ios-integration.md            # iOS app integration guide
@@ -219,6 +220,7 @@ View:
 | `fetch-rss.yml` | Every 2 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
 | `test.yml` | On push/PR | Unit tests + lint + govulncheck |
+| `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `deploy-functions.yml` | On push to main | Auto-deploy Edge Functions |
 
 Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
