@@ -21,11 +21,13 @@ const (
 var currentLevel atomic.Int32
 
 func init() {
+	// #nosec G115 -- Level is a bounded enum (0..4); int→int32 cannot overflow.
 	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
 }
 
 // SetLevel sets the current logging level. Safe for concurrent use.
 func SetLevel(level Level) {
+	// #nosec G115 -- Level is a bounded enum (0..4); int→int32 cannot overflow.
 	currentLevel.Store(int32(level))
 }
 
