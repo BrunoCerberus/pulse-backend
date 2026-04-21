@@ -110,7 +110,7 @@ git commit -m "Initial commit: Pulse backend"
 
 # Create repo on GitHub, then:
 git remote add origin git@github.com:YOUR_USERNAME/pulse-backend.git
-git push -u origin main
+git push -u origin master
 ```
 
 ### 5. Configure GitHub Secrets
@@ -476,7 +476,7 @@ View workflow runs at:
 
 ## Security
 
-The `security.yml` workflow runs on every push/PR to `main` and weekly on Mondays (06:00 UTC) to catch newly disclosed CVEs in existing dependencies. Jobs:
+The `security.yml` workflow runs on every push/PR to `master` and weekly on Mondays (06:00 UTC) to catch newly disclosed CVEs in existing dependencies. Jobs:
 
 | Job | Tool | What it catches |
 |-----|------|-----------------|
@@ -494,12 +494,12 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 |----------|---------|---------|
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
-| `test.yml` | Push/PR to `main` | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
-| `security.yml` | Push/PR to `main` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
-| `pr-checks.yml` | PR to `main` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
-| `deploy-functions.yml` | Push to `main` | Auto-deploy Edge Functions |
+| `test.yml` | Push/PR to `master` | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
+| `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
+| `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
+| `deploy-functions.yml` | Push to `master` | Auto-deploy Edge Functions |
 
-Branch protection on `main` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `main` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.
+Branch protection on `master` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.
 
 ## Troubleshooting
 

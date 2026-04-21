@@ -290,12 +290,12 @@ make test-deno      # Deno Edge Function tests
 
 - **fetch-rss.yml**: Every 2 hours + manual trigger. Runs the Go RSS worker against the Supabase production DB.
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger. Removes articles older than `ArticleRetentionDays`.
-- **test.yml**: Runs on push/PR to main (Go tests with race detector + coverage, golangci-lint, govulncheck, Deno tests).
-- **security.yml**: Runs on push/PR to main + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
-- **pr-checks.yml**: Runs on PR to main only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
-- **deploy-functions.yml**: Auto-deploys Edge Functions on push to main.
+- **test.yml**: Runs on push/PR to master (Go tests with race detector + coverage, golangci-lint, govulncheck, Deno tests).
+- **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
+- **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
+- **deploy-functions.yml**: Auto-deploys Edge Functions on push to master.
 
-All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `main` via branch protection. Direct pushes to `main` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
+All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
 
 Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
 

@@ -1,17 +1,17 @@
 name: PR Checks
 
-# PR-only guards that the main test/security workflows don't cover:
+# PR-only guards that the primary test/security workflows don't cover:
 #   - PR title must follow conventional commits (squash-merge uses it as
-#     the commit message on main, so bad titles rot the history).
+#     the commit message on master, so bad titles rot the history).
 #   - go.mod / go.sum must be in sync — catches missed `go mod tidy`.
 #   - Migration filenames follow NNN_*.sql with no gaps in the sequence.
 #
-# Runs in parallel with test.yml and security.yml on every PR against main.
+# Runs in parallel with test.yml and security.yml on every PR against master.
 
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
