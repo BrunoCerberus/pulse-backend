@@ -2,9 +2,9 @@ name: Security Audit
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
   schedule:
     # Weekly on Mondays at 06:00 UTC — catches newly disclosed CVEs
     # in dependencies even when no new commits land.
