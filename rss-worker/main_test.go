@@ -442,25 +442,31 @@ func TestProcessSource_InsertError(t *testing.T) {
 // --- mockStore for testing runFetch, runCleanup, and backfill wrappers ---
 
 type mockStore struct {
-	sources            []models.Source
-	sourcesErr         error
-	insertResult       int
-	insertSkipped      int
-	insertErr          error
-	fetchLog           *models.FetchLog
-	fetchLogErr        error
-	updateLogErr       error
-	updateSourcesErr   error
-	cleanupResult      int
-	cleanupErr         error
-	cleanupLogsResult  int
-	cleanupLogsErr     error
-	ogArticles         []database.ArticleForBackfill
-	ogArticlesErr      error
-	contentArticles    []database.ArticleForContentBackfill
-	contentErr         error
-	updateImageErr     error
-	updateContentErr   error
+	sources           []models.Source
+	sourcesErr        error
+	insertResult      int
+	insertSkipped     int
+	insertErr         error
+	fetchLog          *models.FetchLog
+	fetchLogErr       error
+	updateLogErr      error
+	updateSourcesErr  error
+	cleanupResult     int
+	cleanupErr        error
+	cleanupLogsResult int
+	cleanupLogsErr    error
+	ogArticles        []database.ArticleForBackfill
+	ogArticlesErr     error
+	contentArticles   []database.ArticleForContentBackfill
+	contentErr        error
+	updateImageErr    error
+	updateContentErr  error
+	bumpErr           error
+
+	// bumped captures calls to BumpBackfillAttempts keyed by kind — tests
+	// assert we recorded the attempted url_hashes for failed articles.
+	bumpedImage   []string
+	bumpedContent []string
 }
 
 func (m *mockStore) GetActiveSources() ([]models.Source, error) {
@@ -491,7 +497,7 @@ func (m *mockStore) CleanupOldFetchLogs(daysToKeep int) (int, error) {
 	return m.cleanupLogsResult, m.cleanupLogsErr
 }
 
-func (m *mockStore) GetArticlesNeedingOGImage(limit int) ([]database.ArticleForBackfill, error) {
+func (m *mockStore) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error) {
 	return m.ogArticles, m.ogArticlesErr
 }
 
@@ -499,7 +505,7 @@ func (m *mockStore) UpdateArticleImage(urlHash string, imageURL string) error {
 	return m.updateImageErr
 }
 
-func (m *mockStore) GetArticlesNeedingContent(limit int) ([]database.ArticleForContentBackfill, error) {
+func (m *mockStore) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error) {
 	return m.contentArticles, m.contentErr
 }
 
@@ -507,12 +513,22 @@ func (m *mockStore) UpdateArticleContent(urlHash string, content string) error {
 	return m.updateContentErr
 }
 
+func (m *mockStore) BumpBackfillAttempts(urlHashes []string, kind string) error {
+	switch kind {
+	case "image":
+		m.bumpedImage = append(m.bumpedImage, urlHashes...)
+	case "content":
+		m.bumpedContent = append(m.bumpedContent, urlHashes...)
+	}
+	return m.bumpErr
+}
+
 // --- runCleanup tests ---
 
 func TestRunCleanup_Success(t *testing.T) {
 	db := &mockStore{cleanupResult: 42}
 	// runCleanup calls log.Fatalf on error, so we only test the success path
-	runCleanup(db, 30)
+	runCleanup(context.Background(), db, 30)
 	// If we reach here without panicking, the test passes
 }
 
@@ -553,7 +569,7 @@ func TestRunFetch_Success(t *testing.T) {
 	}
 
 	rssParser := parser.New()
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -566,7 +582,7 @@ func TestRunFetch_GetSourcesError(t *testing.T) {
 	}
 
 	rssParser := parser.New()
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err == nil {
 		t.Fatal("expected error from runFetch, got nil")
 	}
@@ -583,7 +599,7 @@ func TestRunFetch_CreateFetchLogError(t *testing.T) {
 
 	rssParser := parser.New()
 	// Should continue despite fetch log creation failure
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -596,7 +612,7 @@ func TestRunFetch_EmptySources(t *testing.T) {
 	}
 
 	rssParser := parser.New()
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -634,7 +650,7 @@ func TestRunFetch_MultipleSources(t *testing.T) {
 	rssParser := parser.New()
 	// Use maxConcurrent=1 to avoid triggering gofeed's lazy-init race
 	// (gofeed.Parser.httpClient() is not goroutine-safe on first use)
-	err := runFetch(db, rssParser, 1)
+	err := runFetch(context.Background(), db, rssParser, 1)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -655,7 +671,7 @@ func TestRunFetch_SourceParseError(t *testing.T) {
 
 	rssParser := parser.New()
 	// runFetch should succeed even if individual sources fail
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -670,7 +686,7 @@ func TestRunFetch_UpdateFetchLogError(t *testing.T) {
 
 	rssParser := parser.New()
 	// Should complete without error despite log update failure
-	err := runFetch(db, rssParser, 5)
+	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
 	}
@@ -680,26 +696,37 @@ func TestRunFetch_UpdateFetchLogError(t *testing.T) {
 
 func TestRunBackfill_Success(t *testing.T) {
 	var processed atomic.Int32
+	var bumped []string
 	cfg := backfillConfig[string]{
 		name:       "test",
+		kind:       "image",
 		timeout:    5 * time.Second,
 		limit:      10,
 		maxWorkers: 2,
-		fetch: func(limit int) ([]string, error) {
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]string, error) {
 			return []string{"a", "b", "c"}, nil
 		},
 		process: func(ctx context.Context, item string) bool {
 			processed.Add(1)
 			return item != "b" // "b" returns false (skipped)
 		},
+		hashOf: func(s string) string { return s },
+		bumpAttempts: func(hashes []string, kind string) error {
+			bumped = append(bumped, hashes...)
+			return nil
+		},
 	}
 
-	if err := runBackfill(cfg); err != nil {
+	if err := runBackfill(context.Background(), cfg); err != nil {
 		t.Fatalf("runBackfill returned error: %v", err)
 	}
 
 	if got := processed.Load(); got != 3 {
 		t.Errorf("processed = %d, want 3", got)
+	}
+	// Only "b" failed, so only it should be bumped.
+	if len(bumped) != 1 || bumped[0] != "b" {
+		t.Errorf("bumped = %v, want [b]", bumped)
 	}
 }
 
@@ -709,16 +736,17 @@ func TestRunBackfill_FetchError(t *testing.T) {
 		timeout:    5 * time.Second,
 		limit:      10,
 		maxWorkers: 2,
-		fetch: func(limit int) ([]string, error) {
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]string, error) {
 			return nil, errors.New("fetch failed")
 		},
 		process: func(ctx context.Context, item string) bool {
 			t.Error("process should not be called on fetch error")
 			return false
 		},
+		hashOf: func(s string) string { return s },
 	}
 
-	err := runBackfill(cfg)
+	err := runBackfill(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("expected error from runBackfill, got nil")
 	}
@@ -730,16 +758,17 @@ func TestRunBackfill_EmptyItems(t *testing.T) {
 		timeout:    5 * time.Second,
 		limit:      10,
 		maxWorkers: 2,
-		fetch: func(limit int) ([]int, error) {
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]int, error) {
 			return []int{}, nil
 		},
 		process: func(ctx context.Context, item int) bool {
 			t.Error("process should not be called for empty items")
 			return false
 		},
+		hashOf: func(i int) string { return "" },
 	}
 
-	if err := runBackfill(cfg); err != nil {
+	if err := runBackfill(context.Background(), cfg); err != nil {
 		t.Fatalf("runBackfill returned error: %v", err)
 	}
 }
@@ -750,15 +779,16 @@ func TestRunBackfill_MoreWorkersThanItems(t *testing.T) {
 		timeout:    5 * time.Second,
 		limit:      100,
 		maxWorkers: 10,
-		fetch: func(limit int) ([]string, error) {
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]string, error) {
 			return []string{"only-one"}, nil
 		},
 		process: func(ctx context.Context, item string) bool {
 			return true
 		},
+		hashOf: func(s string) string { return s },
 	}
 
-	if err := runBackfill(cfg); err != nil {
+	if err := runBackfill(context.Background(), cfg); err != nil {
 		t.Fatalf("runBackfill returned error: %v", err)
 	}
 }
@@ -769,7 +799,7 @@ func TestRunOGImageBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		ogArticles: []database.ArticleForBackfill{},
 	}
-	if err := runOGImageBackfill(db); err != nil {
+	if err := runOGImageBackfill(context.Background(), db); err != nil {
 		t.Fatalf("runOGImageBackfill returned error: %v", err)
 	}
 }
@@ -778,7 +808,7 @@ func TestRunOGImageBackfill_FetchError(t *testing.T) {
 	db := &mockStore{
 		ogArticlesErr: errors.New("db error"),
 	}
-	if err := runOGImageBackfill(db); err == nil {
+	if err := runOGImageBackfill(context.Background(), db); err == nil {
 		t.Fatal("expected error from runOGImageBackfill, got nil")
 	}
 }
@@ -789,7 +819,7 @@ func TestRunContentBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		contentArticles: []database.ArticleForContentBackfill{},
 	}
-	if err := runContentBackfill(db); err != nil {
+	if err := runContentBackfill(context.Background(), db); err != nil {
 		t.Fatalf("runContentBackfill returned error: %v", err)
 	}
 }
@@ -798,7 +828,7 @@ func TestRunContentBackfill_FetchError(t *testing.T) {
 	db := &mockStore{
 		contentErr: errors.New("db error"),
 	}
-	if err := runContentBackfill(db); err == nil {
+	if err := runContentBackfill(context.Background(), db); err == nil {
 		t.Fatal("expected error from runContentBackfill, got nil")
 	}
 }

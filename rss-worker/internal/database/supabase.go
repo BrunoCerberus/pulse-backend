@@ -518,13 +518,17 @@ type ArticleForContentBackfill struct {
 }
 
 // GetArticlesNeedingOGImage retrieves articles that need og:image backfill
-// (where image_url equals thumbnail_url, is null, or contains low-res indicators)
-func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, error) {
-	// Get articles where:
-	// - image_url is null, OR
-	// - image_url equals thumbnail_url, OR
-	// - image_url contains width=140 (Guardian low-res)
-	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&or=(image_url.is.null,image_url.eq.thumbnail_url,image_url.like.*width=140*)&limit=%d", c.baseURL, limit)
+// (where image_url equals thumbnail_url, is null, or contains low-res indicators).
+// Excludes articles whose attempt counter is at maxAttempts or whose last attempt
+// was within cooldownHours — this prevents the worker from re-fetching dead URLs
+// on every cron tick (see migration 018).
+func (c *Client) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]ArticleForBackfill, error) {
+	cutoff := time.Now().UTC().Add(-time.Duration(cooldownHours) * time.Hour).Format(time.RFC3339)
+	filter := fmt.Sprintf(
+		"and=(or(image_url.is.null,image_url.eq.thumbnail_url,image_url.like.*width=140*),image_backfill_attempts.lt.%d,or(image_backfill_last_attempt_at.is.null,image_backfill_last_attempt_at.lt.%s))",
+		maxAttempts, cutoff,
+	)
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -551,9 +555,15 @@ func (c *Client) GetArticlesNeedingOGImage(limit int) ([]ArticleForBackfill, err
 }
 
 // GetArticlesNeedingContent retrieves articles that need content backfill
-// (where content is null or empty)
-func (c *Client) GetArticlesNeedingContent(limit int) ([]ArticleForContentBackfill, error) {
-	url := fmt.Sprintf("%s/articles?select=url_hash,url,content&or=(content.is.null,content.eq.)&limit=%d", c.baseURL, limit)
+// (where content is null or empty). Excludes articles that exhausted maxAttempts
+// or had an attempt within cooldownHours (see migration 018).
+func (c *Client) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]ArticleForContentBackfill, error) {
+	cutoff := time.Now().UTC().Add(-time.Duration(cooldownHours) * time.Hour).Format(time.RFC3339)
+	filter := fmt.Sprintf(
+		"and=(or(content.is.null,content.eq.),content_backfill_attempts.lt.%d,or(content_backfill_last_attempt_at.is.null,content_backfill_last_attempt_at.lt.%s))",
+		maxAttempts, cutoff,
+	)
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,content&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -577,6 +587,41 @@ func (c *Client) GetArticlesNeedingContent(limit int) ([]ArticleForContentBackfi
 	}
 
 	return articles, nil
+}
+
+// BumpBackfillAttempts increments the attempt counter and stamps last_attempt_at
+// for all given url_hashes via the bump_backfill_attempts RPC (migration 018).
+// kind selects which column pair is updated: "image" or "content".
+//
+// Call this with hashes of articles whose backfill attempt failed so they get
+// excluded from the next run until the cooldown elapses.
+func (c *Client) BumpBackfillAttempts(urlHashes []string, kind string) error {
+	if len(urlHashes) == 0 {
+		return nil
+	}
+
+	url := fmt.Sprintf("%s/rpc/bump_backfill_attempts", c.baseURL)
+
+	payload := map[string]interface{}{
+		"url_hashes": urlHashes,
+		"kind":       kind,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.doWithRetry("POST", url, data)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bump backfill attempts failed: %s - %s", resp.Status, readErrorBody(resp))
+	}
+
+	return nil
 }
 
 // UpdateArticleContent updates the content field for an existing article

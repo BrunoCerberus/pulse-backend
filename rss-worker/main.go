@@ -19,17 +19,33 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
-	"log"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/config"
 	"github.com/pulsefeed/rss-worker/internal/database"
+	"github.com/pulsefeed/rss-worker/internal/logger"
 	"github.com/pulsefeed/rss-worker/internal/models"
 	"github.com/pulsefeed/rss-worker/internal/parser"
 )
+
+// newRunID returns a short hex ID (8 chars) for correlating all log lines
+// emitted by a single worker invocation. Falls back to a timestamp if
+// crypto/rand fails.
+func newRunID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // Named constants for timeouts, limits, and worker counts.
 const (
@@ -40,6 +56,14 @@ const (
 	contentBackfillTimeout = 60 * time.Minute
 	contentBackfillLimit   = 200
 	contentBackfillWorkers = 3
+)
+
+// Backfill attempt-tracking defaults. Override via main() using values from
+// config.Load() so tests can exercise run*Backfill without requiring SUPABASE
+// environment variables.
+var (
+	backfillMaxAttempts   = 3
+	backfillCooldownHours = 24
 )
 
 // Store abstracts the database operations used by the worker commands.
@@ -53,45 +77,61 @@ type Store interface {
 	UpdateFetchLog(log *models.FetchLog) error
 	CleanupOldArticles(daysToKeep int) (int, error)
 	CleanupOldFetchLogs(daysToKeep int) (int, error)
-	GetArticlesNeedingOGImage(limit int) ([]database.ArticleForBackfill, error)
+	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error)
 	UpdateArticleImage(urlHash string, imageURL string) error
-	GetArticlesNeedingContent(limit int) ([]database.ArticleForContentBackfill, error)
+	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
 	UpdateArticleContent(urlHash string, content string) error
+	BumpBackfillAttempts(urlHashes []string, kind string) error
 }
 
 // backfillConfig holds parameters for a generic backfill operation.
 type backfillConfig[T any] struct {
-	name       string
-	timeout    time.Duration
-	limit      int
-	maxWorkers int
-	fetch      func(limit int) ([]T, error)
-	process    func(ctx context.Context, item T) bool
+	name          string
+	kind          string // "image" or "content" — passed to BumpBackfillAttempts
+	timeout       time.Duration
+	limit         int
+	maxAttempts   int
+	cooldownHours int
+	maxWorkers    int
+	fetch         func(limit, maxAttempts, cooldownHours int) ([]T, error)
+	process       func(ctx context.Context, item T) bool
+	hashOf        func(item T) string
+	bumpAttempts  func(hashes []string, kind string) error
+}
+
+// backfillOutcome carries the per-item result out of the worker pool so the
+// caller can tell which articles were attempted-but-failed and persist an
+// attempt bump for them.
+type backfillOutcome struct {
+	updated bool
+	hash    string // url_hash of the attempted item; "" when skipped by cancel
 }
 
 // runBackfill executes a generic backfill operation: fetch items, then process
 // them concurrently with a worker pool. Returns an error if fetching items fails.
-func runBackfill[T any](cfg backfillConfig[T]) error {
-	log.Printf("Starting %s backfill", cfg.name)
+// The baseCtx is derived from the top-level signal-aware context so SIGTERM
+// propagates into worker goroutines and in-flight HTTP requests.
+func runBackfill[T any](baseCtx context.Context, cfg backfillConfig[T]) error {
+	logger.Infof("Starting %s backfill", cfg.name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+	ctx, cancel := context.WithTimeout(baseCtx, cfg.timeout)
 	defer cancel()
 
-	items, err := cfg.fetch(cfg.limit)
+	items, err := cfg.fetch(cfg.limit, cfg.maxAttempts, cfg.cooldownHours)
 	if err != nil {
 		return fmt.Errorf("failed to get items for %s backfill: %w", cfg.name, err)
 	}
 
-	log.Printf("Found %d items needing %s backfill", len(items), cfg.name)
+	logger.Infof("Found %d items needing %s backfill", len(items), cfg.name)
 
 	if len(items) == 0 {
-		log.Printf("No items need %s backfill", cfg.name)
+		logger.Infof("No items need %s backfill", cfg.name)
 		return nil
 	}
 
 	numWorkers := min(cfg.maxWorkers, len(items))
 	work := make(chan T, numWorkers*2)
-	results := make(chan bool, numWorkers*2)
+	results := make(chan backfillOutcome, numWorkers*2)
 	var wg sync.WaitGroup
 
 	for range numWorkers {
@@ -101,10 +141,15 @@ func runBackfill[T any](cfg backfillConfig[T]) error {
 			for item := range work {
 				select {
 				case <-ctx.Done():
-					results <- false
+					// Skipped due to cancellation: empty hash so we don't
+					// penalize the article for a shutdown we caused.
+					results <- backfillOutcome{updated: false, hash: ""}
 					return
 				default:
-					results <- cfg.process(ctx, item)
+					results <- backfillOutcome{
+						updated: cfg.process(ctx, item),
+						hash:    cfg.hashOf(item),
+					}
 				}
 			}
 		}()
@@ -124,56 +169,90 @@ func runBackfill[T any](cfg backfillConfig[T]) error {
 	}()
 
 	var updatedCount, skippedCount int
-	for updated := range results {
-		if updated {
+	var failedHashes []string
+	for r := range results {
+		if r.updated {
 			updatedCount++
 		} else {
 			skippedCount++
+			if r.hash != "" {
+				failedHashes = append(failedHashes, r.hash)
+			}
 		}
 	}
 
-	log.Printf("%s backfill complete: updated=%d, skipped=%d", cfg.name, updatedCount, skippedCount)
+	// Persist one attempt per failed article so the next run honors the
+	// cooldown and eventually gives up once max_attempts is reached.
+	if len(failedHashes) > 0 && cfg.bumpAttempts != nil {
+		if err := cfg.bumpAttempts(failedHashes, cfg.kind); err != nil {
+			logger.Warnf("Failed to bump %s backfill attempts: %v", cfg.name, err)
+		}
+	}
+
+	logger.Infof("%s backfill complete: updated=%d, skipped=%d", cfg.name, updatedCount, skippedCount)
 	return nil
 }
 
 func main() {
-	log.Println("🚀 Starting Pulse RSS Worker")
-
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Apply env-driven per-host rate limit before constructing any HTTP
+	// clients so every parser/extractor picks up the override.
+	parser.SetHostRateLimit(cfg.HostRateLimitRPS, cfg.HostRateLimitBurst)
+
+	// Propagate backfill attempt-tracking knobs to package vars so run*Backfill
+	// picks them up without reloading config.
+	backfillMaxAttempts = cfg.BackfillMaxAttempts
+	backfillCooldownHours = cfg.BackfillCooldownHours
 
 	// Initialize components
 	var db Store = database.NewClient(cfg)
 	rssParser := parser.New()
 
+	// Signal-aware root context: SIGINT/SIGTERM cancels in-flight work so
+	// GitHub Actions cancellations or runner rotations exit cleanly.
+	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Determine command and tag every log line in this run with the same ID
+	// so operators can correlate events across goroutines and structured
+	// exports (LOG_FORMAT=json).
+	command := "fetch"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	runID := newRunID()
+	logger.With("run_id", runID, "command", command).Info("run_started")
+
 	// Check for special commands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "cleanup":
-			runCleanup(db, cfg.ArticleRetentionDays)
+			runCleanup(baseCtx, db, cfg.ArticleRetentionDays)
 			return
 		case "backfill-images":
-			if err := runOGImageBackfill(db); err != nil {
-				log.Fatalf("Image backfill failed: %v", err)
+			if err := runOGImageBackfill(baseCtx, db); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Fatalf("Image backfill failed: %v", err)
 			}
 			return
 		case "backfill-content":
-			if err := runContentBackfill(db); err != nil {
-				log.Fatalf("Content backfill failed: %v", err)
+			if err := runContentBackfill(baseCtx, db); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Fatalf("Content backfill failed: %v", err)
 			}
 			return
 		}
 	}
 
 	// Run the main fetch process
-	if err := runFetch(db, rssParser, cfg.MaxConcurrent); err != nil {
-		log.Fatalf("Fetch failed: %v", err)
+	if err := runFetch(baseCtx, db, rssParser, cfg.MaxConcurrent); err != nil && !errors.Is(err, context.Canceled) {
+		logger.Fatalf("Fetch failed: %v", err)
 	}
 
-	log.Println("✅ RSS Worker completed successfully")
+	logger.With("run_id", runID, "command", command).Info("run_completed")
 }
 
 // runFetch executes the main RSS feed fetching process. It retrieves all active
@@ -183,14 +262,14 @@ func main() {
 // Individual source failures are logged but do not cause the function to return
 // an error. The function only returns an error for critical failures such as
 // being unable to retrieve the source list.
-func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), fetchTimeout)
+func runFetch(baseCtx context.Context, db Store, rssParser *parser.Parser, maxConcurrent int) error {
+	ctx, cancel := context.WithTimeout(baseCtx, fetchTimeout)
 	defer cancel()
 
 	// Create fetch log
 	fetchLog, err := db.CreateFetchLog()
 	if err != nil {
-		log.Printf("Warning: Failed to create fetch log: %v", err)
+		logger.Warnf("Failed to create fetch log: %v", err)
 		// Continue anyway, logging is not critical
 		fetchLog = &models.FetchLog{
 			StartedAt: time.Now(),
@@ -205,12 +284,12 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 		fetchLog.Status = "failed"
 		fetchLog.Errors = append(fetchLog.Errors, fmt.Sprintf("Failed to get sources: %v", err))
 		if logErr := db.UpdateFetchLog(fetchLog); logErr != nil {
-			log.Printf("Warning: Failed to update fetch log: %v", logErr)
+			logger.Warnf("Failed to update fetch log: %v", logErr)
 		}
 		return fmt.Errorf("failed to get sources: %w", err)
 	}
 
-	log.Printf("📡 Found %d active sources", len(sources))
+	logger.Infof("📡 Found %d active sources", len(sources))
 
 	// Process sources concurrently with a semaphore
 	results := make(chan models.FetchResult, len(sources))
@@ -254,21 +333,27 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 		totalInserted += result.ArticlesInserted
 		totalSkipped += result.ArticlesSkipped
 
+		sourceLog := logger.With(
+			"source_id", result.Source.ID,
+			"source_name", result.Source.Name,
+			"fetched", result.ArticlesFetched,
+			"inserted", result.ArticlesInserted,
+			"skipped", result.ArticlesSkipped,
+		)
 		if result.Error != nil {
 			errMsg := fmt.Sprintf("%s: %v", result.Source.Name, result.Error)
 			errors = append(errors, errMsg)
-			log.Printf("❌ %s", errMsg)
+			sourceLog.Error("source_failed", "err", result.Error.Error())
 		} else {
 			successSourceIDs = append(successSourceIDs, result.Source.ID)
-			log.Printf("✓ %s: fetched=%d, inserted=%d, skipped=%d",
-				result.Source.Name, result.ArticlesFetched, result.ArticlesInserted, result.ArticlesSkipped)
+			sourceLog.Info("source_succeeded")
 		}
 	}
 
 	// Batch-update last_fetched_at for all successful sources
 	if len(successSourceIDs) > 0 {
 		if err := db.UpdateSourcesLastFetched(successSourceIDs); err != nil {
-			log.Printf("Warning: Failed to batch update last_fetched_at: %v", err)
+			logger.Warnf("Failed to batch update last_fetched_at: %v", err)
 		}
 	}
 
@@ -288,12 +373,12 @@ func runFetch(db Store, rssParser *parser.Parser, maxConcurrent int) error {
 
 	if fetchLog.ID != "" {
 		if logErr := db.UpdateFetchLog(fetchLog); logErr != nil {
-			log.Printf("Warning: Failed to update fetch log: %v", logErr)
+			logger.Warnf("Failed to update fetch log: %v", logErr)
 		}
 	}
 
 	// Print summary
-	log.Printf("📊 Summary: sources=%d, fetched=%d, inserted=%d, skipped=%d, errors=%d",
+	logger.Infof("📊 Summary: sources=%d, fetched=%d, inserted=%d, skipped=%d, errors=%d",
 		fetchLog.SourcesProcessed, totalFetched, totalInserted, totalSkipped, len(errors))
 
 	return nil
@@ -329,38 +414,49 @@ func processSource(ctx context.Context, db Store, rssParser *parser.Parser, sour
 // runCleanup removes articles older than the specified retention period.
 // It calls the database's cleanup_old_articles function and logs the count
 // of deleted articles. Exits fatally if the cleanup operation fails.
-func runCleanup(db Store, daysToKeep int) {
-	log.Printf("🧹 Running cleanup (keeping %d days of articles)", daysToKeep)
+// If ctx is already cancelled (signal received before we start), skip cleanly.
+func runCleanup(ctx context.Context, db Store, daysToKeep int) {
+	if err := ctx.Err(); err != nil {
+		logger.Infof("Cleanup skipped: %v", err)
+		return
+	}
+
+	logger.Infof("🧹 Running cleanup (keeping %d days of articles)", daysToKeep)
 
 	deleted, err := db.CleanupOldArticles(daysToKeep)
 	if err != nil {
-		log.Fatalf("Cleanup failed: %v", err)
+		logger.Fatalf("Cleanup failed: %v", err)
 	}
 
-	log.Printf("✅ Cleanup complete: deleted %d old articles", deleted)
+	logger.Infof("✅ Cleanup complete: deleted %d old articles", deleted)
 
 	// Clean up old fetch logs (non-fatal on error)
 	logsDeleted, err := db.CleanupOldFetchLogs(daysToKeep)
 	if err != nil {
-		log.Printf("Warning: Failed to cleanup old fetch logs: %v", err)
+		logger.Warnf("Failed to cleanup old fetch logs: %v", err)
 	} else {
-		log.Printf("🧹 Cleaned up %d old fetch logs", logsDeleted)
+		logger.Infof("🧹 Cleaned up %d old fetch logs", logsDeleted)
 	}
 }
 
 // runOGImageBackfill fetches og:image URLs for articles that are missing
 // high-resolution images using the generic backfill runner.
-func runOGImageBackfill(db Store) error {
+func runOGImageBackfill(ctx context.Context, db Store) error {
 	ogExtractor := parser.NewOGImageExtractor()
-	return runBackfill(backfillConfig[database.ArticleForBackfill]{
-		name:       "og:image",
-		timeout:    ogImageBackfillTimeout,
-		limit:      ogImageBackfillLimit,
-		maxWorkers: ogImageBackfillWorkers,
-		fetch:      db.GetArticlesNeedingOGImage,
+	return runBackfill(ctx, backfillConfig[database.ArticleForBackfill]{
+		name:          "og:image",
+		kind:          "image",
+		timeout:       ogImageBackfillTimeout,
+		limit:         ogImageBackfillLimit,
+		maxAttempts:   backfillMaxAttempts,
+		cooldownHours: backfillCooldownHours,
+		maxWorkers:    ogImageBackfillWorkers,
+		fetch:         db.GetArticlesNeedingOGImage,
 		process: func(ctx context.Context, article database.ArticleForBackfill) bool {
 			return processOGImageBackfill(ctx, db, ogExtractor, article)
 		},
+		hashOf:       func(a database.ArticleForBackfill) string { return a.URLHash },
+		bumpAttempts: db.BumpBackfillAttempts,
 	})
 }
 
@@ -368,46 +464,53 @@ func runOGImageBackfill(db Store) error {
 // article's webpage. If a valid image is found and differs from the current
 // image, updates the database. Returns true if the article was updated.
 func processOGImageBackfill(ctx context.Context, db Store, ogExtractor *parser.OGImageExtractor, article database.ArticleForBackfill) bool {
+	articleLog := logger.With("kind", "og_image", "url_hash", article.URLHash, "url", article.URL)
+
 	ogImage, err := ogExtractor.ExtractOGImage(ctx, article.URL)
 	if err != nil {
-		log.Printf("[BACKFILL] ERROR fetching og:image for %s: %v", article.URL, err)
+		articleLog.Info("backfill_fetch_error", "err", err.Error())
 		return false
 	}
 
 	if ogImage == "" {
-		log.Printf("[BACKFILL] No og:image found for %s", article.URL)
+		articleLog.Debug("backfill_not_found")
 		return false
 	}
 
 	// Only update if og:image is different from current image
 	if article.ImageURL != nil && ogImage == *article.ImageURL {
-		log.Printf("[BACKFILL] Same image for %s", article.URL)
+		articleLog.Debug("backfill_same_image")
 		return false
 	}
 
 	// Update the article's image_url
 	if err := db.UpdateArticleImage(article.URLHash, ogImage); err != nil {
-		log.Printf("[BACKFILL] ERROR updating %s: %v", article.URL, err)
+		articleLog.Error("backfill_update_error", "err", err.Error())
 		return false
 	}
 
-	log.Printf("[BACKFILL] SUCCESS %s -> %s", article.URL, ogImage)
+	articleLog.Info("backfill_success", "og_image", ogImage)
 	return true
 }
 
 // runContentBackfill extracts full article content for articles that are
 // missing the content field using the generic backfill runner.
-func runContentBackfill(db Store) error {
+func runContentBackfill(ctx context.Context, db Store) error {
 	contentExtractor := parser.NewContentExtractor()
-	return runBackfill(backfillConfig[database.ArticleForContentBackfill]{
-		name:       "content",
-		timeout:    contentBackfillTimeout,
-		limit:      contentBackfillLimit,
-		maxWorkers: contentBackfillWorkers,
-		fetch:      db.GetArticlesNeedingContent,
+	return runBackfill(ctx, backfillConfig[database.ArticleForContentBackfill]{
+		name:          "content",
+		kind:          "content",
+		timeout:       contentBackfillTimeout,
+		limit:         contentBackfillLimit,
+		maxAttempts:   backfillMaxAttempts,
+		cooldownHours: backfillCooldownHours,
+		maxWorkers:    contentBackfillWorkers,
+		fetch:         db.GetArticlesNeedingContent,
 		process: func(ctx context.Context, article database.ArticleForContentBackfill) bool {
 			return processContentBackfill(ctx, db, contentExtractor, article)
 		},
+		hashOf:       func(a database.ArticleForContentBackfill) string { return a.URLHash },
+		bumpAttempts: db.BumpBackfillAttempts,
 	})
 }
 
@@ -415,23 +518,25 @@ func runContentBackfill(db Store) error {
 // from a single article's webpage. If valid content is extracted, updates
 // the database. Returns true if the article was updated.
 func processContentBackfill(ctx context.Context, db Store, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill) bool {
+	articleLog := logger.With("kind", "content", "url_hash", article.URLHash, "url", article.URL)
+
 	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)
 	if err != nil {
-		log.Printf("[CONTENT-BACKFILL] ERROR fetching content for %s: %v", article.URL, err)
+		articleLog.Info("backfill_fetch_error", "err", err.Error())
 		return false
 	}
 
 	if content == "" {
-		log.Printf("[CONTENT-BACKFILL] No content extracted for %s", article.URL)
+		articleLog.Debug("backfill_not_found")
 		return false
 	}
 
 	// Update the article's content
 	if err := db.UpdateArticleContent(article.URLHash, content); err != nil {
-		log.Printf("[CONTENT-BACKFILL] ERROR updating %s: %v", article.URL, err)
+		articleLog.Error("backfill_update_error", "err", err.Error())
 		return false
 	}
 
-	log.Printf("[CONTENT-BACKFILL] SUCCESS %s (%d chars)", article.URL, len(content))
+	articleLog.Info("backfill_success", "chars", len(content))
 	return true
 }

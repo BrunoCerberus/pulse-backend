@@ -113,7 +113,8 @@ pulse-backend/
 │   │   ├── 014_add_batch_image_update_rpc.sql    # RPC for batch image updates
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
-│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   └── 018_add_backfill_tracking.sql  # Attempt counters + cooldown RPC for backfills
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -225,10 +226,16 @@ Denormalized fields (avoids JOINs):
 Source adaptive fetch:
 - `fetch_interval_hours`: Default 2, podcasts/videos set to 6
 
+Backfill tracking (migration 018):
+- `image_backfill_attempts`, `image_backfill_last_attempt_at`
+- `content_backfill_attempts`, `content_backfill_last_attempt_at`
+- Backfill queries exclude articles that exhausted `BACKFILL_MAX_ATTEMPTS` or whose last attempt was within `BACKFILL_COOLDOWN_HOURS`. Successful extractions leave the candidate set naturally (image_url/content becomes non-null).
+
 Key functions:
 - `cleanup_old_articles(days_to_keep)` - Called by cleanup command
 - `search_articles(search_query, result_limit)` - Full-text search
 - `batch_update_article_images(updates)` - Batch image URL updates
+- `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps last_attempt_at; `kind` is "image" or "content"
 
 View: `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
 
@@ -238,10 +245,20 @@ Environment variables:
 - `SUPABASE_URL` - Required
 - `SUPABASE_SERVICE_ROLE_KEY` - Required (keep secret, needed for writes)
 - `LOG_LEVEL` - Optional: DEBUG, INFO (default), WARN, ERROR
+- `LOG_FORMAT` - Optional: `text` (default, slog TextHandler) or `json` (slog JSONHandler for log aggregators)
+- `HOST_RATE_LIMIT_RPS` - Optional: per-host requests/sec for RSS/og:image/content HTTP clients (default `2.0`). Supabase traffic is not throttled.
+- `HOST_RATE_LIMIT_BURST` - Optional: per-host burst allowance (default `5`)
+- `BACKFILL_MAX_ATTEMPTS` - Optional: max retries per article before it's excluded from backfill (default `3`)
+- `BACKFILL_COOLDOWN_HOURS` - Optional: min gap between backfill attempts on the same article (default `24`)
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
 - `ArticleRetentionDays`: 30 days
+
+Graceful shutdown: the worker installs a `signal.NotifyContext` handler for
+SIGINT/SIGTERM at startup. In-flight goroutines check `ctx.Done()` and HTTP
+requests cancel via request context, so GitHub Actions cancellations and
+runner rotations exit without orphaning batches.
 
 ## Testing
 

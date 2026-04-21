@@ -435,6 +435,13 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 		if !strings.Contains(r.URL.String(), "limit=") {
 			t.Error("expected limit param in URL")
 		}
+		// Attempt cap + cooldown should be present in the filter.
+		if !strings.Contains(r.URL.String(), "image_backfill_attempts.lt.3") {
+			t.Errorf("expected image_backfill_attempts.lt.3 filter, got %s", r.URL.String())
+		}
+		if !strings.Contains(r.URL.String(), "image_backfill_last_attempt_at") {
+			t.Errorf("expected image_backfill_last_attempt_at in filter, got %s", r.URL.String())
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(expectedArticles)
@@ -442,7 +449,7 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	articles, err := client.GetArticlesNeedingOGImage(500)
+	articles, err := client.GetArticlesNeedingOGImage(500, 3, 24)
 
 	if err != nil {
 		t.Fatalf("GetArticlesNeedingOGImage error: %v", err)
@@ -463,6 +470,9 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 		if r.Method != "GET" {
 			t.Errorf("method = %s, want GET", r.Method)
 		}
+		if !strings.Contains(r.URL.String(), "content_backfill_attempts.lt.5") {
+			t.Errorf("expected content_backfill_attempts.lt.5 filter, got %s", r.URL.String())
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(expectedArticles)
@@ -470,7 +480,7 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	articles, err := client.GetArticlesNeedingContent(200)
+	articles, err := client.GetArticlesNeedingContent(200, 5, 12)
 
 	if err != nil {
 		t.Fatalf("GetArticlesNeedingContent error: %v", err)
@@ -478,6 +488,51 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 
 	if len(articles) != 2 {
 		t.Errorf("got %d articles, want 2", len(articles))
+	}
+}
+
+func TestBumpBackfillAttempts_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/rpc/bump_backfill_attempts") {
+			t.Errorf("path = %s, want /rpc/bump_backfill_attempts", r.URL.Path)
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["kind"] != "image" {
+			t.Errorf("kind = %v, want image", payload["kind"])
+		}
+		hashes, ok := payload["url_hashes"].([]any)
+		if !ok || len(hashes) != 2 {
+			t.Errorf("url_hashes = %v, want 2 elements", payload["url_hashes"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("1"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if err := client.BumpBackfillAttempts([]string{"h1", "h2"}, "image"); err != nil {
+		t.Fatalf("BumpBackfillAttempts error: %v", err)
+	}
+}
+
+func TestBumpBackfillAttempts_EmptyListIsNoop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("server should not be hit for empty list")
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if err := client.BumpBackfillAttempts(nil, "image"); err != nil {
+		t.Fatalf("BumpBackfillAttempts returned error for empty list: %v", err)
 	}
 }
 

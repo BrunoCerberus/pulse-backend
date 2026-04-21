@@ -2,23 +2,18 @@ package logger
 
 import (
 	"bytes"
-	"log"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 )
 
-// captureLog captures log output produced by fn and returns it as a string.
-func captureLog(fn func()) string {
+// captureOutput routes logger output into a buffer for the duration of fn.
+func captureOutput(t *testing.T, fn func()) string {
+	t.Helper()
 	var buf bytes.Buffer
-	origOutput := log.Writer()
-	origFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0) // remove timestamp for predictable output
-	defer func() {
-		log.SetOutput(origOutput)
-		log.SetFlags(origFlags)
-	}()
+	SetOutput(&buf)
+	defer SetOutput(os.Stderr)
 	fn()
 	return buf.String()
 }
@@ -26,7 +21,7 @@ func captureLog(fn func()) string {
 func TestDebugf_SuppressedAtInfoLevel(t *testing.T) {
 	SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Debugf("should not appear")
 	})
 
@@ -38,12 +33,12 @@ func TestDebugf_SuppressedAtInfoLevel(t *testing.T) {
 func TestInfof_OutputsAtInfoLevel(t *testing.T) {
 	SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Infof("hello %s", "world")
 	})
 
-	if !strings.Contains(output, "[INFO]") {
-		t.Errorf("Infof output should contain [INFO], got %q", output)
+	if !strings.Contains(output, "level=INFO") {
+		t.Errorf("Infof output should contain level=INFO, got %q", output)
 	}
 	if !strings.Contains(output, "hello world") {
 		t.Errorf("Infof output should contain message, got %q", output)
@@ -52,13 +47,14 @@ func TestInfof_OutputsAtInfoLevel(t *testing.T) {
 
 func TestDebugf_OutputsAtDebugLevel(t *testing.T) {
 	SetLevel(LevelDebug)
+	defer SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Debugf("debug message %d", 42)
 	})
 
-	if !strings.Contains(output, "[DEBUG]") {
-		t.Errorf("Debugf output should contain [DEBUG], got %q", output)
+	if !strings.Contains(output, "level=DEBUG") {
+		t.Errorf("Debugf output should contain level=DEBUG, got %q", output)
 	}
 	if !strings.Contains(output, "debug message 42") {
 		t.Errorf("Debugf output should contain message, got %q", output)
@@ -67,13 +63,14 @@ func TestDebugf_OutputsAtDebugLevel(t *testing.T) {
 
 func TestWarnf_OutputsAtWarnLevel(t *testing.T) {
 	SetLevel(LevelWarn)
+	defer SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Warnf("warning: %s", "low disk")
 	})
 
-	if !strings.Contains(output, "[WARN]") {
-		t.Errorf("Warnf output should contain [WARN], got %q", output)
+	if !strings.Contains(output, "level=WARN") {
+		t.Errorf("Warnf output should contain level=WARN, got %q", output)
 	}
 	if !strings.Contains(output, "warning: low disk") {
 		t.Errorf("Warnf output should contain message, got %q", output)
@@ -82,13 +79,14 @@ func TestWarnf_OutputsAtWarnLevel(t *testing.T) {
 
 func TestErrorf_OutputsAtErrorLevel(t *testing.T) {
 	SetLevel(LevelError)
+	defer SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Errorf("something broke: %v", "timeout")
 	})
 
-	if !strings.Contains(output, "[ERROR]") {
-		t.Errorf("Errorf output should contain [ERROR], got %q", output)
+	if !strings.Contains(output, "level=ERROR") {
+		t.Errorf("Errorf output should contain level=ERROR, got %q", output)
 	}
 	if !strings.Contains(output, "something broke: timeout") {
 		t.Errorf("Errorf output should contain message, got %q", output)
@@ -97,8 +95,9 @@ func TestErrorf_OutputsAtErrorLevel(t *testing.T) {
 
 func TestInfof_SuppressedAtWarnLevel(t *testing.T) {
 	SetLevel(LevelWarn)
+	defer SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Infof("should not appear")
 	})
 
@@ -109,8 +108,9 @@ func TestInfof_SuppressedAtWarnLevel(t *testing.T) {
 
 func TestWarnf_SuppressedAtErrorLevel(t *testing.T) {
 	SetLevel(LevelError)
+	defer SetLevel(LevelInfo)
 
-	output := captureLog(func() {
+	output := captureOutput(t, func() {
 		Warnf("should not appear")
 	})
 
@@ -148,27 +148,108 @@ func TestParseLevel_CaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestJSONFormat_EmitsValidJSON(t *testing.T) {
+	origFormat := os.Getenv("LOG_FORMAT")
+	defer func() {
+		os.Setenv("LOG_FORMAT", origFormat)
+		Reinit()
+	}()
+
+	os.Setenv("LOG_FORMAT", "json")
+	SetLevel(LevelInfo)
+
+	var buf bytes.Buffer
+	SetOutput(&buf) // SetOutput calls rebuild() which re-reads LOG_FORMAT
+	defer SetOutput(os.Stderr)
+
+	Infof("hello %s", "world")
+
+	got := strings.TrimSpace(buf.String())
+	if got == "" {
+		t.Fatal("expected JSON output, got empty string")
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal([]byte(got), &record); err != nil {
+		t.Fatalf("output is not valid JSON: %v; raw=%q", err, got)
+	}
+
+	if record["level"] != "INFO" {
+		t.Errorf("level = %v, want INFO", record["level"])
+	}
+	if record["msg"] != "hello world" {
+		t.Errorf("msg = %v, want %q", record["msg"], "hello world")
+	}
+}
+
+func TestWith_AttachesFieldsToRecord(t *testing.T) {
+	origFormat := os.Getenv("LOG_FORMAT")
+	defer func() {
+		os.Setenv("LOG_FORMAT", origFormat)
+		Reinit()
+	}()
+
+	os.Setenv("LOG_FORMAT", "json")
+	SetLevel(LevelInfo)
+
+	var buf bytes.Buffer
+	SetOutput(&buf)
+	defer SetOutput(os.Stderr)
+
+	sub := With("run_id", "abc123", "source_id", "src-1")
+	sub.Info("processed", "count", 7)
+
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatalf("output is not valid JSON: %v; raw=%q", err, buf.String())
+	}
+
+	if record["run_id"] != "abc123" {
+		t.Errorf("run_id = %v, want abc123", record["run_id"])
+	}
+	if record["source_id"] != "src-1" {
+		t.Errorf("source_id = %v, want src-1", record["source_id"])
+	}
+	// JSON numbers decode as float64
+	if c, ok := record["count"].(float64); !ok || c != 7 {
+		t.Errorf("count = %v, want 7", record["count"])
+	}
+}
+
 func TestInit_ReadsLOG_LEVEL(t *testing.T) {
 	origLevel := os.Getenv("LOG_LEVEL")
-	defer os.Setenv("LOG_LEVEL", origLevel)
+	defer func() {
+		os.Setenv("LOG_LEVEL", origLevel)
+		SetLevel(parseLevel(origLevel))
+	}()
 
 	os.Setenv("LOG_LEVEL", "DEBUG")
-	// Re-run init logic manually
-	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
+	SetLevel(parseLevel(os.Getenv("LOG_LEVEL")))
 
-	if Level(currentLevel.Load()) != LevelDebug {
-		t.Errorf("currentLevel = %d after LOG_LEVEL=DEBUG, want %d", currentLevel.Load(), LevelDebug)
+	// Verify debug output is emitted
+	output := captureOutput(t, func() {
+		Debugf("trace")
+	})
+	if !strings.Contains(output, "level=DEBUG") {
+		t.Errorf("after LOG_LEVEL=DEBUG, Debugf should emit; got %q", output)
 	}
 }
 
 func TestInit_DefaultsToInfo(t *testing.T) {
 	origLevel := os.Getenv("LOG_LEVEL")
-	defer os.Setenv("LOG_LEVEL", origLevel)
+	defer func() {
+		os.Setenv("LOG_LEVEL", origLevel)
+		SetLevel(parseLevel(origLevel))
+	}()
 
 	os.Unsetenv("LOG_LEVEL")
-	currentLevel.Store(int32(parseLevel(os.Getenv("LOG_LEVEL"))))
+	SetLevel(parseLevel(os.Getenv("LOG_LEVEL")))
 
-	if Level(currentLevel.Load()) != LevelInfo {
-		t.Errorf("currentLevel = %d with no LOG_LEVEL, want %d", currentLevel.Load(), LevelInfo)
+	// Verify debug is suppressed
+	output := captureOutput(t, func() {
+		Debugf("should be filtered")
+	})
+	if output != "" {
+		t.Errorf("with no LOG_LEVEL, Debugf should be suppressed; got %q", output)
 	}
 }

@@ -24,15 +24,40 @@ import (
 // Parser handles RSS/Atom feed parsing and article enrichment.
 // It combines gofeed for parsing with custom extractors for images and content.
 type Parser struct {
-	fp               *gofeed.Parser     // gofeed parser for RSS/Atom
-	ogExtractor      *OGImageExtractor  // Extracts og:image from article pages
-	contentExtractor *ContentExtractor  // Extracts article text via readability
+	fp               *gofeed.Parser    // gofeed parser for RSS/Atom
+	ogExtractor      *OGImageExtractor // Extracts og:image from article pages
+	contentExtractor *ContentExtractor // Extracts article text via readability
 }
 
-// New creates a new Parser instance
+// DefaultHostRPS and DefaultHostBurst are the initial per-host rate limits.
+// Override via SetHostRateLimit before constructing parsers/extractors.
+const (
+	DefaultHostRPS   = 2.0
+	DefaultHostBurst = 5
+)
+
+// Package-level rate limits used by all parser/extractor HTTP clients built
+// after init. Callers should SetHostRateLimit once at startup (before any
+// goroutine spawns) to apply env-driven config. Plain vars are safe because
+// the write happens-before any concurrent reads.
+var (
+	hostRPS   = float64(DefaultHostRPS)
+	hostBurst = DefaultHostBurst
+)
+
+// SetHostRateLimit overrides the per-host RPS and burst used by subsequent
+// parser.New, NewOGImageExtractor, and NewContentExtractor calls.
+// Must be called before any concurrent use of the package.
+func SetHostRateLimit(rps float64, burst int) {
+	hostRPS = rps
+	hostBurst = burst
+}
+
+// New creates a new Parser. Uses the current package rate-limit settings;
+// call SetHostRateLimit first to override defaults.
 func New() *Parser {
 	fp := gofeed.NewParser()
-	fp.Client = httputil.NewClientWithRedirectLimit(30*time.Second, 5)
+	fp.Client = httputil.NewRateLimitedClient(30*time.Second, hostRPS, hostBurst, 5)
 	return &Parser{
 		fp:               fp,
 		ogExtractor:      NewOGImageExtractor(),

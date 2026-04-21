@@ -17,9 +17,10 @@ type OGImageExtractor struct {
 	client *http.Client
 }
 
-// NewOGImageExtractor creates a new extractor with a configured HTTP client
+// NewOGImageExtractor creates a new extractor. Uses current package rate-limit
+// settings; call parser.SetHostRateLimit first to override defaults.
 func NewOGImageExtractor() *OGImageExtractor {
-	return &OGImageExtractor{client: httputil.NewClientWithRedirectLimit(10*time.Second, 3)}
+	return &OGImageExtractor{client: httputil.NewRateLimitedClient(10*time.Second, hostRPS, hostBurst, 3)}
 }
 
 // ogImagePatterns are regex patterns to extract og:image from HTML

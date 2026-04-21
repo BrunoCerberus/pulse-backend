@@ -18,9 +18,10 @@ type ContentExtractor struct {
 	client *http.Client
 }
 
-// NewContentExtractor creates a new extractor with a configured HTTP client
+// NewContentExtractor creates a new extractor. Uses current package rate-limit
+// settings; call parser.SetHostRateLimit first to override defaults.
 func NewContentExtractor() *ContentExtractor {
-	return &ContentExtractor{client: httputil.NewClientWithRedirectLimit(15*time.Second, 3)}
+	return &ContentExtractor{client: httputil.NewRateLimitedClient(15*time.Second, hostRPS, hostBurst, 3)}
 }
 
 // ExtractedContent holds the extracted article data from go-readability.
