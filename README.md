@@ -80,6 +80,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/015_add_fetch_interval_hours.sql` - Adaptive fetch frequency
    - `supabase/migrations/016_denormalize_articles.sql` - Denormalize source/category into articles
    - `supabase/migrations/017_backfill_denormalized_articles.sql` - Backfill denormalized columns
+   - `supabase/migrations/018_add_backfill_tracking.sql` - Attempt counters + cooldown RPC for image/content backfills
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -183,7 +184,8 @@ pulse-backend/
 │   │   ├── 014_add_batch_image_update_rpc.sql    # Batch image update RPC
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category
-│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   └── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -401,9 +403,17 @@ See [docs/ios-integration.md](docs/ios-integration.md) for detailed instructions
 ## Local Development
 
 ```bash
-# Set environment variables
+# Required
 export SUPABASE_URL="https://your-project.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
+
+# Optional
+export LOG_LEVEL=INFO                 # DEBUG, INFO (default), WARN, ERROR
+export LOG_FORMAT=text                # text (default) or json (for log aggregators)
+export HOST_RATE_LIMIT_RPS=2.0        # per-host requests/sec for RSS/og:image/content
+export HOST_RATE_LIMIT_BURST=5        # per-host burst allowance
+export BACKFILL_MAX_ATTEMPTS=3        # retries before an article is excluded from backfill
+export BACKFILL_COOLDOWN_HOURS=24     # min gap between backfill attempts on the same article
 
 # Run the worker
 make run

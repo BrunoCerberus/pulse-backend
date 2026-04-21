@@ -91,9 +91,10 @@ pulse-backend/
 │       │   ├── supabase.go            # Supabase REST API client (with retry logic)
 │       │   └── supabase_test.go       # Database client tests
 │       ├── httputil/
-│       │   └── transport.go           # Shared HTTP transport with connection pooling
+│       │   ├── transport.go           # Shared HTTP transport + RateLimitingTransport (per-host token bucket)
+│       │   └── transport_test.go      # Transport tests
 │       └── logger/
-│           ├── logger.go              # Structured logging with level support
+│           ├── logger.go              # slog-backed logger (LOG_FORMAT=text|json)
 │           └── logger_test.go         # Logger tests
 ├── supabase/
 │   ├── migrations/
@@ -148,10 +149,13 @@ pulse-backend/
 - Fetch logging to `fetch_logs` table
 
 ### HTTP Utilities (`internal/httputil/`)
-- `transport.go`: Shared `http.Transport` with tuned connection pooling (`MaxIdleConnsPerHost: 10`, HTTP/2 enabled). All HTTP clients use this shared transport via `httputil.NewClient(timeout)` or `httputil.NewClientWithRedirectLimit(timeout, maxRedirects)` to enable connection reuse across workers.
+- `transport.go`: Shared `http.Transport` with tuned connection pooling (`MaxIdleConnsPerHost: 10`, HTTP/2 enabled). Clients build on this via:
+  - `httputil.NewClient(timeout)` — plain shared-transport client
+  - `httputil.NewClientWithRedirectLimit(timeout, maxRedirects)` — adds a redirect cap
+  - `httputil.NewRateLimitedClient(timeout, rps, burst, maxRedirects)` — wraps the shared transport with a `RateLimitingTransport` (per-host token bucket from `golang.org/x/time/rate`). Used by the RSS, og:image, and content clients; Supabase traffic deliberately uses the plain client.
 
 ### Parser Module (`internal/parser/`)
-- `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers). Also extracts media enclosures (audio/video) for podcasts and videos.
+- `parser.go`: Orchestrates RSS parsing via `mmcdole/gofeed`, then enriches articles with og:images (5 workers) and content (3 workers). Also extracts media enclosures (audio/video) for podcasts and videos. Package-level `hostRPS`/`hostBurst` vars are set via `parser.SetHostRateLimit(rps, burst)` at startup (from `main()`); subsequent `New()`, `NewOGImageExtractor()`, and `NewContentExtractor()` pick up the override. Defaults are `DefaultHostRPS=2.0`, `DefaultHostBurst=5`.
 - `ogimage.go`: Extracts og:image/twitter:image from article HTML `<head>` (100KB limit, byte-based regex matching)
 - `content.go`: Uses `go-shiori/go-readability` for article text extraction (5MB response limit)
 - Media extraction: Parses audio/video enclosures and iTunes duration from RSS feeds
@@ -163,7 +167,7 @@ pulse-backend/
 - Batch image updates: `batch_update_article_images` RPC for og:image updates on duplicates
 - Batch source updates: `UpdateSourcesLastFetched()` with PostgREST `in` filter
 - Adaptive fetch: `GetActiveSources()` filters by `fetch_interval_hours` and `last_fetched_at`
-- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `UpdateSourcesLastFetched()`, `CleanupOldArticles()`
+- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `UpdateSourcesLastFetched()`, `CleanupOldArticles()`, `GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours)`, `GetArticlesNeedingContent(limit, maxAttempts, cooldownHours)`, `BumpBackfillAttempts(urlHashes, kind)`
 
 ### Data Models (`internal/models/models.go`)
 - `Source` struct with `FetchIntervalHours`, `EmbeddedCategory`, `ShouldFetch()` method
@@ -267,12 +271,12 @@ Unit tests cover Go packages and Deno Edge Functions:
 | Package | Coverage | Key Tests |
 |---------|----------|-----------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
-| `internal/config` | 100% | Load with env var validation |
-| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
+| `internal/config` | 100% | Load + env var validation (including HOST_RATE_LIMIT_* and BACKFILL_*) |
+| `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
 | `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
-| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic |
-| `internal/logger` | 94% | Level filtering, output format, env var parsing |
-| `main` | 81% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
+| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic, BumpBackfillAttempts |
+| `internal/logger` | 86% | Level filtering, text + JSON output format, `With()` field propagation |
+| `main` | 74% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill (with attempt-bump) |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:

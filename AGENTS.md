@@ -107,7 +107,8 @@ pulse-backend/
 │   │   ├── 014_add_batch_image_update_rpc.sql    # RPC for batch image updates
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
-│   │   └── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
+│   │   └── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -137,15 +138,15 @@ pulse-backend/
 
 | Component | File | Description |
 |-----------|------|-------------|
-| Entry Point | `main.go` | Command routing: fetch, cleanup, backfill-images, backfill-content |
-| Config | `internal/config/config.go` | Loads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY from env |
+| Entry Point | `main.go` | Command routing: fetch, cleanup, backfill-images, backfill-content. `main()` wraps context with `signal.NotifyContext(SIGINT, SIGTERM)` for graceful shutdown; emits a `run_id` on every run |
+| Config | `internal/config/config.go` | Loads SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, plus optional LOG_FORMAT, HOST_RATE_LIMIT_RPS/BURST, BACKFILL_MAX_ATTEMPTS/COOLDOWN_HOURS |
 | Models | `internal/models/models.go` | Article (with media + denormalized fields), Source (with EmbeddedCategory, ShouldFetch()), FetchLog; HashURL() for dedup |
-| Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction |
+| Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction. `SetHostRateLimit(rps, burst)` overrides per-host defaults (2.0 rps, burst 5) for all HTTP clients built afterward |
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
-| Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, batch source updates, retry logic (exponential backoff on 429/5xx) |
-| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient(timeout)` and `NewClientWithRedirectLimit(timeout, maxRedirects)` |
-| Logger | `internal/logger/logger.go` | Structured logging with level support (LOG_LEVEL env var) |
+| Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, batch source updates, retry logic (exponential backoff on 429/5xx). Backfill queries (`GetArticlesNeedingOGImage`, `GetArticlesNeedingContent`) take `(limit, maxAttempts, cooldownHours)`; `BumpBackfillAttempts(urlHashes, kind)` marks failed attempts |
+| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient`, `NewClientWithRedirectLimit`, and `NewRateLimitedClient` (wraps `RateLimitingTransport` with per-host token bucket from `golang.org/x/time/rate`) |
+| Logger | `internal/logger/logger.go` | slog-backed: LOG_LEVEL gates emission; LOG_FORMAT=text (default, slog.TextHandler) or json (slog.JSONHandler). Printf-style `Debugf/Infof/Warnf/Errorf/Fatalf` plus `With(k, v, ...)` returning a sub-*slog.Logger for structured correlation |
 
 ### Edge Functions (`supabase/functions/`)
 
@@ -164,12 +165,12 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 | Package | Coverage | Description |
 |---------|----------|-------------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
-| `internal/config` | 100% | Env var loading and validation |
-| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit |
+| `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*) |
+| `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
 | `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
-| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic |
-| `internal/logger` | 94% | Level filtering, output format, env var parsing (thread-safe via atomic) |
-| `main` | 81% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill |
+| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic, BumpBackfillAttempts |
+| `internal/logger` | 86% | Level filtering, text + JSON output, `With()` field propagation (thread-safe via atomic.Pointer) |
+| `main` | 74% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill (tracks failed hashes and bumps attempts at end) |
 | `_shared/*.ts` | — | Cache, CORS, ETag, memory cache utilities |
 
 Run tests before committing:
@@ -182,24 +183,34 @@ make test
 Required environment variables:
 - `SUPABASE_URL` - Supabase project URL
 - `SUPABASE_SERVICE_ROLE_KEY` - Service role key (keep secret, needed for writes)
-- `LOG_LEVEL` - Optional: DEBUG, INFO (default), WARN, ERROR
+
+Optional environment variables:
+- `LOG_LEVEL` - DEBUG, INFO (default), WARN, ERROR
+- `LOG_FORMAT` - `text` (default, slog TextHandler) or `json` (slog JSONHandler for log aggregators)
+- `HOST_RATE_LIMIT_RPS` - per-host requests/sec for RSS/og:image/content HTTP clients (default `2.0`). Supabase traffic is not throttled.
+- `HOST_RATE_LIMIT_BURST` - per-host burst allowance (default `5`)
+- `BACKFILL_MAX_ATTEMPTS` - max retries per article before it's excluded from backfill (default `3`)
+- `BACKFILL_COOLDOWN_HOURS` - min gap between backfill attempts on the same article (default `24`)
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
 - `ArticleRetentionDays`: 30 days
+
+Graceful shutdown: `main()` installs `signal.NotifyContext(SIGINT, SIGTERM)` and threads that baseCtx into every run* command, so GHA cancellations and runner rotations exit cleanly instead of orphaning batches.
 
 ## Database Schema
 
 Tables:
 - `categories` - 10 categories (including Podcasts & Videos)
 - `sources` - 133 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6)
-- `articles` - News articles with full-text search (tsvector), media fields, and denormalized source/category columns
+- `articles` - News articles with full-text search (tsvector), media fields, denormalized source/category columns, and backfill tracking (`image_backfill_attempts`, `image_backfill_last_attempt_at`, `content_backfill_attempts`, `content_backfill_last_attempt_at` — migration 018)
 - `fetch_logs` - Monitoring records
 
 Key functions:
 - `cleanup_old_articles(days_to_keep)` - Remove old articles
 - `search_articles(search_query, result_limit)` - Full-text search
 - `batch_update_article_images(updates)` - Batch image URL updates
+- `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps `last_attempt_at`; `kind` is `"image"` or `"content"` (migration 018)
 
 View:
 - `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
@@ -209,7 +220,8 @@ View:
 - Go code follows standard Go conventions (`go fmt`, `go vet`)
 - Use table-driven tests for comprehensive coverage
 - HTTP calls should be mocked with `httptest.Server` in tests
-- New HTTP clients must use `httputil.NewClient(timeout)` or `httputil.NewClientWithRedirectLimit(timeout, maxRedirects)` to share the connection pool
+- New HTTP clients must use `httputil.NewClient`, `httputil.NewClientWithRedirectLimit`, or `httputil.NewRateLimitedClient` (preferred for external hosts) to share the connection pool
+- Prefer `logger.With(key, val, ...)` at per-source/per-article sites for structured correlation; the printf-style `logger.Infof` is fine for one-off summary lines
 - Edge Functions use TypeScript with Deno
 - All new code should include tests
 
