@@ -209,6 +209,7 @@ pulse-backend/
     │   ├── cleanup.yml                # Cleanup job (daily)
     │   ├── test.yml                   # Unit tests + lint + govulncheck (on push/PR)
     │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
+    │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
     │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
     └── dependabot.yml                 # Weekly dependency updates
 ```
@@ -486,6 +487,19 @@ The `security.yml` workflow runs on every push/PR to `main` and weekly on Monday
 | SBOM | Trivy (CycloneDX) | Generates a Software Bill of Materials as a workflow artifact for supply-chain audits |
 
 All jobs run in parallel and fail the build on any finding. The weekly schedule ensures that vulnerabilities disclosed after merge still surface. Dependabot (weekly) handles automated dependency bumps for both Go modules and GitHub Actions.
+
+## Workflow and Branch Protection
+
+| Workflow | Trigger | Purpose |
+|----------|---------|---------|
+| `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
+| `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
+| `test.yml` | Push/PR to `main` | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
+| `security.yml` | Push/PR to `main` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
+| `pr-checks.yml` | PR to `main` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
+| `deploy-functions.yml` | Push to `main` | Auto-deploy Edge Functions |
+
+Branch protection on `main` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `main` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.
 
 ## Troubleshooting
 

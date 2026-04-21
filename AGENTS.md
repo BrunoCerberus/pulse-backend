@@ -231,8 +231,11 @@ View:
 |----------|----------|-------------|
 | `fetch-rss.yml` | Every 2 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
-| `test.yml` | On push/PR | Unit tests + lint + govulncheck |
+| `test.yml` | On push/PR | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
+| `pr-checks.yml` | On PR to main only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
 | `deploy-functions.yml` | On push to main | Auto-deploy Edge Functions |
+
+Branch protection on `main` requires all 11 checks across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `main` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
 
 Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
