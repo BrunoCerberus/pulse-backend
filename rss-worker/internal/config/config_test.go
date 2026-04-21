@@ -64,6 +64,52 @@ func TestLoad_DefaultValues(t *testing.T) {
 	if cfg.HostRateLimitBurst != 5 {
 		t.Errorf("HostRateLimitBurst = %d, want 5", cfg.HostRateLimitBurst)
 	}
+
+	if cfg.CircuitFailureThreshold != 5 {
+		t.Errorf("CircuitFailureThreshold = %d, want 5", cfg.CircuitFailureThreshold)
+	}
+	if cfg.CircuitBaseBackoffHours != 1 {
+		t.Errorf("CircuitBaseBackoffHours = %d, want 1", cfg.CircuitBaseBackoffHours)
+	}
+	if cfg.CircuitMaxBackoffHours != 24 {
+		t.Errorf("CircuitMaxBackoffHours = %d, want 24", cfg.CircuitMaxBackoffHours)
+	}
+}
+
+func TestLoad_CircuitBreakerOverride(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origT := os.Getenv("CIRCUIT_FAILURE_THRESHOLD")
+	origB := os.Getenv("CIRCUIT_BASE_BACKOFF_HOURS")
+	origM := os.Getenv("CIRCUIT_MAX_BACKOFF_HOURS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("CIRCUIT_FAILURE_THRESHOLD", origT)
+		os.Setenv("CIRCUIT_BASE_BACKOFF_HOURS", origB)
+		os.Setenv("CIRCUIT_MAX_BACKOFF_HOURS", origM)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+	os.Setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
+	os.Setenv("CIRCUIT_BASE_BACKOFF_HOURS", "2")
+	os.Setenv("CIRCUIT_MAX_BACKOFF_HOURS", "48")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.CircuitFailureThreshold != 3 {
+		t.Errorf("CircuitFailureThreshold = %d, want 3", cfg.CircuitFailureThreshold)
+	}
+	if cfg.CircuitBaseBackoffHours != 2 {
+		t.Errorf("CircuitBaseBackoffHours = %d, want 2", cfg.CircuitBaseBackoffHours)
+	}
+	if cfg.CircuitMaxBackoffHours != 48 {
+		t.Errorf("CircuitMaxBackoffHours = %d, want 48", cfg.CircuitMaxBackoffHours)
+	}
 }
 
 func TestLoad_HostRateLimitOverride(t *testing.T) {

@@ -24,11 +24,12 @@ Go RSS Worker (rss-worker/)
 PostgreSQL (articles, sources, categories, fetch_logs)
         ↓
 Edge Functions (caching proxy + in-memory cache)
-    ├── /api-categories  → Cache: 24h + 1h memory
-    ├── /api-sources     → Cache: 1h + 30min memory
-    ├── /api-articles    → Cache: 5min + ETag
-    ├── /api-search      → Cache: 1min (private)
-    └── /api-health      → Cache: no-store
+    ├── /api-categories    → Cache: 24h + 1h memory
+    ├── /api-sources       → Cache: 1h + 30min memory
+    ├── /api-articles      → Cache: 5min + ETag
+    ├── /api-search        → Cache: 1min (private)
+    ├── /api-health        → Cache: no-store
+    └── /api-source-health → Cache: 60s (feed health + summary)
         ↓
 Pulse iOS App
 ```
@@ -115,7 +116,9 @@ pulse-backend/
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
 │   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
-│   │   └── 018_add_backfill_tracking.sql  # Attempt counters + cooldown RPC for backfills
+│   │   ├── 018_add_backfill_tracking.sql  # Attempt counters + cooldown RPC for backfills
+│   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
+│   │   └── 020_add_source_health_infra.sql    # batch_update_source_fetch_state RPC + source_health view
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -131,13 +134,15 @@ pulse-backend/
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       ├── api-search/index.ts        # Search endpoint (1min private)
-│       └── api-health/index.ts        # Health check endpoint (no-store)
+│       ├── api-health/index.ts        # Health check endpoint (no-store)
+│       └── api-source-health/index.ts # Per-source fetch health + summary (60s cache)
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
 │   ├── test.yml                       # Unit tests + lint + govulncheck on push/PR
 │   ├── security.yml                   # Secret scan, SAST, deps, SBOM (push/PR + weekly)
-│   └── deploy-functions.yml           # Auto-deploy Edge Functions on push
+│   ├── deploy-functions.yml           # Auto-deploy Edge Functions on push
+│   └── watchdog.yml                   # Source health check every 6h (fails job on degradation)
 └── docs/ios-integration.md            # iOS app integration guide
 ```
 
@@ -165,16 +170,16 @@ pulse-backend/
 - Retry with exponential backoff on 429/502/503/504 (up to 3 retries)
 - Batch article inserts: POST arrays of 50 with `on_conflict=url_hash` + `ignore-duplicates`
 - Batch image updates: `batch_update_article_images` RPC for og:image updates on duplicates
-- Batch source updates: `UpdateSourcesLastFetched()` with PostgREST `in` filter
-- Adaptive fetch: `GetActiveSources()` filters by `fetch_interval_hours` and `last_fetched_at`
-- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `UpdateSourcesLastFetched()`, `CleanupOldArticles()`, `GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours)`, `GetArticlesNeedingContent(limit, maxAttempts, cooldownHours)`, `BumpBackfillAttempts(urlHashes, kind)`
+- Batch source state: `BatchUpdateSourceFetchState()` calls `batch_update_source_fetch_state` RPC (migration 020) to persist per-source etag, last_modified, consecutive_failures, and circuit_open_until in one round-trip after every fetch cycle.
+- Adaptive fetch + circuit breaker: `GetActiveSources()` filters by `fetch_interval_hours`, `last_fetched_at`, and `or=(circuit_open_until.is.null,circuit_open_until.lt.{now})` so sources in an open-circuit cool-off are skipped.
+- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `BatchUpdateSourceFetchState()`, `CleanupOldArticles()`, `GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours)`, `GetArticlesNeedingContent(limit, maxAttempts, cooldownHours)`, `BumpBackfillAttempts(urlHashes, kind)`
 
 ### Data Models (`internal/models/models.go`)
-- `Source` struct with `FetchIntervalHours`, `EmbeddedCategory`, `ShouldFetch()` method
+- `Source` struct with `FetchIntervalHours`, `EmbeddedCategory`, `ShouldFetch()` method. Also carries conditional-GET validators (`ETag`, `LastModified`) and circuit-breaker state (`ConsecutiveFailures`, `CircuitOpenUntil`) from migration 019.
 - `Article` struct with media fields and denormalized `SourceName`, `SourceSlug`, `CategoryName`, `CategorySlug`
 - `NewArticle()` accepts language parameter — articles inherit language from their source
 - `HashURL()` function for SHA256-based URL deduplication
-- `FetchResult` for concurrent processing results
+- `FetchResult` for concurrent processing results — includes `ETag`, `LastModified`, and `NotModified` from the feed response so `runFetch` can persist per-source state.
 
 ### Edge Functions (`supabase/functions/`)
 Caching proxy layer for iOS app with Cache-Control headers:
@@ -186,6 +191,7 @@ Caching proxy layer for iOS app with Cache-Control headers:
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Health check (status + timestamp) |
+| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary (circuit/stale/high-failure counts); watchdog workflow polls this |
 
 **Deployment:**
 ```bash
@@ -235,13 +241,20 @@ Backfill tracking (migration 018):
 - `content_backfill_attempts`, `content_backfill_last_attempt_at`
 - Backfill queries exclude articles that exhausted `BACKFILL_MAX_ATTEMPTS` or whose last attempt was within `BACKFILL_COOLDOWN_HOURS`. Successful extractions leave the candidate set naturally (image_url/content becomes non-null).
 
+Source fetch state (migration 019):
+- `etag`, `last_modified`: conditional-GET validators captured on success and sent on the next fetch so the origin can reply 304 Not Modified.
+- `consecutive_failures`, `circuit_open_until`: circuit breaker. After `CIRCUIT_FAILURE_THRESHOLD` consecutive fetch errors, `circuit_open_until` is set to a cool-off timestamp and `GetActiveSources()` skips the source until it elapses. Backoff doubles per additional failure, capped at `CIRCUIT_MAX_BACKOFF_HOURS`.
+
 Key functions:
 - `cleanup_old_articles(days_to_keep)` - Called by cleanup command
 - `search_articles(search_query, result_limit)` - Full-text search
 - `batch_update_article_images(updates)` - Batch image URL updates
 - `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps last_attempt_at; `kind` is "image" or "content"
+- `batch_update_source_fetch_state(updates)` - One round-trip per fetch cycle; JSONB array of per-source state (etag, last_modified, consecutive_failures, circuit_open_until, last_fetched_at).
 
-View: `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
+Views:
+- `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization).
+- `source_health` - Per-source health snapshot (circuit_open, consecutive_failures, most_recent_article_at, articles_last_24h). `security_invoker=on` so RLS on sources/articles is honored. Powers `api-source-health` and the watchdog workflow.
 
 ## Configuration
 
@@ -254,6 +267,9 @@ Environment variables:
 - `HOST_RATE_LIMIT_BURST` - Optional: per-host burst allowance (default `5`)
 - `BACKFILL_MAX_ATTEMPTS` - Optional: max retries per article before it's excluded from backfill (default `3`)
 - `BACKFILL_COOLDOWN_HOURS` - Optional: min gap between backfill attempts on the same article (default `24`)
+- `CIRCUIT_FAILURE_THRESHOLD` - Optional: consecutive fetch failures before the circuit trips (default `5`)
+- `CIRCUIT_BASE_BACKOFF_HOURS` - Optional: initial cool-off window on trip; doubles per additional failure (default `1`)
+- `CIRCUIT_MAX_BACKOFF_HOURS` - Optional: cap on the exponential circuit backoff so dead feeds still get retried daily (default `24`)
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
@@ -271,12 +287,12 @@ Unit tests cover Go packages and Deno Edge Functions:
 | Package | Coverage | Key Tests |
 |---------|----------|-----------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
-| `internal/config` | 100% | Load + env var validation (including HOST_RATE_LIMIT_* and BACKFILL_*) |
+| `internal/config` | 100% | Load + env var validation (including HOST_RATE_LIMIT_*, BACKFILL_*, and CIRCUIT_*) |
 | `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
-| `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle |
-| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic, BumpBackfillAttempts |
+| `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle, ParseFeed (200/304/non-2xx + conditional-GET headers) |
+| `internal/database` | 82% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState (payload shape, empty noop, 5xx), GetActiveSources (circuit filter), retry logic, BumpBackfillAttempts |
 | `internal/logger` | 86% | Level filtering, text + JSON output format, `With()` field propagation |
-| `main` | 74% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill (with attempt-bump) |
+| `main` | 74% | processSource, runFetch, nextCircuitOpenUntil (threshold/exponential/cap/overflow), buildSourceFetchState (success resets, failure preserves ETag + trips circuit, 304 is success), runBackfill |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:
@@ -294,6 +310,7 @@ make test-deno      # Deno Edge Function tests
 - **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy-functions.yml**: Auto-deploys Edge Functions on push to master.
+- **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, or `high_failure_count` exceed thresholds set inline in the workflow.
 
 All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
 

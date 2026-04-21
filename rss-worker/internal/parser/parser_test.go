@@ -917,20 +917,23 @@ func TestParseFeed_BasicRSS(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	articles, err := p.ParseFeed(ctx, source)
+	result, err := p.ParseFeed(ctx, source)
 	if err != nil {
 		t.Fatalf("ParseFeed error: %v", err)
 	}
 
-	if len(articles) != 2 {
-		t.Fatalf("got %d articles, want 2", len(articles))
+	if result.NotModified {
+		t.Fatal("expected NotModified=false on 200 response")
+	}
+	if len(result.Articles) != 2 {
+		t.Fatalf("got %d articles, want 2", len(result.Articles))
 	}
 
-	if articles[0].Title != "Article One" {
-		t.Errorf("articles[0].Title = %q, want %q", articles[0].Title, "Article One")
+	if result.Articles[0].Title != "Article One" {
+		t.Errorf("articles[0].Title = %q, want %q", result.Articles[0].Title, "Article One")
 	}
-	if articles[1].Title != "Article Two" {
-		t.Errorf("articles[1].Title = %q, want %q", articles[1].Title, "Article Two")
+	if result.Articles[1].Title != "Article Two" {
+		t.Errorf("articles[1].Title = %q, want %q", result.Articles[1].Title, "Article Two")
 	}
 }
 
@@ -956,13 +959,13 @@ func TestParseFeed_EmptyFeed(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	articles, err := p.ParseFeed(ctx, source)
+	result, err := p.ParseFeed(ctx, source)
 	if err != nil {
 		t.Fatalf("ParseFeed error: %v", err)
 	}
 
-	if len(articles) != 0 {
-		t.Errorf("got %d articles, want 0", len(articles))
+	if len(result.Articles) != 0 {
+		t.Errorf("got %d articles, want 0", len(result.Articles))
 	}
 }
 
@@ -984,6 +987,150 @@ func TestParseFeed_InvalidFeed(t *testing.T) {
 	_, err := p.ParseFeed(ctx, source)
 	if err == nil {
 		t.Error("expected error for invalid feed")
+	}
+}
+
+// --- Conditional GET tests (migration 019 + parser rewrite) ---
+
+func TestParseFeed_ConditionalGET_304ReturnsNotModified(t *testing.T) {
+	var gotIfNoneMatch, gotIfModifiedSince string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotIfNoneMatch = r.Header.Get("If-None-Match")
+		gotIfModifiedSince = r.Header.Get("If-Modified-Since")
+		// Simulate RFC 7232 conformant origin returning 304 without echoing the validator.
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	etag := `"abc123"`
+	lastMod := "Wed, 21 Oct 2025 07:28:00 GMT"
+	source := models.Source{
+		ID:           "src-1",
+		Name:         "Cached Source",
+		FeedURL:      server.URL,
+		Language:     "en",
+		ETag:         &etag,
+		LastModified: &lastMod,
+	}
+
+	p := New()
+	result, err := p.ParseFeed(context.Background(), source)
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+	if !result.NotModified {
+		t.Error("expected NotModified=true on 304")
+	}
+	if len(result.Articles) != 0 {
+		t.Errorf("got %d articles, want 0 on 304", len(result.Articles))
+	}
+	// Parser falls back to the source's stored validators when the 304 omits them.
+	if result.ETag != etag {
+		t.Errorf("ETag = %q, want preserved %q", result.ETag, etag)
+	}
+	if result.LastModified != lastMod {
+		t.Errorf("LastModified = %q, want preserved %q", result.LastModified, lastMod)
+	}
+	if gotIfNoneMatch != etag {
+		t.Errorf("If-None-Match sent = %q, want %q", gotIfNoneMatch, etag)
+	}
+	if gotIfModifiedSince != lastMod {
+		t.Errorf("If-Modified-Since sent = %q, want %q", gotIfModifiedSince, lastMod)
+	}
+}
+
+func TestParseFeed_ConditionalGET_200CapturesResponseValidators(t *testing.T) {
+	respETag := `"v2"`
+	respLM := "Thu, 22 Oct 2025 08:30:00 GMT"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", respETag)
+		w.Header().Set("Last-Modified", respLM)
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>T</title></channel></rss>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	result, err := p.ParseFeed(context.Background(), models.Source{
+		ID: "src-1", FeedURL: server.URL, Language: "en",
+	})
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+	if result.NotModified {
+		t.Error("expected NotModified=false on 200")
+	}
+	if result.ETag != respETag {
+		t.Errorf("ETag = %q, want %q", result.ETag, respETag)
+	}
+	if result.LastModified != respLM {
+		t.Errorf("LastModified = %q, want %q", result.LastModified, respLM)
+	}
+}
+
+func TestParseFeed_ConditionalGET_200WithoutValidators(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>T</title></channel></rss>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	// Previously cached, but the origin dropped ETag support. Response values
+	// are authoritative — we should now return empty strings (callers will
+	// clear the stored validators).
+	old := `"v1"`
+	result, err := p.ParseFeed(context.Background(), models.Source{
+		ID: "src-1", FeedURL: server.URL, Language: "en", ETag: &old,
+	})
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+	if result.ETag != "" {
+		t.Errorf("ETag = %q, want empty (server dropped support)", result.ETag)
+	}
+}
+
+func TestParseFeed_ConditionalGET_OmitsHeadersWhenSourceHasNone(t *testing.T) {
+	var hadIfNoneMatch, hadIfModifiedSince bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadIfNoneMatch = r.Header["If-None-Match"]
+		_, hadIfModifiedSince = r.Header["If-Modified-Since"]
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>T</title></channel></rss>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	_, err := p.ParseFeed(context.Background(), models.Source{
+		ID: "src-1", FeedURL: server.URL, Language: "en",
+	})
+	if err != nil {
+		t.Fatalf("ParseFeed error: %v", err)
+	}
+	if hadIfNoneMatch {
+		t.Error("If-None-Match should not be set when source has no ETag")
+	}
+	if hadIfModifiedSince {
+		t.Error("If-Modified-Since should not be set when source has no LastModified")
+	}
+}
+
+func TestParseFeed_ConditionalGET_Non2xxReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	p := New()
+	_, err := p.ParseFeed(context.Background(), models.Source{
+		ID: "src-1", FeedURL: server.URL, Language: "en",
+	})
+	if err == nil {
+		t.Fatal("expected error for 502 response")
 	}
 }
 

@@ -70,6 +70,15 @@ func TestGetActiveSources_Success(t *testing.T) {
 		if r.URL.Query().Get("select") != "*,categories(name,slug)" {
 			t.Errorf("expected select=*,categories(name,slug), got %q", r.URL.Query().Get("select"))
 		}
+		// Circuit breaker filter (migration 019): skip sources whose
+		// circuit_open_until is still in the future.
+		or := r.URL.Query().Get("or")
+		if !strings.Contains(or, "circuit_open_until.is.null") {
+			t.Errorf("expected or filter to contain circuit_open_until.is.null, got %q", or)
+		}
+		if !strings.Contains(or, "circuit_open_until.lt.") {
+			t.Errorf("expected or filter to contain circuit_open_until.lt., got %q", or)
+		}
 
 		if r.Header.Get("apikey") != "test-api-key" {
 			t.Error("missing apikey header")
@@ -619,63 +628,100 @@ func TestUpdateFetchLog_Success(t *testing.T) {
 	}
 }
 
-func TestUpdateSourcesLastFetched_Success(t *testing.T) {
+func TestBatchUpdateSourceFetchState_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PATCH" {
-			t.Errorf("method = %s, want PATCH", r.Method)
+		if r.Method != "POST" {
+			t.Errorf("method = %s, want POST", r.Method)
 		}
-		if !strings.Contains(r.URL.String(), "id=in.") {
-			t.Errorf("expected id=in. in URL, got %s", r.URL.String())
-		}
-		if !strings.Contains(r.URL.String(), "src-1") || !strings.Contains(r.URL.String(), "src-2") {
-			t.Error("expected both source IDs in URL")
+		if !strings.HasSuffix(r.URL.Path, "/rpc/batch_update_source_fetch_state") {
+			t.Errorf("path = %s, want /rpc/batch_update_source_fetch_state", r.URL.Path)
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		bodyStr := string(body)
-		if !strings.Contains(bodyStr, "last_fetched_at") {
-			t.Error("expected last_fetched_at in request body")
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
 		}
-		if !strings.Contains(bodyStr, "updated_at") {
-			t.Error("expected updated_at in request body")
+		updates, ok := payload["updates"].([]any)
+		if !ok || len(updates) != 2 {
+			t.Fatalf("updates = %v, want 2 elements", payload["updates"])
+		}
+		// The first row: ETag captured, failures reset, circuit cleared.
+		first, _ := updates[0].(map[string]any)
+		if first["id"] != "src-1" {
+			t.Errorf("updates[0].id = %v, want src-1", first["id"])
+		}
+		if first["etag"] != `"abc"` {
+			t.Errorf("updates[0].etag = %v, want quoted abc", first["etag"])
+		}
+		if first["consecutive_failures"] != float64(0) {
+			t.Errorf("updates[0].consecutive_failures = %v, want 0", first["consecutive_failures"])
+		}
+		if first["circuit_open_until"] != nil {
+			t.Errorf("updates[0].circuit_open_until = %v, want null", first["circuit_open_until"])
+		}
+		// The second row: failure path — non-nil circuit_open_until, preserved etag.
+		second, _ := updates[1].(map[string]any)
+		if second["consecutive_failures"] != float64(6) {
+			t.Errorf("updates[1].consecutive_failures = %v, want 6", second["consecutive_failures"])
+		}
+		if second["circuit_open_until"] == nil {
+			t.Error("updates[1].circuit_open_until should be non-null on failure trip")
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("2"))
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateSourcesLastFetched([]string{"src-1", "src-2"})
 
-	if err != nil {
-		t.Errorf("UpdateSourcesLastFetched error: %v", err)
+	etag := `"abc"`
+	now := time.Now().UTC()
+	circuitUntil := now.Add(2 * time.Hour)
+	preservedETag := `"preserved"`
+	updates := []SourceFetchState{
+		{
+			ID:                  "src-1",
+			ETag:                &etag,
+			ConsecutiveFailures: 0,
+			CircuitOpenUntil:    nil,
+			LastFetchedAt:       &now,
+		},
+		{
+			ID:                  "src-2",
+			ETag:                &preservedETag,
+			ConsecutiveFailures: 6,
+			CircuitOpenUntil:    &circuitUntil,
+		},
+	}
+
+	if err := client.BatchUpdateSourceFetchState(updates); err != nil {
+		t.Fatalf("BatchUpdateSourceFetchState error: %v", err)
 	}
 }
 
-func TestUpdateSourcesLastFetched_Empty(t *testing.T) {
+func TestBatchUpdateSourceFetchState_EmptyListIsNoop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("no HTTP calls expected for empty IDs")
+		t.Error("no HTTP calls expected for empty updates")
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateSourcesLastFetched(nil)
-
-	if err != nil {
-		t.Errorf("UpdateSourcesLastFetched error: %v", err)
+	if err := client.BatchUpdateSourceFetchState(nil); err != nil {
+		t.Errorf("BatchUpdateSourceFetchState(nil) error: %v", err)
 	}
 }
 
-func TestUpdateSourcesLastFetched_Error(t *testing.T) {
+func TestBatchUpdateSourceFetchState_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "database error"}`))
+		w.Write([]byte(`{"error": "rpc error"}`))
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateSourcesLastFetched([]string{"src-123"})
-
+	err := client.BatchUpdateSourceFetchState([]SourceFetchState{{ID: "src-1"}})
 	if err == nil {
 		t.Error("expected error for 500 response")
 	}

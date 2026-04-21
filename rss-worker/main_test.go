@@ -467,6 +467,10 @@ type mockStore struct {
 	// assert we recorded the attempted url_hashes for failed articles.
 	bumpedImage   []string
 	bumpedContent []string
+
+	// fetchStateUpdates captures the final BatchUpdateSourceFetchState call
+	// so tests can assert per-source circuit/ETag outcomes.
+	fetchStateUpdates []database.SourceFetchState
 }
 
 func (m *mockStore) GetActiveSources() ([]models.Source, error) {
@@ -477,7 +481,8 @@ func (m *mockStore) InsertArticles(articles []*models.Article) (int, int, error)
 	return m.insertResult, m.insertSkipped, m.insertErr
 }
 
-func (m *mockStore) UpdateSourcesLastFetched(sourceIDs []string) error {
+func (m *mockStore) BatchUpdateSourceFetchState(updates []database.SourceFetchState) error {
+	m.fetchStateUpdates = append(m.fetchStateUpdates, updates...)
 	return m.updateSourcesErr
 }
 
@@ -689,6 +694,149 @@ func TestRunFetch_UpdateFetchLogError(t *testing.T) {
 	err := runFetch(context.Background(), db, rssParser, 5)
 	if err != nil {
 		t.Fatalf("runFetch returned error: %v", err)
+	}
+}
+
+// --- nextCircuitOpenUntil tests (circuit breaker math) ---
+
+func TestNextCircuitOpenUntil(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name      string
+		failures  int
+		threshold int
+		base      int
+		max       int
+		wantNil   bool
+		wantHours int
+	}{
+		{"below threshold returns nil", 4, 5, 1, 24, true, 0},
+		{"at threshold uses base", 5, 5, 1, 24, false, 1},
+		{"one over threshold doubles", 6, 5, 1, 24, false, 2},
+		{"two over quadruples", 7, 5, 1, 24, false, 4},
+		{"three over is 8x", 8, 5, 1, 24, false, 8},
+		{"capped at max", 15, 5, 1, 24, false, 24},
+		{"zero threshold is disabled", 5, 0, 1, 24, true, 0},
+		{"zero base is disabled", 5, 5, 0, 24, true, 0},
+		{"huge exponent does not overflow", 200, 5, 1, 24, false, 24},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := nextCircuitOpenUntil(now, c.failures, c.threshold, c.base, c.max)
+			if c.wantNil {
+				if got != nil {
+					t.Errorf("want nil, got %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("want non-nil, got nil")
+			}
+			want := now.Add(time.Duration(c.wantHours) * time.Hour)
+			if !got.Equal(want) {
+				t.Errorf("got %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// --- buildSourceFetchState tests ---
+
+func TestBuildSourceFetchState_SuccessResetsCircuit(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	oldETag := `"old"`
+	pastTrip := now.Add(-1 * time.Hour)
+	source := models.Source{
+		ID:                  "src-1",
+		ETag:                &oldETag,
+		ConsecutiveFailures: 3,
+		CircuitOpenUntil:    &pastTrip,
+	}
+	result := models.FetchResult{
+		Source:       source,
+		ETag:         `"new"`,
+		LastModified: "Mon, 01 Jan 2026 12:00:00 GMT",
+	}
+
+	state := buildSourceFetchState(source, result, now)
+
+	if state.ConsecutiveFailures != 0 {
+		t.Errorf("failures = %d, want 0", state.ConsecutiveFailures)
+	}
+	if state.CircuitOpenUntil != nil {
+		t.Errorf("CircuitOpenUntil = %v, want nil", state.CircuitOpenUntil)
+	}
+	if state.ETag == nil || *state.ETag != `"new"` {
+		t.Errorf("ETag = %v, want \"new\"", state.ETag)
+	}
+	if state.LastFetchedAt == nil || !state.LastFetchedAt.Equal(now) {
+		t.Errorf("LastFetchedAt = %v, want %v", state.LastFetchedAt, now)
+	}
+}
+
+func TestBuildSourceFetchState_FailurePreservesETagAndIncrements(t *testing.T) {
+	origT, origB, origM := circuitFailureThreshold, circuitBaseBackoffHours, circuitMaxBackoffHours
+	circuitFailureThreshold, circuitBaseBackoffHours, circuitMaxBackoffHours = 2, 1, 24
+	defer func() {
+		circuitFailureThreshold, circuitBaseBackoffHours, circuitMaxBackoffHours = origT, origB, origM
+	}()
+
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	preserved := `"keep-me"`
+	source := models.Source{
+		ID:                  "src-1",
+		ETag:                &preserved,
+		ConsecutiveFailures: 1, // +1 → 2 trips the threshold
+	}
+	result := models.FetchResult{
+		Source: source,
+		Error:  errors.New("network error"),
+	}
+
+	state := buildSourceFetchState(source, result, now)
+
+	if state.ConsecutiveFailures != 2 {
+		t.Errorf("failures = %d, want 2", state.ConsecutiveFailures)
+	}
+	if state.CircuitOpenUntil == nil {
+		t.Fatal("CircuitOpenUntil = nil, want circuit trip")
+	}
+	want := now.Add(1 * time.Hour)
+	if !state.CircuitOpenUntil.Equal(want) {
+		t.Errorf("CircuitOpenUntil = %v, want %v", state.CircuitOpenUntil, want)
+	}
+	if state.ETag == nil || *state.ETag != `"keep-me"` {
+		t.Errorf("ETag = %v, want preserved \"keep-me\"", state.ETag)
+	}
+	if state.LastFetchedAt != nil {
+		t.Errorf("LastFetchedAt = %v, want nil (failures don't stamp)", state.LastFetchedAt)
+	}
+}
+
+func TestBuildSourceFetchState_NotModifiedCountsAsSuccess(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	// NotModified is just a successful fetch with no new articles. The
+	// parser already populated the validator (possibly falling back to the
+	// source's existing one) so the builder just records it.
+	source := models.Source{ID: "src-1", ConsecutiveFailures: 3}
+	result := models.FetchResult{
+		Source:      source,
+		NotModified: true,
+		ETag:        `"v1"`,
+	}
+
+	state := buildSourceFetchState(source, result, now)
+
+	if state.ConsecutiveFailures != 0 {
+		t.Errorf("failures = %d, want 0 (304 is success)", state.ConsecutiveFailures)
+	}
+	if state.ETag == nil || *state.ETag != `"v1"` {
+		t.Errorf("ETag = %v, want \"v1\"", state.ETag)
+	}
+	if state.LastFetchedAt == nil {
+		t.Error("LastFetchedAt should be stamped on 304")
 	}
 }
 

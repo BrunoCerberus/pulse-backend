@@ -10,6 +10,8 @@ package parser
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,9 +67,71 @@ func New() *Parser {
 	}
 }
 
-// ParseFeed fetches and parses an RSS feed, returning articles
-func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models.Article, error) {
-	feed, err := p.fp.ParseURLWithContext(source.FeedURL, ctx)
+// ParseResult carries the articles extracted from a feed plus the conditional-GET
+// validators the worker should persist for the next fetch. NotModified is true
+// when the origin returned 304 — in that case Articles is empty and ETag /
+// LastModified hold the validator to keep sending (the parser falls back to the
+// source's existing validator if the 304 response doesn't echo one).
+type ParseResult struct {
+	Articles     []*models.Article
+	ETag         string
+	LastModified string
+	NotModified  bool
+}
+
+// ParseFeed fetches and parses an RSS feed with conditional-GET support.
+//
+// Unlike gofeed's built-in ParseURLWithContext, this does the HTTP call
+// explicitly so it can:
+//   - attach If-None-Match / If-Modified-Since from the source's stored
+//     validators, and
+//   - inspect the status code to short-circuit on 304 Not Modified, returning
+//     NotModified=true without touching the body.
+//
+// The shared rate-limited client (p.fp.Client, set in New()) is reused so
+// per-host throttling still applies.
+func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.FeedURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if source.ETag != nil && *source.ETag != "" {
+		req.Header.Set("If-None-Match", *source.ETag)
+	}
+	if source.LastModified != nil && *source.LastModified != "" {
+		req.Header.Set("If-Modified-Since", *source.LastModified)
+	}
+	// Some publishers reject no-User-Agent requests; match what gofeed
+	// would have sent by default.
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "pulse-rss-worker/1.0 (+gofeed)")
+	}
+
+	resp, err := p.fp.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotModified {
+		// RFC 7232: the server MAY omit ETag/Last-Modified on 304. When it
+		// does, preserve what we sent so the next run still benefits from
+		// the conditional GET.
+		etag := resp.Header.Get("ETag")
+		if etag == "" && source.ETag != nil {
+			etag = *source.ETag
+		}
+		lm := resp.Header.Get("Last-Modified")
+		if lm == "" && source.LastModified != nil {
+			lm = *source.LastModified
+		}
+		return &ParseResult{NotModified: true, ETag: etag, LastModified: lm}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("feed fetch failed: %s", resp.Status)
+	}
+
+	feed, err := p.fp.Parse(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +151,11 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) ([]*models
 	// Extract content for articles that don't have it from RSS
 	p.enrichWithContent(ctx, articles)
 
-	return articles, nil
+	return &ParseResult{
+		Articles:     articles,
+		ETag:         resp.Header.Get("ETag"),
+		LastModified: resp.Header.Get("Last-Modified"),
+	}, nil
 }
 
 // enrichStats holds success/failure counts from an enrichment pass.

@@ -25,6 +25,17 @@ type Config struct {
 	// BackfillCooldownHours is the minimum gap between two backfill attempts
 	// on the same article, preventing tight-loop retries within a run window.
 	BackfillCooldownHours int
+
+	// CircuitFailureThreshold is the number of consecutive fetch failures
+	// before a source's circuit trips open. Values below this trigger only
+	// retry-next-run; at/above, circuit_open_until is set to a cool-off window.
+	CircuitFailureThreshold int
+	// CircuitBaseBackoffHours is the initial cool-off window once the circuit
+	// trips. Subsequent failures double the window (2^(failures-threshold)).
+	CircuitBaseBackoffHours int
+	// CircuitMaxBackoffHours caps the exponential backoff so a permanently dead
+	// source still gets retried daily rather than every fortnight.
+	CircuitMaxBackoffHours int
 }
 
 // Load reads configuration from environment variables
@@ -46,8 +57,11 @@ func Load() (*Config, error) {
 		ArticleRetentionDays:  30,
 		HostRateLimitRPS:      envFloat("HOST_RATE_LIMIT_RPS", 2.0),
 		HostRateLimitBurst:    envInt("HOST_RATE_LIMIT_BURST", 5),
-		BackfillMaxAttempts:   envInt("BACKFILL_MAX_ATTEMPTS", 3),
-		BackfillCooldownHours: envInt("BACKFILL_COOLDOWN_HOURS", 24),
+		BackfillMaxAttempts:     envInt("BACKFILL_MAX_ATTEMPTS", 3),
+		BackfillCooldownHours:   envInt("BACKFILL_COOLDOWN_HOURS", 24),
+		CircuitFailureThreshold: envInt("CIRCUIT_FAILURE_THRESHOLD", 5),
+		CircuitBaseBackoffHours: envInt("CIRCUIT_BASE_BACKOFF_HOURS", 1),
+		CircuitMaxBackoffHours:  envInt("CIRCUIT_MAX_BACKOFF_HOURS", 24),
 	}, nil
 }
 
