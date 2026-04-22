@@ -104,11 +104,12 @@ func nextCircuitOpenUntil(now time.Time, failures, threshold, baseHours, maxHour
 	}
 	exp := failures - threshold
 	// Cap the shift so `baseHours << exp` can't overflow int.
+	// (`exp` is already non-negative because of the `failures < threshold` guard above.)
 	const maxShift = 30
 	if exp > maxShift {
 		exp = maxShift
 	}
-	delay := baseHours << uint(exp)
+	delay := baseHours << exp
 	if maxHours > 0 && delay > maxHours {
 		delay = maxHours
 	}
