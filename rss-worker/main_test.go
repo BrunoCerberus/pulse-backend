@@ -980,3 +980,326 @@ func TestRunContentBackfill_FetchError(t *testing.T) {
 		t.Fatal("expected error from runContentBackfill, got nil")
 	}
 }
+
+// --- newRunID tests ---
+
+func TestNewRunID(t *testing.T) {
+	id := newRunID()
+	// Normal path: 4 random bytes → 8 hex chars.
+	if len(id) != 8 {
+		t.Errorf("len(newRunID()) = %d, want 8", len(id))
+	}
+	// Two consecutive calls should differ with overwhelming probability.
+	if id == newRunID() {
+		t.Error("expected distinct IDs across calls")
+	}
+}
+
+// --- runCleanup additional tests ---
+
+func TestRunCleanup_CtxAlreadyCancelled(t *testing.T) {
+	db := &mockStore{
+		cleanupErr: errors.New("should not be called"),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Must return cleanly without invoking CleanupOldArticles; otherwise
+	// the mock's error would trigger log.Fatalf and blow up the test.
+	runCleanup(ctx, db, 30)
+}
+
+func TestRunCleanup_CleanupFetchLogsError(t *testing.T) {
+	db := &mockStore{
+		cleanupResult:  10,
+		cleanupLogsErr: errors.New("fetch log cleanup failed"),
+	}
+	// CleanupOldFetchLogs error is non-fatal (warn-only). Should complete.
+	runCleanup(context.Background(), db, 30)
+}
+
+// --- processSource NotModified branch ---
+
+func TestProcessSource_NotModified(t *testing.T) {
+	feedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Conditional-GET: worker sends If-None-Match with the stored ETag.
+		// Reply 304 so ParseFeed returns NotModified=true.
+		if r.Header.Get("If-None-Match") == "" {
+			t.Error("expected If-None-Match header")
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer feedServer.Close()
+
+	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("DB should not be called on 304, got %s %s", r.Method, r.URL.Path)
+	}))
+	defer dbServer.Close()
+
+	db := newTestDBClient(dbServer)
+	rssParser := parser.New()
+	etag := `"v1"`
+	source := models.Source{
+		ID:       "src-1",
+		Name:     "Test",
+		FeedURL:  feedServer.URL,
+		Language: "en",
+		IsActive: true,
+		ETag:     &etag,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result := processSource(ctx, db, rssParser, source)
+	if result.Error != nil {
+		t.Fatalf("processSource error: %v", result.Error)
+	}
+	if !result.NotModified {
+		t.Error("expected NotModified=true")
+	}
+	if result.ArticlesFetched != 0 {
+		t.Errorf("ArticlesFetched = %d, want 0", result.ArticlesFetched)
+	}
+}
+
+// --- runFetch additional branches ---
+
+func TestRunFetch_BatchUpdateStateError(t *testing.T) {
+	feedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("not valid xml")) // force per-source error
+	}))
+	defer feedServer.Close()
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "S1", FeedURL: feedServer.URL, Language: "en", IsActive: true},
+		},
+		fetchLog:         &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		updateSourcesErr: errors.New("batch state update failed"),
+	}
+
+	// Should complete despite BatchUpdateSourceFetchState error (warn-only).
+	if err := runFetch(context.Background(), db, parser.New(), 1); err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+	if len(db.fetchStateUpdates) == 0 {
+		t.Error("expected fetch state updates to be attempted")
+	}
+}
+
+func TestRunFetch_PartialFailure(t *testing.T) {
+	var serverURL string
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/good":
+			rss := fmt.Sprintf(`<?xml version="1.0"?><rss version="2.0"><channel><title>Good</title><item><title>A</title><link>%s/a</link></item></channel></rss>`, serverURL)
+			w.Header().Set("Content-Type", "application/xml")
+			w.Write([]byte(rss))
+		default:
+			w.Write([]byte("not valid xml")) // source that fails
+		}
+	}))
+	defer webServer.Close()
+	serverURL = webServer.URL
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-good", Name: "Good", FeedURL: webServer.URL + "/good", Language: "en", IsActive: true},
+			{ID: "src-bad", Name: "Bad", FeedURL: webServer.URL + "/bad", Language: "en", IsActive: true},
+		},
+		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		insertResult: 1,
+	}
+
+	if err := runFetch(context.Background(), db, parser.New(), 1); err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+	if len(db.fetchStateUpdates) != 2 {
+		t.Errorf("fetchStateUpdates = %d, want 2", len(db.fetchStateUpdates))
+	}
+}
+
+// --- runBackfill additional branches ---
+
+func TestRunBackfill_BumpAttemptsError(t *testing.T) {
+	cfg := backfillConfig[string]{
+		name:       "test",
+		kind:       "image",
+		timeout:    5 * time.Second,
+		limit:      10,
+		maxWorkers: 2,
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]string, error) {
+			return []string{"a"}, nil
+		},
+		process: func(ctx context.Context, item string) bool {
+			return false // force failure so bumpAttempts is called
+		},
+		hashOf: func(s string) string { return s },
+		bumpAttempts: func(hashes []string, kind string) error {
+			return errors.New("bump failed")
+		},
+	}
+
+	// Warn-only: bumpAttempts error must not propagate to caller.
+	if err := runBackfill(context.Background(), cfg); err != nil {
+		t.Fatalf("runBackfill returned error: %v", err)
+	}
+}
+
+// --- runBackfill: worker hits ctx.Done() between items ---
+
+func TestRunBackfill_CtxCancelledDuringProcessing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	cfg := backfillConfig[int]{
+		name:       "ctx-cancel",
+		kind:       "image",
+		timeout:    5 * time.Second,
+		limit:      10,
+		maxWorkers: 1, // single worker for deterministic ordering
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]int, error) {
+			return []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, nil
+		},
+		process: func(ctx context.Context, item int) bool {
+			if item == 1 {
+				cancel()
+				// Give cancellation a moment to propagate so the worker's
+				// next select reliably observes ctx.Done().
+				time.Sleep(20 * time.Millisecond)
+			}
+			return true
+		},
+		hashOf:       func(i int) string { return "" },
+		bumpAttempts: func(hashes []string, kind string) error { return nil },
+	}
+
+	if err := runBackfill(ctx, cfg); err != nil {
+		t.Fatalf("runBackfill returned error: %v", err)
+	}
+}
+
+// --- runOGImageBackfill with real articles exercises the process closure ---
+
+func TestRunOGImageBackfill_ProcessesArticles(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head></html>`))
+	}))
+	defer webServer.Close()
+
+	db := &mockStore{
+		ogArticles: []database.ArticleForBackfill{
+			{URLHash: "hash-1", URL: webServer.URL},
+		},
+	}
+
+	if err := runOGImageBackfill(context.Background(), db); err != nil {
+		t.Fatalf("runOGImageBackfill returned error: %v", err)
+	}
+}
+
+// --- runFetch NotModified + log branch ---
+
+func TestRunFetch_SourceNotModified(t *testing.T) {
+	feedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer feedServer.Close()
+
+	etag := `"v1"`
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "S1", FeedURL: feedServer.URL, Language: "en", IsActive: true, ETag: &etag},
+		},
+		fetchLog: &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+	}
+
+	if err := runFetch(context.Background(), db, parser.New(), 1); err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+	// One source processed, fetch state should record NotModified success (failures reset).
+	if len(db.fetchStateUpdates) != 1 {
+		t.Fatalf("fetchStateUpdates = %d, want 1", len(db.fetchStateUpdates))
+	}
+	if db.fetchStateUpdates[0].ConsecutiveFailures != 0 {
+		t.Errorf("failures = %d, want 0 on 304", db.fetchStateUpdates[0].ConsecutiveFailures)
+	}
+}
+
+// --- runFetch: GetActiveSources error AND UpdateFetchLog error (both warn paths) ---
+
+func TestRunFetch_GetSourcesErrorAndUpdateLogError(t *testing.T) {
+	db := &mockStore{
+		sourcesErr:   errors.New("db down"),
+		fetchLog:     &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		updateLogErr: errors.New("log update failed"),
+	}
+
+	err := runFetch(context.Background(), db, parser.New(), 5)
+	if err == nil {
+		t.Fatal("expected error from runFetch")
+	}
+}
+
+// --- processContentBackfill: transport-level extract error ---
+
+func TestProcessContentBackfill_ExtractTransportError(t *testing.T) {
+	// Closed server → connection refused → ExtractTextContent returns err != nil
+	// (non-200 status paths return "", nil, so we need a real transport error).
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachableURL := webServer.URL
+	webServer.Close()
+
+	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("DB should not be called on extract error")
+	}))
+	defer dbServer.Close()
+
+	db := newTestDBClient(dbServer)
+	contentExtractor := parser.NewContentExtractor()
+	article := database.ArticleForContentBackfill{URLHash: "hash-1", URL: unreachableURL}
+
+	if result := processContentBackfill(context.Background(), db, contentExtractor, article); result {
+		t.Error("expected false (extract error), got true")
+	}
+}
+
+// --- processOGImageBackfill: transport-level extract error ---
+
+func TestProcessOGImageBackfill_ExtractTransportError(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachableURL := webServer.URL
+	webServer.Close()
+
+	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("DB should not be called on extract error")
+	}))
+	defer dbServer.Close()
+
+	db := newTestDBClient(dbServer)
+	ogExtractor := parser.NewOGImageExtractor()
+	article := database.ArticleForBackfill{URLHash: "hash-1", URL: unreachableURL}
+
+	if result := processOGImageBackfill(context.Background(), db, ogExtractor, article); result {
+		t.Error("expected false (extract error), got true")
+	}
+}
+
+// --- runContentBackfill with real articles exercises the process closure ---
+
+func TestRunContentBackfill_ProcessesArticles(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is the full article content that is definitely long enough to be extracted by the readability parser. It needs to be well over one hundred characters to pass the length threshold check.</p></article></body></html>`))
+	}))
+	defer webServer.Close()
+
+	db := &mockStore{
+		contentArticles: []database.ArticleForContentBackfill{
+			{URLHash: "hash-1", URL: webServer.URL},
+		},
+	}
+
+	if err := runContentBackfill(context.Background(), db); err != nil {
+		t.Fatalf("runContentBackfill returned error: %v", err)
+	}
+}
