@@ -819,6 +819,222 @@ func TestIsRetryable(t *testing.T) {
 	}
 }
 
+func TestGetActiveSources_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetActiveSources(); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestBatchUpdateArticleImages_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "rpc error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.BatchUpdateArticleImages([]ImageUpdate{{URLHash: "h1", ImageURL: "http://x/i.jpg"}})
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestCreateFetchLog_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "db error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.CreateFetchLog(); err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestCreateFetchLog_EmptyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.CreateFetchLog(); err == nil {
+		t.Error("expected error when no fetch log returned")
+	}
+}
+
+func TestCreateFetchLog_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.CreateFetchLog(); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestUpdateFetchLog_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "db error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	err := client.UpdateFetchLog(&models.FetchLog{ID: "log-1", Status: "completed"})
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestUpdateArticleContent_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "db error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if err := client.UpdateArticleContent("hash-1", "content"); err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestGetArticlesNeedingOGImage_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "db error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24); err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestGetArticlesNeedingOGImage_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestGetArticlesNeedingContent_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "db error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetArticlesNeedingContent(200, 5, 12); err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestGetArticlesNeedingContent_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetArticlesNeedingContent(200, 5, 12); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestBumpBackfillAttempts_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "rpc error"}`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if err := client.BumpBackfillAttempts([]string{"h1"}, "image"); err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestCleanupOldArticles_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-a-number`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.CleanupOldArticles(30); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestCleanupOldFetchLogs_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.CleanupOldFetchLogs(30); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestDoWithRetry_ExhaustsRetries(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	_, err := client.GetActiveSources()
+	if err == nil {
+		t.Fatal("expected error after retry exhaustion")
+	}
+	// maxRetries=3 means 4 total attempts (initial + 3 retries).
+	if attempts != 4 {
+		t.Errorf("attempts = %d, want 4", attempts)
+	}
+}
+
+func TestDoWithRetry_TransportError(t *testing.T) {
+	// Start a server then close it so Do() returns a connection error.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetActiveSources(); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
 func TestSetHeaders(t *testing.T) {
 	cfg := &config.Config{
 		SupabaseURL: "https://test.supabase.co",
