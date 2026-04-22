@@ -238,6 +238,51 @@ func TestRateLimitingTransport_CancelShortCircuits(t *testing.T) {
 	}
 }
 
+// TestNewRateLimitingTransport_NilBaseUsesSharedTransport covers the `base == nil`
+// branch — callers can pass nil and the transport falls back to SharedTransport.
+func TestNewRateLimitingTransport_NilBaseUsesSharedTransport(t *testing.T) {
+	rt := NewRateLimitingTransport(nil, 10.0, 1)
+	if rt.base != SharedTransport {
+		t.Error("nil base should default to SharedTransport")
+	}
+}
+
+// TestNewRateLimitedClient_ZeroMaxRedirectsSkipsCheckRedirect covers the path
+// where maxRedirects==0 — the client should NOT install a CheckRedirect func,
+// leaving Go's default (10 redirects) in place.
+func TestNewRateLimitedClient_ZeroMaxRedirectsSkipsCheckRedirect(t *testing.T) {
+	client := NewRateLimitedClient(5*time.Second, 100.0, 10, 0)
+	if client.CheckRedirect != nil {
+		t.Error("maxRedirects==0 should leave CheckRedirect nil (Go default)")
+	}
+}
+
+// TestNewRateLimitedClient_FollowsRedirectWithinLimit covers the `return nil`
+// path of CheckRedirect — one redirect under a generous maxRedirects cap
+// should be followed to completion.
+func TestNewRateLimitedClient_FollowsRedirectWithinLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.Redirect(w, r, "/end", http.StatusFound)
+		case "/end":
+			fmt.Fprint(w, "done")
+		}
+	}))
+	defer server.Close()
+
+	client := NewRateLimitedClient(5*time.Second, 100.0, 10, 5)
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200 (redirect followed)", resp.StatusCode)
+	}
+}
+
 func TestNewRateLimitedClient_AppliesRedirectLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

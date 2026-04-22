@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -33,16 +32,13 @@ type ExtractedContent struct {
 
 // ExtractContent fetches the article page and extracts the main content
 func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string) (*ExtractedContent, error) {
-	parsedURL, err := url.Parse(articleURL)
-	if err != nil {
-		return nil, err
-	}
-
-	// Create request with context
+	// NewRequestWithContext parses the URL internally; reuse req.URL for
+	// readability below so we don't parse the same string twice.
 	req, err := http.NewRequestWithContext(ctx, "GET", articleURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	parsedURL := req.URL
 
 	// Set headers to avoid being blocked
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; PulseFeed/1.0; +https://pulsefeed.app)")

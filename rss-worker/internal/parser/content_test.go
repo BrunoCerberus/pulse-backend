@@ -135,6 +135,43 @@ func TestExtractContent_InvalidURL(t *testing.T) {
 	}
 }
 
+// TestExtractContent_URLParseError covers the `url.Parse` error branch — a
+// URL with an invalid percent escape triggers it before the HTTP call is made.
+func TestExtractContent_URLParseError(t *testing.T) {
+	extractor := NewContentExtractor()
+	_, err := extractor.ExtractContent(context.Background(), "http://example.com/%ZZ")
+	if err == nil {
+		t.Error("expected URL parse error, got nil")
+	}
+}
+
+// TestExtractContent_ReadabilityError covers the readability-failure branch:
+// a server that announces Content-Length > actual bytes written causes
+// io.ReadAll (inside readability.FromReader) to return unexpected EOF.
+func TestExtractContent_ReadabilityError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("Hijack: %v", err)
+		}
+		// Promise 5000 bytes then close mid-body; readability will see
+		// an unexpected EOF during ReadAll.
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\npartial body"))
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	extractor := NewContentExtractor()
+	_, err := extractor.ExtractContent(context.Background(), server.URL)
+	if err == nil {
+		t.Error("expected readability error on truncated body, got nil")
+	}
+}
+
 func TestExtractContent_Timeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)

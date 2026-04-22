@@ -38,6 +38,19 @@ jobs:
         working-directory: ./rss-worker
         run: go tool cover -func=coverage.out
 
+      - name: Enforce 100% coverage
+        working-directory: ./rss-worker
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $NF}')
+          if [ "$total" != "100.0%" ]; then
+            echo "::error::Total coverage $total is below the 100.0% threshold"
+            echo ""
+            echo "Functions below 100%:"
+            go tool cover -func=coverage.out | awk '$NF != "100.0%" && !/^total:/'
+            exit 1
+          fi
+          echo "Total coverage: $total ✓"
+
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
         with:

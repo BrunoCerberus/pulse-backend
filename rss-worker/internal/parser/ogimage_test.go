@@ -280,6 +280,41 @@ func TestOGImagePatterns_Count(t *testing.T) {
 	}
 }
 
+// TestExtractOGImage_BadURLEscape covers the `http.NewRequestWithContext`
+// error branch — a URL with an invalid percent escape fails URL parsing.
+func TestExtractOGImage_BadURLEscape(t *testing.T) {
+	extractor := NewOGImageExtractor()
+	_, err := extractor.ExtractOGImage(context.Background(), "http://example.com/%ZZ")
+	if err == nil {
+		t.Error("expected URL parse error, got nil")
+	}
+}
+
+// TestExtractOGImage_BodyReadError covers the io.ReadAll error branch — a
+// server that announces Content-Length > actual bytes causes ReadAll on the
+// limited reader to see an unexpected EOF.
+func TestExtractOGImage_BodyReadError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("Hijack: %v", err)
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\n\r\npartial"))
+		_ = conn.Close()
+	}))
+	defer server.Close()
+
+	extractor := NewOGImageExtractor()
+	_, err := extractor.ExtractOGImage(context.Background(), server.URL)
+	if err == nil {
+		t.Error("expected body read error on truncated response, got nil")
+	}
+}
+
 func TestNewOGImageExtractor(t *testing.T) {
 	extractor := NewOGImageExtractor()
 

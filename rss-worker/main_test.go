@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +20,31 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/models"
 	"github.com/pulsefeed/rss-worker/internal/parser"
 )
+
+// TestMain gives the test binary a "run main() instead of tests" mode, keyed
+// off the RSS_WORKER_TEST_MAIN env var. Subprocess tests re-invoke the test
+// binary with that var set to exercise main() and runCleanup's Fatalf path.
+func TestMain(m *testing.M) {
+	switch os.Getenv("RSS_WORKER_TEST_MAIN") {
+	case "main":
+		// Strip -test.* flags from os.Args so main() only sees its own args.
+		filtered := []string{os.Args[0]}
+		for _, a := range os.Args[1:] {
+			if strings.HasPrefix(a, "-test.") {
+				continue
+			}
+			filtered = append(filtered, a)
+		}
+		os.Args = filtered
+		main()
+		return // unreached if main Fatalf's
+	case "runCleanup":
+		// Run runCleanup with a failing store so Fatalf's os.Exit(1) fires.
+		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, 30)
+		return
+	}
+	os.Exit(m.Run())
+}
 
 func newTestDBClient(server *httptest.Server) *database.Client {
 	cfg := &config.Config{
@@ -447,6 +476,7 @@ type mockStore struct {
 	insertResult      int
 	insertSkipped     int
 	insertErr         error
+	insertPanic       string // if non-empty, InsertArticles panics with this message
 	fetchLog          *models.FetchLog
 	fetchLogErr       error
 	updateLogErr      error
@@ -478,6 +508,9 @@ func (m *mockStore) GetActiveSources() ([]models.Source, error) {
 }
 
 func (m *mockStore) InsertArticles(articles []*models.Article) (int, int, error) {
+	if m.insertPanic != "" {
+		panic(m.insertPanic)
+	}
 	return m.insertResult, m.insertSkipped, m.insertErr
 }
 
@@ -598,7 +631,7 @@ func TestRunFetch_GetSourcesError(t *testing.T) {
 
 func TestRunFetch_CreateFetchLogError(t *testing.T) {
 	db := &mockStore{
-		sources:    []models.Source{},
+		sources:     []models.Source{},
 		fetchLogErr: errors.New("log creation failed"),
 	}
 
@@ -1301,5 +1334,268 @@ func TestRunContentBackfill_ProcessesArticles(t *testing.T) {
 
 	if err := runContentBackfill(context.Background(), db); err != nil {
 		t.Fatalf("runContentBackfill returned error: %v", err)
+	}
+}
+
+// --- newRunID fallback path (via randRead injection) ---
+
+func TestNewRunID_RandReadFallback(t *testing.T) {
+	saved := randRead
+	randRead = func(b []byte) (int, error) { return 0, errors.New("rand failed") }
+	defer func() { randRead = saved }()
+
+	id := newRunID()
+	// Fallback format is "ts-<nanos>"; length varies but prefix is fixed.
+	if !strings.HasPrefix(id, "ts-") {
+		t.Errorf("fallback ID = %q, want prefix 'ts-'", id)
+	}
+}
+
+// --- processSource panic recovery ---
+
+// TestRunFetch_RecoversFromPanic covers the deferred recover in runFetch's
+// per-source goroutine. A mockStore whose InsertArticles panics forces the
+// recover to wrap the panic value as a FetchResult error.
+func TestRunFetch_RecoversFromPanic(t *testing.T) {
+	var serverURL string
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rss := fmt.Sprintf(`<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><item><title>A</title><link>%s/a</link></item></channel></rss>`, serverURL)
+		w.Header().Set("Content-Type", "application/xml")
+		w.Write([]byte(rss))
+	}))
+	defer webServer.Close()
+	serverURL = webServer.URL
+
+	db := &mockStore{
+		sources: []models.Source{
+			{ID: "src-1", Name: "s1", FeedURL: webServer.URL, Language: "en", IsActive: true},
+		},
+		fetchLog:    &models.FetchLog{ID: "log-1", Status: "running", Errors: []string{}},
+		insertPanic: "boom",
+	}
+
+	// runFetch should not propagate the panic — the recover wraps it into the
+	// source's FetchResult.Error, which ends up in the fetch log's errors slice.
+	if err := runFetch(context.Background(), db, parser.New(), 1); err != nil {
+		t.Fatalf("runFetch returned error: %v", err)
+	}
+	if len(db.fetchStateUpdates) != 1 {
+		t.Fatalf("fetchStateUpdates = %d, want 1", len(db.fetchStateUpdates))
+	}
+	// The recovered panic should trip the failure counter.
+	if db.fetchStateUpdates[0].ConsecutiveFailures == 0 {
+		t.Error("expected failures > 0 after panic recovery")
+	}
+}
+
+// --- runCleanup Fatalf via subprocess (keyed off RSS_WORKER_TEST_MAIN=runCleanup) ---
+
+func TestRunCleanup_FatalfExits(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestRunCleanup_FatalfExits")
+	cmd.Env = append(os.Environ(), "RSS_WORKER_TEST_MAIN=runCleanup")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected non-zero exit, got %v (stderr: %s)", err, stderr.String())
+	}
+	if code := exitErr.ExitCode(); code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "Cleanup failed") {
+		t.Errorf("stderr missing Cleanup failed; got %q", stderr.String())
+	}
+}
+
+// --- main() via subprocess (keyed off RSS_WORKER_TEST_MAIN=main) ---
+
+// supabaseMockHandler returns a handler that satisfies the minimal endpoints
+// main()'s commands exercise: fetch log create/update, sources listing,
+// articles backfill listings, cleanup RPC, and BatchUpdateSourceFetchState.
+func supabaseMockHandler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/sources"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+		case r.Method == "POST" && strings.Contains(r.URL.Path, "/fetch_logs"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`[{"id":"log-1","status":"running","errors":[]}]`))
+		case strings.Contains(r.URL.Path, "/fetch_logs"):
+			w.WriteHeader(http.StatusNoContent)
+		case strings.Contains(r.URL.Path, "/rpc/cleanup_old_articles"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte("0"))
+		case strings.Contains(r.URL.Path, "/rpc/batch_update_source_fetch_state"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`0`))
+		case strings.Contains(r.URL.Path, "/articles"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}
+}
+
+func runMainSubprocess(t *testing.T, args []string, env map[string]string) (string, string, int) {
+	t.Helper()
+	cmdArgs := append([]string{"-test.run=^$"}, args...)
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = append(os.Environ(), "RSS_WORKER_TEST_MAIN=main")
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exit := 0
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exit = ee.ExitCode()
+		} else {
+			t.Fatalf("unexpected error type: %v", err)
+		}
+	}
+	return stdout.String(), stderr.String(), exit
+}
+
+func TestMainBinary_DefaultFetch(t *testing.T) {
+	server := httptest.NewServer(supabaseMockHandler(t))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, nil, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0 (stderr: %s)", exit, stderr)
+	}
+	if !strings.Contains(stderr, "run_started") {
+		t.Errorf("stderr missing run_started: %s", stderr)
+	}
+	if !strings.Contains(stderr, "run_completed") {
+		t.Errorf("stderr missing run_completed: %s", stderr)
+	}
+}
+
+func TestMainBinary_CleanupCommand(t *testing.T) {
+	server := httptest.NewServer(supabaseMockHandler(t))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, []string{"cleanup"}, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0 (stderr: %s)", exit, stderr)
+	}
+	if !strings.Contains(stderr, "Cleanup complete") {
+		t.Errorf("stderr missing Cleanup complete: %s", stderr)
+	}
+}
+
+func TestMainBinary_BackfillImagesCommand(t *testing.T) {
+	server := httptest.NewServer(supabaseMockHandler(t))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, []string{"backfill-images"}, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0 (stderr: %s)", exit, stderr)
+	}
+}
+
+func TestMainBinary_BackfillContentCommand(t *testing.T) {
+	server := httptest.NewServer(supabaseMockHandler(t))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, []string{"backfill-content"}, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0 (stderr: %s)", exit, stderr)
+	}
+}
+
+func TestMainBinary_ConfigLoadError(t *testing.T) {
+	// No SUPABASE_URL / key → config.Load returns error → Fatalf → exit 1.
+	_, stderr, exit := runMainSubprocess(t, nil, map[string]string{
+		"SUPABASE_URL":              "",
+		"SUPABASE_SERVICE_ROLE_KEY": "",
+	})
+	if exit != 1 {
+		t.Errorf("exit = %d, want 1", exit)
+	}
+	if !strings.Contains(stderr, "Failed to load config") {
+		t.Errorf("stderr missing 'Failed to load config': %s", stderr)
+	}
+}
+
+func TestMainBinary_FetchError(t *testing.T) {
+	// Server that always returns 500 on /sources → runFetch returns error → Fatalf → exit 1.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/fetch_logs") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`[{"id":"log-1","status":"running","errors":[]}]`))
+			return
+		}
+		if strings.Contains(r.URL.Path, "/fetch_logs") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// /sources → 500
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, nil, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 1 {
+		t.Errorf("exit = %d, want 1 (stderr: %s)", exit, stderr)
+	}
+	if !strings.Contains(stderr, "Fetch failed") {
+		t.Errorf("stderr missing 'Fetch failed': %s", stderr)
+	}
+}
+
+func TestMainBinary_BackfillImagesError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, []string{"backfill-images"}, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 1 {
+		t.Errorf("exit = %d, want 1 (stderr: %s)", exit, stderr)
+	}
+}
+
+func TestMainBinary_BackfillContentError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, stderr, exit := runMainSubprocess(t, []string{"backfill-content"}, map[string]string{
+		"SUPABASE_URL":              server.URL,
+		"SUPABASE_SERVICE_ROLE_KEY": "test-key",
+	})
+	if exit != 1 {
+		t.Errorf("exit = %d, want 1 (stderr: %s)", exit, stderr)
 	}
 }
