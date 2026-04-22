@@ -2,6 +2,7 @@ package database
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,17 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/config"
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
+
+// withFailingJSONMarshal swaps the package-level jsonMarshal for the duration
+// of fn, returning the sentinel error each call. Lets tests exercise the
+// defensive marshal-error branches.
+func withFailingJSONMarshal(t *testing.T, fn func()) {
+	t.Helper()
+	saved := jsonMarshal
+	jsonMarshal = func(any) ([]byte, error) { return nil, errors.New("marshal failed") }
+	defer func() { jsonMarshal = saved }()
+	fn()
+}
 
 func newTestClient(server *httptest.Server) *Client {
 	cfg := &config.Config{
@@ -112,7 +124,7 @@ func TestGetActiveSources_Success(t *testing.T) {
 func TestGetActiveSources_FiltersByInterval(t *testing.T) {
 	recentFetch := time.Now().Add(-1 * time.Hour) // 1 hour ago
 	allSources := []models.Source{
-		{ID: "src-1", Name: "Fresh", IsActive: true, FetchIntervalHours: 2},                        // nil LastFetched → should fetch
+		{ID: "src-1", Name: "Fresh", IsActive: true, FetchIntervalHours: 2},                             // nil LastFetched → should fetch
 		{ID: "src-2", Name: "Recent", IsActive: true, FetchIntervalHours: 6, LastFetched: &recentFetch}, // 1h ago, interval=6h → skip
 	}
 
@@ -1033,6 +1045,325 @@ func TestDoWithRetry_TransportError(t *testing.T) {
 	if _, err := client.GetActiveSources(); err == nil {
 		t.Error("expected transport error, got nil")
 	}
+}
+
+// newBadURLClient returns a client whose baseURL contains an invalid percent
+// escape, so any subsequent `http.NewRequest`/`doWithRetry` call fails URL
+// parsing. This exercises the NewRequest error branches in every method.
+func newBadURLClient() *Client {
+	return NewClient(&config.Config{
+		SupabaseURL: "http://example.com/%ZZ",
+		SupabaseKey: "test-api-key",
+	})
+}
+
+// newUnreachableClient points at a server that's already been closed, so the
+// first call produces a transport (connection refused) error. This exercises
+// the httpClient.Do error branches.
+func newUnreachableClient(t *testing.T) *Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	c := newTestClient(server)
+	server.Close()
+	return c
+}
+
+// --- http.NewRequest bad-URL branches ---
+
+func TestUpdateArticleImage_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if err := c.UpdateArticleImage("h1", "http://x/i.jpg"); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestUpdateArticleContent_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if err := c.UpdateArticleContent("h1", "body"); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestCreateFetchLog_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.CreateFetchLog(); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestUpdateFetchLog_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if err := c.UpdateFetchLog(&models.FetchLog{ID: "log-1"}); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestCleanupOldArticles_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.CleanupOldArticles(30); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestCleanupOldFetchLogs_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.CleanupOldFetchLogs(30); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestGetArticlesNeedingOGImage_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestGetArticlesNeedingContent_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.GetArticlesNeedingContent(10, 3, 24); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+// doWithRetry also has a NewRequest branch (line 435-437); GetActiveSources
+// uses doWithRetry, so a bad baseURL exercises that path.
+func TestGetActiveSources_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.GetActiveSources(); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+// --- httpClient.Do transport-error branches (distinct from 5xx retries) ---
+
+func TestUpdateArticleImage_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if err := c.UpdateArticleImage("h1", "http://x/i.jpg"); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestUpdateArticleContent_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if err := c.UpdateArticleContent("h1", "body"); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestCreateFetchLog_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.CreateFetchLog(); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestUpdateFetchLog_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if err := c.UpdateFetchLog(&models.FetchLog{ID: "log-1"}); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestCleanupOldArticles_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.CleanupOldArticles(30); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestCleanupOldFetchLogs_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.CleanupOldFetchLogs(30); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestGetArticlesNeedingOGImage_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestGetArticlesNeedingContent_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.GetArticlesNeedingContent(10, 3, 24); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestInsertArticles_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	_, _, err := c.InsertArticles([]*models.Article{{URLHash: "h", URL: "u"}})
+	if err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestBatchUpdateArticleImages_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	err := c.BatchUpdateArticleImages([]ImageUpdate{{URLHash: "h", ImageURL: "u"}})
+	if err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestBatchUpdateSourceFetchState_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	err := c.BatchUpdateSourceFetchState([]SourceFetchState{{ID: "s1"}})
+	if err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestBumpBackfillAttempts_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if err := c.BumpBackfillAttempts([]string{"h1"}, "image"); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+// --- insertArticleBatch decode-error branch ---
+
+func TestInsertArticles_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		// Return non-JSON so the decode step fails.
+		w.Write([]byte(`not-json`))
+	}))
+	defer server.Close()
+
+	c := newTestClient(server)
+	_, _, err := c.InsertArticles([]*models.Article{{URLHash: "h", URL: "u"}})
+	if err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+// --- InsertArticles batch-image-update warn branch (line 153) ---
+
+// TestInsertArticles_BatchImageUpdateError covers the warn-only path where
+// BatchUpdateArticleImages fails after a successful insert — InsertArticles
+// should still return nil error (image update is best-effort).
+func TestInsertArticles_BatchImageUpdateError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/rpc/batch_update_article_images") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error": "rpc error"}`))
+			return
+		}
+		// POST /articles: return empty inserted list so the caller falls
+		// through to the image-update step for the duplicate article.
+		if r.Method == "POST" && strings.Contains(r.URL.Path, "/articles") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	c := newTestClient(server)
+	imageURL := "https://example.com/og.jpg"
+	thumb := "https://example.com/thumb.jpg"
+	articles := []*models.Article{{
+		URLHash:      "h1",
+		URL:          "https://example.com/a",
+		ImageURL:     &imageURL,
+		ThumbnailURL: &thumb,
+	}}
+	// The outer InsertArticles error should be nil — the image update failure
+	// is logged via Warnf but not propagated.
+	if _, _, err := c.InsertArticles(articles); err != nil {
+		t.Errorf("expected nil error from InsertArticles, got %v", err)
+	}
+}
+
+// --- jsonMarshal error branches (unreachable with real payloads) ---
+
+func TestInsertArticles_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient() // never reached
+		_, _, err := c.InsertArticles([]*models.Article{{URLHash: "h", URL: "u"}})
+		if err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestBatchUpdateArticleImages_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.BatchUpdateArticleImages([]ImageUpdate{{URLHash: "h", ImageURL: "u"}}); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestUpdateArticleImage_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.UpdateArticleImage("h", "u"); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestBatchUpdateSourceFetchState_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.BatchUpdateSourceFetchState([]SourceFetchState{{ID: "s1"}}); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestCreateFetchLog_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if _, err := c.CreateFetchLog(); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestUpdateFetchLog_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.UpdateFetchLog(&models.FetchLog{ID: "log-1"}); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestCleanupOldArticles_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if _, err := c.CleanupOldArticles(30); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestBumpBackfillAttempts_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.BumpBackfillAttempts([]string{"h"}, "image"); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
+func TestUpdateArticleContent_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if err := c.UpdateArticleContent("h", "body"); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
 }
 
 func TestSetHeaders(t *testing.T) {

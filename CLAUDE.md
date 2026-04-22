@@ -284,17 +284,17 @@ runner rotations exit without orphaning batches.
 
 ## Testing
 
-Unit tests cover Go packages and Deno Edge Functions:
+Unit tests cover Go packages and Deno Edge Functions. **All Go packages are held at 100% statement coverage**; `test.yml` fails the build if total coverage drops below 100.0%. Defensive branches that can't fail with real inputs (e.g. `json.Marshal` on statically-typed payloads, `crypto/rand.Read`) are made reachable via package-level function vars (`jsonMarshal`, `randRead`) that tests swap — follow that pattern when adding new similar code.
 
 | Package | Coverage | Key Tests |
 |---------|----------|-----------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
 | `internal/config` | 100% | Load + env var validation (including HOST_RATE_LIMIT_*, BACKFILL_*, and CIRCUIT_*) |
-| `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
-| `internal/parser` | 92% | cleanHTML, extractImageURL, OG image, content extraction, itemToArticle, ParseFeed (200/304/non-2xx + conditional-GET headers) |
-| `internal/database` | 82% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState (payload shape, empty noop, 5xx), GetActiveSources (circuit filter), retry logic, BumpBackfillAttempts |
-| `internal/logger` | 86% | Level filtering, text + JSON output format, `With()` field propagation |
-| `main` | 74% | processSource, runFetch, nextCircuitOpenUntil (threshold/exponential/cap/overflow), buildSourceFetchState (success resets, failure preserves ETag + trips circuit, 304 is success), runBackfill |
+| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit, nil-base default, zero-maxRedirects path) |
+| `internal/parser` | 100% | cleanHTML (including partial-tag and no-closing-tag edges), extractImageURL, OG image (body-read errors), content extraction (readability errors), itemToArticle (embedded category), ParseFeed (200/304/non-2xx + conditional-GET headers, bad-URL + transport errors), parseDuration (too-many-parts default) |
+| `internal/database` | 100% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState, GetActiveSources (circuit filter), retry logic, BumpBackfillAttempts, plus bad-URL/transport/marshal/decode error branches across every method |
+| `internal/logger` | 100% | Level filtering, text + JSON output format, `With()` field propagation, nil-atomic fallbacks, toSlogLevel default, subprocess-driven Fatalf |
+| `main` | 100% | processSource (+ panic recovery), runFetch, nextCircuitOpenUntil, buildSourceFetchState, runBackfill, newRunID fallback, plus subprocess-driven TestMain that exercises every main() command (fetch/cleanup/backfill-images/backfill-content + config-load and runtime-error paths) |
 | `_shared/*.ts` | — | cache, cors, etag utilities |
 
 Run tests:
@@ -308,7 +308,7 @@ make test-deno      # Deno Edge Function tests
 
 - **fetch-rss.yml**: Every 2 hours + manual trigger. Runs the Go RSS worker against the Supabase production DB.
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger. Removes articles older than `ArticleRetentionDays`.
-- **test.yml**: Runs on push/PR to master (Go tests with race detector + coverage, golangci-lint, govulncheck, Deno tests).
+- **test.yml**: Runs on push/PR to master (Go tests with race detector + coverage, 100% coverage gate, golangci-lint, govulncheck, Deno tests). The coverage step parses `go tool cover -func` output and fails the job if total coverage is below 100.0%, listing sub-100% functions.
 - **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy-functions.yml**: Auto-deploys Edge Functions on push to master.

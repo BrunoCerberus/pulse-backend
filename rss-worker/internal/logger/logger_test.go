@@ -3,7 +3,9 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -251,5 +253,80 @@ func TestInit_DefaultsToInfo(t *testing.T) {
 	})
 	if output != "" {
 		t.Errorf("with no LOG_LEVEL, Debugf should be suppressed; got %q", output)
+	}
+}
+
+// TestCurrentOutput_NilFallback covers the defensive branch where the atomic
+// output pointer has never been populated — get() should fall back to
+// os.Stderr. init() always sets it, so we temporarily swap in a nil pointer.
+func TestCurrentOutput_NilFallback(t *testing.T) {
+	saved := output.Load()
+	output.Store(nil)
+	defer func() {
+		if saved != nil {
+			output.Store(saved)
+		} else {
+			setOutput(os.Stderr)
+		}
+	}()
+
+	if got := currentOutput(); got != os.Stderr {
+		t.Errorf("currentOutput with nil pointer = %v, want os.Stderr", got)
+	}
+}
+
+// TestGet_NilFallback covers the `active == nil` branch — get() should
+// return slog.Default() rather than panicking.
+func TestGet_NilFallback(t *testing.T) {
+	saved := active.Load()
+	active.Store(nil)
+	defer func() {
+		if saved != nil {
+			active.Store(saved)
+		} else {
+			rebuild()
+		}
+	}()
+
+	if got := get(); got != slog.Default() {
+		t.Errorf("get() with nil active = %v, want slog.Default()", got)
+	}
+}
+
+// TestToSlogLevel_DefaultCase covers the default arm of the switch — an
+// out-of-range Level value should map to slog.LevelInfo.
+func TestToSlogLevel_DefaultCase(t *testing.T) {
+	if got := toSlogLevel(Level(999)); got != slog.LevelInfo {
+		t.Errorf("toSlogLevel(999) = %v, want slog.LevelInfo", got)
+	}
+}
+
+// TestFatalf_ExitsWithStatus1 covers Fatalf by re-running the test binary as
+// a subprocess with an env sentinel. The child calls Fatalf, which logs at
+// ERROR then os.Exit(1); the parent asserts the exit code and stderr message.
+func TestFatalf_ExitsWithStatus1(t *testing.T) {
+	if os.Getenv("LOGGER_FATAL_CHILD") == "1" {
+		Fatalf("fatal test: %s", "boom")
+		return // unreachable
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestFatalf_ExitsWithStatus1")
+	cmd.Env = append(os.Environ(), "LOGGER_FATAL_CHILD=1")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected child to exit with error, got %v", err)
+	}
+	if code := exitErr.ExitCode(); code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "fatal test: boom") {
+		t.Errorf("stderr missing fatal message; got %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "level=ERROR") {
+		t.Errorf("stderr missing level=ERROR; got %q", stderr.String())
 	}
 }

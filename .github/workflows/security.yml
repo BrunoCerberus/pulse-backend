@@ -84,7 +84,7 @@ jobs:
           # Using the prebuilt binary avoids `go install`'s strict toolchain
           # check, which rejects gosec releases that bump their own go.mod
           # past the project's Go version.
-          GOSEC_VERSION: "v2.22.2"
+          GOSEC_VERSION: "v2.22.11"
         run: |
           curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
             | sudo sh -s -- -b /usr/local/bin "${GOSEC_VERSION}"

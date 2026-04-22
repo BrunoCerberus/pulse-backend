@@ -36,12 +36,16 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/parser"
 )
 
+// randRead is crypto/rand.Read indirected through a package variable so the
+// failure-fallback branch of newRunID is testable.
+var randRead = rand.Read
+
 // newRunID returns a short hex ID (8 chars) for correlating all log lines
 // emitted by a single worker invocation. Falls back to a timestamp if
 // crypto/rand fails.
 func newRunID() string {
 	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := randRead(b[:]); err != nil {
 		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])

@@ -31,6 +31,11 @@ const (
 	retryBaseWait = 500 * time.Millisecond
 )
 
+// jsonMarshal is json.Marshal indirected through a package variable so tests
+// can swap in a failing stub to exercise the defensive err-branches that are
+// otherwise unreachable given the statically-typed payloads (see *_test.go).
+var jsonMarshal = json.Marshal
+
 // Client handles all Supabase database operations via the REST API.
 // It maintains an HTTP client with a 30-second timeout for all requests.
 type Client struct {
@@ -162,7 +167,7 @@ func (c *Client) InsertArticles(articles []*models.Article) (inserted int, skipp
 func (c *Client) insertArticleBatch(batch []*models.Article) ([]string, error) {
 	url := fmt.Sprintf("%s/articles?on_conflict=url_hash&select=url_hash", c.baseURL)
 
-	data, err := json.Marshal(batch)
+	data, err := jsonMarshal(batch)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +209,7 @@ func (c *Client) BatchUpdateArticleImages(updates []ImageUpdate) error {
 	payload := map[string]interface{}{
 		"updates": updates,
 	}
-	data, err := json.Marshal(payload)
+	data, err := jsonMarshal(payload)
 	if err != nil {
 		return err
 	}
@@ -230,7 +235,7 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 		"image_url": imageURL,
 	}
 
-	body, err := json.Marshal(data)
+	body, err := jsonMarshal(data)
 	if err != nil {
 		return err
 	}
@@ -284,7 +289,7 @@ func (c *Client) BatchUpdateSourceFetchState(updates []SourceFetchState) error {
 	payload := map[string]interface{}{
 		"updates": updates,
 	}
-	data, err := json.Marshal(payload)
+	data, err := jsonMarshal(payload)
 	if err != nil {
 		return err
 	}
@@ -312,7 +317,7 @@ func (c *Client) CreateFetchLog() (*models.FetchLog, error) {
 		Errors:    []string{},
 	}
 
-	data, err := json.Marshal(log)
+	data, err := jsonMarshal(log)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +358,7 @@ func (c *Client) UpdateFetchLog(log *models.FetchLog) error {
 	now := time.Now().UTC()
 	log.CompletedAt = &now
 
-	data, err := json.Marshal(log)
+	data, err := jsonMarshal(log)
 	if err != nil {
 		return err
 	}
@@ -383,7 +388,7 @@ func (c *Client) CleanupOldArticles(daysToKeep int) (int, error) {
 	url := fmt.Sprintf("%s/rpc/cleanup_old_articles", c.baseURL)
 
 	data := map[string]int{"days_to_keep": daysToKeep}
-	body, err := json.Marshal(data)
+	body, err := jsonMarshal(data)
 	if err != nil {
 		return 0, err
 	}
@@ -621,7 +626,7 @@ func (c *Client) BumpBackfillAttempts(urlHashes []string, kind string) error {
 		"url_hashes": urlHashes,
 		"kind":       kind,
 	}
-	data, err := json.Marshal(payload)
+	data, err := jsonMarshal(payload)
 	if err != nil {
 		return err
 	}
@@ -647,7 +652,7 @@ func (c *Client) UpdateArticleContent(urlHash string, content string) error {
 		"content": content,
 	}
 
-	body, err := json.Marshal(data)
+	body, err := jsonMarshal(data)
 	if err != nil {
 		return err
 	}

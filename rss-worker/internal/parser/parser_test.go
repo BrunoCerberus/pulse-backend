@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -592,9 +593,9 @@ func TestItemToArticle(t *testing.T) {
 	published := time.Date(2024, 1, 15, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name   string
-		item   *gofeed.Item
-		check  func(t *testing.T, a *models.Article)
+		name  string
+		item  *gofeed.Item
+		check func(t *testing.T, a *models.Article)
 	}{
 		{
 			name: "basic conversion",
@@ -1300,4 +1301,206 @@ func TestFetchContentForArticle_Error(t *testing.T) {
 	if article.Content != nil {
 		t.Errorf("Content = %v, want nil for error response", article.Content)
 	}
+}
+
+// TestSetHostRateLimit covers the setter: mutating hostRPS/hostBurst should
+// affect subsequent parser/extractor construction.
+func TestSetHostRateLimit(t *testing.T) {
+	origRPS, origBurst := hostRPS, hostBurst
+	defer SetHostRateLimit(origRPS, origBurst)
+
+	SetHostRateLimit(7.5, 11)
+	if hostRPS != 7.5 {
+		t.Errorf("hostRPS = %v, want 7.5", hostRPS)
+	}
+	if hostBurst != 11 {
+		t.Errorf("hostBurst = %v, want 11", hostBurst)
+	}
+}
+
+// TestParseFeed_NewRequestError covers the `http.NewRequestWithContext` error
+// branch — a URL with an invalid percent-escape fails URL parsing.
+func TestParseFeed_NewRequestError(t *testing.T) {
+	p := New()
+	source := models.Source{
+		ID:       "src-1",
+		FeedURL:  "http://example.com/%ZZ",
+		Language: "en",
+	}
+	_, err := p.ParseFeed(context.Background(), source)
+	if err == nil {
+		t.Fatal("expected error for malformed URL, got nil")
+	}
+}
+
+// TestParseFeed_TransportError covers the `p.fp.Client.Do` error path — a
+// closed server produces a connection-refused error.
+func TestParseFeed_TransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	feedURL := server.URL
+	server.Close()
+
+	p := New()
+	_, err := p.ParseFeed(context.Background(), models.Source{
+		ID: "src-1", FeedURL: feedURL, Language: "en",
+	})
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+}
+
+// TestFetchOGImageForArticle_TransportError covers the error branch in
+// fetchOGImageForArticle (logs and returns early).
+func TestFetchOGImageForArticle_TransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachable := server.URL
+	server.Close()
+
+	p := New()
+	article := &models.Article{URL: unreachable, Title: "Test"}
+	p.fetchOGImageForArticle(context.Background(), article)
+
+	if article.ImageURL != nil {
+		t.Errorf("ImageURL = %v, want nil on transport error", article.ImageURL)
+	}
+}
+
+// TestFetchOGImageForArticle_NotFound covers the NOT FOUND branch — server
+// returns HTML without any og:image tag.
+func TestFetchOGImageForArticle_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><title>No OG</title></head></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	article := &models.Article{URL: server.URL, Title: "Test"}
+	p.fetchOGImageForArticle(context.Background(), article)
+
+	if article.ImageURL != nil {
+		t.Errorf("ImageURL = %v, want nil when og:image absent", article.ImageURL)
+	}
+}
+
+// TestFetchContentForArticle_TransportError covers the error branch of
+// fetchContentForArticle (distinct from a 500 response, which returns nil,nil).
+func TestFetchContentForArticle_TransportError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachable := server.URL
+	server.Close()
+
+	p := New()
+	article := &models.Article{URL: unreachable, Title: "Test"}
+	p.fetchContentForArticle(context.Background(), article)
+
+	if article.Content != nil {
+		t.Errorf("Content = %v, want nil on transport error", article.Content)
+	}
+}
+
+// TestItemToArticle_EmbeddedCategory covers the catName/catSlug branches in
+// itemToArticle — when the source has embedded category data, the article's
+// denormalized category fields are populated.
+func TestItemToArticle_EmbeddedCategory(t *testing.T) {
+	p := New()
+	source := models.Source{
+		ID:         "src-1",
+		Name:       "Test",
+		Slug:       "test",
+		CategoryID: strPtr("cat-1"),
+		Language:   "en",
+		Categories: &models.EmbeddedCategory{
+			Name: "Technology",
+			Slug: "technology",
+		},
+	}
+	item := &gofeed.Item{
+		Title: "Test Article",
+		Link:  "https://example.com/1",
+	}
+
+	article := p.itemToArticle(item, source)
+	if article == nil {
+		t.Fatal("expected article, got nil")
+	}
+	if article.CategoryName == nil || *article.CategoryName != "Technology" {
+		t.Errorf("CategoryName = %v, want Technology", article.CategoryName)
+	}
+	if article.CategorySlug == nil || *article.CategorySlug != "technology" {
+		t.Errorf("CategorySlug = %v, want technology", article.CategorySlug)
+	}
+}
+
+// TestRemoveTagWithContent_PartialMatch covers the partial-tag-match branch:
+// when the "<script" prefix is followed by a letter (e.g. "<scripted>"), it
+// is NOT a real <script> tag and should be left in place.
+func TestRemoveTagWithContent_PartialMatch(t *testing.T) {
+	input := "before <scripted>inner</scripted> after"
+	got := removeTagWithContent(input, "script")
+	if !strings.Contains(got, "scripted") {
+		t.Errorf("partial tag match should be preserved, got %q", got)
+	}
+}
+
+// TestRemoveTagWithContent_NoClosingTag covers the "no closing tag" branch —
+// an unmatched <script> should eat the rest of the string.
+func TestRemoveTagWithContent_NoClosingTag(t *testing.T) {
+	input := "before <script>unterminated content forever"
+	got := removeTagWithContent(input, "script")
+	if got != "before " {
+		t.Errorf("unterminated tag: got %q, want %q", got, "before ")
+	}
+}
+
+// TestParseDuration_TooManyParts covers the default arm of the switch —
+// four or more colon-separated parts returns 0.
+func TestParseDuration_TooManyParts(t *testing.T) {
+	if got := parseDuration("1:2:3:4"); got != 0 {
+		t.Errorf("parseDuration(1:2:3:4) = %d, want 0", got)
+	}
+}
+
+// TestEnrichWithOGImages_FeedLoopCancelled forces the ctx.Done() case in the
+// feed loop (line 208) by prefilling the channel so `work <- article` blocks,
+// then cancelling the context.
+func TestEnrichWithOGImages_FeedLoopCancelled(t *testing.T) {
+	// Slow server — ensures workers are busy so the feed loop's channel
+	// send blocks and observes ctx.Done().
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte(`<html><head></head></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	// More articles than workers (maxWorkers=5) so the feed send blocks.
+	articles := make([]*models.Article, 20)
+	for i := range articles {
+		articles[i] = &models.Article{URL: server.URL, Title: "A"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	p.enrichWithOGImages(ctx, articles)
+	// No assertion — we just need the ctx.Done() branches to execute.
+}
+
+// TestEnrichWithContent_FeedLoopCancelled mirrors the OG version for the
+// content worker (lines 269-270, 276-278, 287).
+func TestEnrichWithContent_FeedLoopCancelled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte(`<html><body><p>Short.</p></body></html>`))
+	}))
+	defer server.Close()
+
+	p := New()
+	articles := make([]*models.Article, 20)
+	for i := range articles {
+		articles[i] = &models.Article{URL: server.URL, Title: "A"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	p.enrichWithContent(ctx, articles)
 }
