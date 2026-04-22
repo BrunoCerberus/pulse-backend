@@ -81,6 +81,8 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/016_denormalize_articles.sql` - Denormalize source/category into articles
    - `supabase/migrations/017_backfill_denormalized_articles.sql` - Backfill denormalized columns
    - `supabase/migrations/018_add_backfill_tracking.sql` - Attempt counters + cooldown RPC for image/content backfills
+   - `supabase/migrations/019_add_source_fetch_state_columns.sql` - `etag`, `last_modified`, `consecutive_failures`, `circuit_open_until` on sources
+   - `supabase/migrations/020_add_source_health_infra.sql` - `batch_update_source_fetch_state` RPC + `source_health` view
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -185,14 +187,17 @@ pulse-backend/
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category
 │   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
-│   │   └── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
+│   │   ├── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
+│   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
+│   │   └── 020_add_source_health_infra.sql       # batch_update_source_fetch_state RPC + source_health view
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
 │       ├── api-sources/               # Sources endpoint (1h cache)
 │       ├── api-articles/              # Articles endpoint (5min + ETag)
 │       ├── api-search/                # Search endpoint (1min private)
-│       └── api-health/                # Health check endpoint (no-store)
+│       ├── api-health/                # Health check endpoint (no-store)
+│       └── api-source-health/         # Per-source fetch health + summary (60s cache)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
@@ -210,7 +215,8 @@ pulse-backend/
     │   ├── test.yml                   # Unit tests + lint + govulncheck (on push/PR)
     │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
-    │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
+    │   ├── deploy-functions.yml       # Auto-deploy Edge Functions on push
+    │   └── watchdog.yml               # Source health check every 6h (fails job on degradation)
     └── dependabot.yml                 # Weekly dependency updates
 ```
 
@@ -375,6 +381,9 @@ GET /api-search?q=climate&limit=20
 
 # Health check (no caching)
 GET /api-health
+
+# Per-source fetch health + summary (60s cache) — powers the watchdog workflow
+GET /api-source-health
 ```
 
 No authentication required - endpoints are public read-only.
@@ -409,12 +418,15 @@ export SUPABASE_URL="https://your-project.supabase.co"
 export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
 
 # Optional
-export LOG_LEVEL=INFO                 # DEBUG, INFO (default), WARN, ERROR
-export LOG_FORMAT=text                # text (default) or json (for log aggregators)
-export HOST_RATE_LIMIT_RPS=2.0        # per-host requests/sec for RSS/og:image/content
-export HOST_RATE_LIMIT_BURST=5        # per-host burst allowance
-export BACKFILL_MAX_ATTEMPTS=3        # retries before an article is excluded from backfill
-export BACKFILL_COOLDOWN_HOURS=24     # min gap between backfill attempts on the same article
+export LOG_LEVEL=INFO                   # DEBUG, INFO (default), WARN, ERROR
+export LOG_FORMAT=text                  # text (default) or json (for log aggregators)
+export HOST_RATE_LIMIT_RPS=2.0          # per-host requests/sec for RSS/og:image/content
+export HOST_RATE_LIMIT_BURST=5          # per-host burst allowance
+export BACKFILL_MAX_ATTEMPTS=3          # retries before an article is excluded from backfill
+export BACKFILL_COOLDOWN_HOURS=24       # min gap between backfill attempts on the same article
+export CIRCUIT_FAILURE_THRESHOLD=5      # consecutive fetch failures before the circuit trips
+export CIRCUIT_BASE_BACKOFF_HOURS=1     # initial cool-off window on trip; doubles per additional failure
+export CIRCUIT_MAX_BACKOFF_HOURS=24     # cap on the exponential circuit backoff
 
 # Run the worker
 make run
@@ -498,6 +510,7 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
 | `deploy-functions.yml` | Push to `master` | Auto-deploy Edge Functions |
+| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure threshold breach |
 
 Branch protection on `master` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.
 
