@@ -506,7 +506,7 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 |----------|---------|---------|
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
-| `test.yml` | Push/PR to `master` | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
+| `test.yml` | Push/PR to `master` | Go tests (race + coverage), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, govulncheck, Deno tests |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
 | `deploy-functions.yml` | Push to `master` | Auto-deploy Edge Functions |

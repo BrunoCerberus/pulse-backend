@@ -167,17 +167,17 @@ pulse-backend/
 
 ## Testing
 
-Tests use Go's standard testing package with `httptest` for mocking HTTP calls, and Deno's built-in test runner for Edge Functions.
+Tests use Go's standard testing package with `httptest` for mocking HTTP calls, and Deno's built-in test runner for Edge Functions. **All Go packages are held at 100% statement coverage** and `test.yml` enforces it on every push/PR — new code that drops total coverage below 100.0% fails the `Go Tests` job. When you hit a defensive branch that can't fail with real inputs (e.g. `json.Marshal` on statically-typed payloads, `crypto/rand.Read`), make it reachable via a package-level function variable that tests swap — see `jsonMarshal` in `internal/database/supabase.go` and `randRead` in `main.go`.
 
 | Package | Coverage | Description |
 |---------|----------|-------------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
 | `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*, CIRCUIT_*) |
-| `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
-| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle, ParseFeed (200/304/non-2xx + conditional-GET headers) |
-| `internal/database` | 82% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState (payload shape, empty noop, 5xx), GetActiveSources circuit filter, retry logic, BumpBackfillAttempts |
-| `internal/logger` | 86% | Level filtering, text + JSON output, `With()` field propagation (thread-safe via atomic.Pointer) |
-| `main` | 76% | processSource, runFetch, nextCircuitOpenUntil (threshold/exponential/cap/overflow), buildSourceFetchState (success resets, failure preserves ETag + trips circuit, 304 is success), runBackfill |
+| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit, nil-base default, zero-maxRedirects path) |
+| `internal/parser` | 100% | HTML cleaning (partial-tag + no-closing-tag edges), image extraction, OG/content fetching (body-read + readability errors), itemToArticle (embedded category), ParseFeed (200/304/non-2xx + conditional-GET, bad-URL + transport errors), parseDuration |
+| `internal/database` | 100% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState, GetActiveSources circuit filter, retry logic, BumpBackfillAttempts, plus bad-URL/transport/marshal/decode error branches across every method |
+| `internal/logger` | 100% | Level filtering, text + JSON output, `With()` field propagation (thread-safe via atomic.Pointer), nil-atomic fallbacks, subprocess-driven Fatalf |
+| `main` | 100% | processSource (+ panic recovery), runFetch, nextCircuitOpenUntil, buildSourceFetchState, runBackfill, newRunID fallback, plus subprocess-driven TestMain covering every command (fetch/cleanup/backfill-images/backfill-content + config-load and runtime-error paths) |
 | `_shared/*.ts` | — | Cache, CORS, ETag, memory cache utilities |
 
 Run tests before committing:
@@ -243,7 +243,7 @@ Views:
 |----------|----------|-------------|
 | `fetch-rss.yml` | Every 2 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
-| `test.yml` | On push/PR | Go tests (race + coverage), golangci-lint, govulncheck, Deno tests |
+| `test.yml` | On push/PR | Go tests (race + coverage), **100% coverage gate**, golangci-lint, govulncheck, Deno tests |
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
 | `deploy-functions.yml` | On push to master | Auto-deploy Edge Functions |
