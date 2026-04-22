@@ -66,13 +66,21 @@ var (
 	backfillCooldownHours = 24
 )
 
+// Circuit breaker defaults; main() overrides from config at startup so runFetch
+// and tests can share the same knobs without reloading config.
+var (
+	circuitFailureThreshold = 5
+	circuitBaseBackoffHours = 1
+	circuitMaxBackoffHours  = 24
+)
+
 // Store abstracts the database operations used by the worker commands.
 // This allows testing with mock implementations and decouples main from
 // the concrete database.Client type.
 type Store interface {
 	GetActiveSources() ([]models.Source, error)
 	InsertArticles(articles []*models.Article) (inserted int, skipped int, err error)
-	UpdateSourcesLastFetched(sourceIDs []string) error
+	BatchUpdateSourceFetchState(updates []database.SourceFetchState) error
 	CreateFetchLog() (*models.FetchLog, error)
 	UpdateFetchLog(log *models.FetchLog) error
 	CleanupOldArticles(daysToKeep int) (int, error)
@@ -82,6 +90,71 @@ type Store interface {
 	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
 	UpdateArticleContent(urlHash string, content string) error
 	BumpBackfillAttempts(urlHashes []string, kind string) error
+}
+
+// nextCircuitOpenUntil returns the time the circuit should stay open after
+// `failures` consecutive failures, or nil when the circuit should remain closed
+// (failures below threshold, or the caller passed a non-positive base/threshold).
+//
+// Math: for failures >= threshold, delay = base * 2^(failures - threshold),
+// capped at maxHours. At threshold → base; +1 → 2*base; +2 → 4*base; …
+func nextCircuitOpenUntil(now time.Time, failures, threshold, baseHours, maxHours int) *time.Time {
+	if failures < threshold || threshold <= 0 || baseHours <= 0 {
+		return nil
+	}
+	exp := failures - threshold
+	// Cap the shift so `baseHours << exp` can't overflow int.
+	// (`exp` is already non-negative because of the `failures < threshold` guard above.)
+	const maxShift = 30
+	if exp > maxShift {
+		exp = maxShift
+	}
+	delay := baseHours << exp
+	if maxHours > 0 && delay > maxHours {
+		delay = maxHours
+	}
+	t := now.Add(time.Duration(delay) * time.Hour)
+	return &t
+}
+
+// buildSourceFetchState derives the next persisted state for a source from its
+// previous state and the outcome of the current fetch. Pure function — callers
+// pass `now` so tests can assert exact timestamps.
+func buildSourceFetchState(source models.Source, result models.FetchResult, now time.Time) database.SourceFetchState {
+	state := database.SourceFetchState{ID: source.ID}
+
+	if result.Error == nil {
+		// Success (including 304): reset circuit, record fresh validators,
+		// stamp last_fetched_at so the adaptive interval advances.
+		state.ConsecutiveFailures = 0
+		state.CircuitOpenUntil = nil
+		if result.ETag != "" {
+			v := result.ETag
+			state.ETag = &v
+		}
+		if result.LastModified != "" {
+			v := result.LastModified
+			state.LastModified = &v
+		}
+		state.LastFetchedAt = &now
+		return state
+	}
+
+	// Failure: increment counter, maybe trip the circuit. Preserve existing
+	// validators so a transient error doesn't force a full refetch on recovery.
+	// Don't stamp last_fetched_at — keeping the old value lets the adaptive
+	// interval still retry on the normal cadence.
+	state.ConsecutiveFailures = source.ConsecutiveFailures + 1
+	state.CircuitOpenUntil = nextCircuitOpenUntil(
+		now,
+		state.ConsecutiveFailures,
+		circuitFailureThreshold,
+		circuitBaseBackoffHours,
+		circuitMaxBackoffHours,
+	)
+	state.ETag = source.ETag
+	state.LastModified = source.LastModified
+	return state
 }
 
 // backfillConfig holds parameters for a generic backfill operation.
@@ -209,6 +282,12 @@ func main() {
 	backfillMaxAttempts = cfg.BackfillMaxAttempts
 	backfillCooldownHours = cfg.BackfillCooldownHours
 
+	// Propagate circuit breaker knobs so buildSourceFetchState uses the
+	// env-driven values without re-reading config per source.
+	circuitFailureThreshold = cfg.CircuitFailureThreshold
+	circuitBaseBackoffHours = cfg.CircuitBaseBackoffHours
+	circuitMaxBackoffHours = cfg.CircuitMaxBackoffHours
+
 	// Initialize components
 	var db Store = database.NewClient(cfg)
 	rssParser := parser.New()
@@ -325,7 +404,8 @@ func runFetch(baseCtx context.Context, db Store, rssParser *parser.Parser, maxCo
 	// Collect results
 	var totalFetched, totalInserted, totalSkipped int
 	var errors []string
-	var successSourceIDs []string
+	var fetchStateUpdates []database.SourceFetchState
+	now := time.Now().UTC()
 
 	for result := range results {
 		fetchLog.SourcesProcessed++
@@ -339,21 +419,31 @@ func runFetch(baseCtx context.Context, db Store, rssParser *parser.Parser, maxCo
 			"fetched", result.ArticlesFetched,
 			"inserted", result.ArticlesInserted,
 			"skipped", result.ArticlesSkipped,
+			"not_modified", result.NotModified,
 		)
 		if result.Error != nil {
 			errMsg := fmt.Sprintf("%s: %v", result.Source.Name, result.Error)
 			errors = append(errors, errMsg)
-			sourceLog.Error("source_failed", "err", result.Error.Error())
+			sourceLog.Error("source_failed",
+				"err", result.Error.Error(),
+				"consecutive_failures", result.Source.ConsecutiveFailures+1,
+			)
+		} else if result.NotModified {
+			sourceLog.Info("source_not_modified")
 		} else {
-			successSourceIDs = append(successSourceIDs, result.Source.ID)
 			sourceLog.Info("source_succeeded")
 		}
+
+		// Persist per-source state for every source (success or failure) so
+		// the circuit breaker counter advances/resets and cache validators
+		// are captured or preserved.
+		fetchStateUpdates = append(fetchStateUpdates, buildSourceFetchState(result.Source, result, now))
 	}
 
-	// Batch-update last_fetched_at for all successful sources
-	if len(successSourceIDs) > 0 {
-		if err := db.UpdateSourcesLastFetched(successSourceIDs); err != nil {
-			logger.Warnf("Failed to batch update last_fetched_at: %v", err)
+	// One round-trip to record all per-source state changes.
+	if len(fetchStateUpdates) > 0 {
+		if err := db.BatchUpdateSourceFetchState(fetchStateUpdates); err != nil {
+			logger.Warnf("Failed to batch update source fetch state: %v", err)
 		}
 	}
 
@@ -384,24 +474,35 @@ func runFetch(baseCtx context.Context, db Store, rssParser *parser.Parser, maxCo
 	return nil
 }
 
-// processSource fetches and processes a single RSS source. It parses the feed,
-// inserts new articles into the database (deduplicating by URL hash), and updates
-// the source's last_fetched_at timestamp. Returns a FetchResult containing
-// counts of articles fetched, inserted, and skipped, plus any error encountered.
+// processSource fetches and processes a single RSS source. Parses the feed
+// with conditional-GET validators, inserts new articles, and passes back the
+// response ETag/Last-Modified + NotModified flag so runFetch can persist the
+// per-source state (circuit breaker + cache validators) in a batch update.
+//
+// A 304 Not Modified response is a success (NotModified=true, zero articles,
+// nil Error) — the caller resets the circuit and re-records the validators.
 func processSource(ctx context.Context, db Store, rssParser *parser.Parser, source models.Source) models.FetchResult {
 	result := models.FetchResult{Source: source}
 
-	// Parse the RSS feed
-	articles, err := rssParser.ParseFeed(ctx, source)
+	parseResult, err := rssParser.ParseFeed(ctx, source)
 	if err != nil {
 		result.Error = fmt.Errorf("parse error: %w", err)
 		return result
 	}
 
-	result.ArticlesFetched = len(articles)
+	result.ETag = parseResult.ETag
+	result.LastModified = parseResult.LastModified
+	result.NotModified = parseResult.NotModified
+
+	if parseResult.NotModified {
+		// Nothing new to insert; still a successful fetch.
+		return result
+	}
+
+	result.ArticlesFetched = len(parseResult.Articles)
 
 	// Insert articles (may return partial results alongside an error)
-	inserted, skipped, err := db.InsertArticles(articles)
+	inserted, skipped, err := db.InsertArticles(parseResult.Articles)
 	result.ArticlesInserted = inserted
 	result.ArticlesSkipped = skipped
 	if err != nil {

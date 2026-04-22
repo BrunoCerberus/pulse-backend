@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/pulsefeed/rss-worker/internal/config"
@@ -52,8 +51,15 @@ func NewClient(cfg *config.Config) *Client {
 // GetActiveSources retrieves all active RSS sources with embedded category info.
 // Uses PostgREST embedding to include category name and slug.
 // Filters out sources that aren't due for fetching based on their fetch_interval_hours.
+// Also skips sources whose circuit breaker is open (migration 019): the PostgREST
+// `or=(circuit_open_until.is.null,circuit_open_until.lt.{now})` filter keeps only
+// sources with no trip or whose cool-off window has elapsed.
 func (c *Client) GetActiveSources() ([]models.Source, error) {
-	url := fmt.Sprintf("%s/sources?is_active=eq.true&select=*,categories(name,slug)", c.baseURL)
+	now := time.Now().UTC().Format(time.RFC3339)
+	url := fmt.Sprintf(
+		"%s/sources?is_active=eq.true&select=*,categories(name,slug)&or=(circuit_open_until.is.null,circuit_open_until.lt.%s)",
+		c.baseURL, now,
+	)
 
 	resp, err := c.doWithRetry("GET", url, nil)
 	if err != nil {
@@ -248,40 +254,49 @@ func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
 	return nil
 }
 
-// UpdateSourcesLastFetched updates last_fetched_at for multiple sources in a single PATCH.
-// Uses PostgREST's `in` filter to update all sources at once.
-func (c *Client) UpdateSourcesLastFetched(sourceIDs []string) error {
-	if len(sourceIDs) == 0 {
+// SourceFetchState is the per-source state persisted after each fetch cycle.
+// Passed to BatchUpdateSourceFetchState so one RPC call can record different
+// outcomes across sources: success with fresh ETag, success-304 with preserved
+// ETag, or failure with incremented counter and possible circuit trip.
+//
+// Nil pointer fields serialize to JSON null, which jsonb_to_recordset interprets
+// as NULL in the UPDATE — this is how a successful fetch with no ETag header
+// (or a circuit that should close) clears the column.
+type SourceFetchState struct {
+	ID                  string     `json:"id"`
+	ETag                *string    `json:"etag"`
+	LastModified        *string    `json:"last_modified"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	CircuitOpenUntil    *time.Time `json:"circuit_open_until"`
+	LastFetchedAt       *time.Time `json:"last_fetched_at"`
+}
+
+// BatchUpdateSourceFetchState calls the batch_update_source_fetch_state RPC
+// (migration 020) to persist per-source state — cache validators, failure
+// counter, and circuit cool-off — in a single round-trip.
+func (c *Client) BatchUpdateSourceFetchState(updates []SourceFetchState) error {
+	if len(updates) == 0 {
 		return nil
 	}
 
-	url := fmt.Sprintf("%s/sources?id=in.(%s)", c.baseURL, strings.Join(sourceIDs, ","))
+	url := fmt.Sprintf("%s/rpc/batch_update_source_fetch_state", c.baseURL)
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	data := map[string]interface{}{
-		"last_fetched_at": now,
-		"updated_at":      now,
+	payload := map[string]interface{}{
+		"updates": updates,
 	}
-
-	body, err := json.Marshal(data)
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry("POST", url, data)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("failed to batch update sources: %s - %s", resp.Status, readErrorBody(resp))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("batch update source fetch state failed: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil

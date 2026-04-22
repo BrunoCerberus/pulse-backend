@@ -1,0 +1,77 @@
+name: Source Health Watchdog
+
+# Polls the api-source-health endpoint on a schedule and fails the job when
+# thresholds are exceeded. A failed workflow triggers GitHub's built-in email
+# notifications to repo watchers — no external alerting service needed.
+#
+# Thresholds below are intentionally generous for the default fleet of ~133
+# sources. Tighten them once the fleet stabilizes and we have a baseline.
+
+on:
+  schedule:
+    # Every 6 hours at :15 past the hour (staggered from the 2h fetch cron).
+    - cron: '15 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watchdog:
+    name: Check source health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Thresholds — fail the job when any of these are exceeded.
+      MAX_CIRCUIT_OPEN: 10
+      MAX_STALE: 5
+      MAX_HIGH_FAILURE: 15
+
+    steps:
+      - name: Query source health
+        run: |
+          set -euo pipefail
+
+          # Hit the Edge Function so the summary is computed server-side.
+          # Service role is a valid JWT for --verify-jwt.
+          response=$(curl -fsS --max-time 30 \
+            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
+            "${SUPABASE_URL}/functions/v1/api-source-health")
+
+          echo "Summary:"
+          echo "$response" | jq '.summary'
+
+          circuit_open=$(echo "$response" | jq -r '.summary.circuit_open_count')
+          stale=$(echo "$response" | jq -r '.summary.stale_count')
+          high_failure=$(echo "$response" | jq -r '.summary.high_failure_count')
+
+          fail=0
+          if (( circuit_open > MAX_CIRCUIT_OPEN )); then
+            echo "::error title=Circuit breaker::circuit_open_count=${circuit_open} exceeds threshold ${MAX_CIRCUIT_OPEN}"
+            fail=1
+          fi
+          if (( stale > MAX_STALE )); then
+            echo "::error title=Stale sources::stale_count=${stale} exceeds threshold ${MAX_STALE}"
+            fail=1
+          fi
+          if (( high_failure > MAX_HIGH_FAILURE )); then
+            echo "::error title=High failure count::high_failure_count=${high_failure} exceeds threshold ${MAX_HIGH_FAILURE}"
+            fail=1
+          fi
+
+          if (( fail == 1 )); then
+            echo ""
+            echo "Sources triggering the alert:"
+            echo "$response" | jq '.sources | map(select(
+              .circuit_open == true or
+              .consecutive_failures >= 3 or
+              (.is_active and .articles_last_24h == 0)
+            ))'
+            exit 1
+          fi
+
+          echo "OK: circuit_open=${circuit_open} stale=${stale} high_failure=${high_failure}"

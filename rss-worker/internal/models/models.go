@@ -27,6 +27,16 @@ type Source struct {
 	IsActive           bool       `json:"is_active"`
 	LastFetched        *time.Time `json:"last_fetched_at"`
 	FetchIntervalHours int        `json:"fetch_interval_hours"`
+	// Conditional-GET validators captured from the previous successful fetch
+	// (migration 019). Sent back as If-None-Match / If-Modified-Since so the
+	// origin can reply 304 Not Modified when the feed is unchanged.
+	ETag         *string `json:"etag"`
+	LastModified *string `json:"last_modified"`
+	// Circuit-breaker state (migration 019): consecutive_failures counts
+	// repeated fetch errors; when circuit_open_until is in the future the
+	// source is skipped by GetActiveSources().
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	CircuitOpenUntil    *time.Time `json:"circuit_open_until"`
 	// Embedded category info from PostgREST ?select=*,categories(name,slug)
 	Categories *EmbeddedCategory `json:"categories,omitempty"`
 }
@@ -135,9 +145,20 @@ type FetchLog struct {
 
 // FetchResult holds the result of fetching a single source
 type FetchResult struct {
-	Source          Source
-	ArticlesFetched int
+	Source           Source
+	ArticlesFetched  int
 	ArticlesInserted int
 	ArticlesSkipped  int
-	Error           error
+	// Conditional-GET validators returned by the origin on this fetch.
+	// On 304 these carry the validator the worker should keep sending
+	// (the parser falls back to the source's existing validator when the
+	// server doesn't echo one in the 304 response). Empty string means
+	// the origin did not return a validator and we should stop sending one.
+	ETag         string
+	LastModified string
+	// NotModified is true when the origin returned 304 Not Modified.
+	// No articles to insert, but the fetch still counts as a success for
+	// the circuit breaker.
+	NotModified bool
+	Error       error
 }
