@@ -24,11 +24,12 @@ Go RSS Worker (rss-worker/)
 PostgreSQL (articles, sources, categories, fetch_logs)
         ↓
 Edge Functions (caching proxy + in-memory cache)
-    ├── /api-categories  → Cache: 24h + 1h memory
-    ├── /api-sources     → Cache: 1h + 30min memory
-    ├── /api-articles    → Cache: 5min + ETag
-    ├── /api-search      → Cache: 1min (private)
-    └── /api-health      → Cache: no-store
+    ├── /api-categories    → Cache: 24h + 1h memory
+    ├── /api-sources       → Cache: 1h + 30min memory
+    ├── /api-articles      → Cache: 5min + ETag
+    ├── /api-search        → Cache: 1min (private)
+    ├── /api-health        → Cache: no-store
+    └── /api-source-health → Cache: 60s (feed health + summary)
         ↓
 Pulse iOS App
 ```
@@ -108,7 +109,9 @@ pulse-backend/
 │   │   ├── 015_add_fetch_interval_hours.sql      # Adaptive fetch frequency
 │   │   ├── 016_denormalize_articles.sql          # Denormalize source/category into articles
 │   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
-│   │   └── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
+│   │   ├── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
+│   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
+│   │   └── 020_add_source_health_infra.sql        # batch_update_source_fetch_state RPC + source_health view
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -120,14 +123,17 @@ pulse-backend/
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       ├── api-search/index.ts        # Search endpoint (1min private)
-│       └── api-health/index.ts        # Health check endpoint (no-store)
+│       ├── api-health/index.ts        # Health check endpoint (no-store)
+│       └── api-source-health/index.ts # Per-source fetch health + summary (60s cache)
 ├── .github/
 │   ├── workflows/
 │   │   ├── fetch-rss.yml              # Runs every 2 hours
 │   │   ├── cleanup.yml                # Runs daily at 3 AM UTC
 │   │   ├── test.yml                   # Unit tests + lint + govulncheck on push/PR
 │   │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
-│   │   └── deploy-functions.yml       # Auto-deploy Edge Functions on push
+│   │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
+│   │   ├── deploy-functions.yml       # Auto-deploy Edge Functions on push
+│   │   └── watchdog.yml               # Source health check every 6h (fails job on degradation)
 │   └── dependabot.yml                 # Weekly dependency updates
 └── docs/ios-integration.md            # iOS app integration guide
 ```
@@ -144,7 +150,7 @@ pulse-backend/
 | Parser | `internal/parser/parser.go` | RSS parsing via gofeed + parallel enrichment + media extraction. `SetHostRateLimit(rps, burst)` overrides per-host defaults (2.0 rps, burst 5) for all HTTP clients built afterward |
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
-| Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, batch source updates, retry logic (exponential backoff on 429/5xx). Backfill queries (`GetArticlesNeedingOGImage`, `GetArticlesNeedingContent`) take `(limit, maxAttempts, cooldownHours)`; `BumpBackfillAttempts(urlHashes, kind)` marks failed attempts |
+| Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, retry logic (exponential backoff on 429/5xx). `GetActiveSources()` filters by `fetch_interval_hours` and `circuit_open_until`. `BatchUpdateSourceFetchState()` persists per-source etag/last_modified/consecutive_failures/circuit_open_until via the `batch_update_source_fetch_state` RPC (migration 020). Backfill queries take `(limit, maxAttempts, cooldownHours)`; `BumpBackfillAttempts(urlHashes, kind)` marks failed attempts |
 | HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient`, `NewClientWithRedirectLimit`, and `NewRateLimitedClient` (wraps `RateLimitingTransport` with per-host token bucket from `golang.org/x/time/rate`) |
 | Logger | `internal/logger/logger.go` | slog-backed: LOG_LEVEL gates emission; LOG_FORMAT=text (default, slog.TextHandler) or json (slog.JSONHandler). Printf-style `Debugf/Infof/Warnf/Errorf/Fatalf` plus `With(k, v, ...)` returning a sub-*slog.Logger for structured correlation |
 
@@ -157,6 +163,7 @@ pulse-backend/
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Health check (status + timestamp) |
+| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary; watchdog.yml polls this |
 
 ## Testing
 
@@ -165,12 +172,12 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 | Package | Coverage | Description |
 |---------|----------|-------------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
-| `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*) |
+| `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*, CIRCUIT_*) |
 | `internal/httputil` | 92% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit) |
-| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle |
-| `internal/database` | 82% | Batch inserts, batch image RPC, batch source updates, retry logic, BumpBackfillAttempts |
+| `internal/parser` | 92% | HTML cleaning, image extraction, OG/content fetching, itemToArticle, ParseFeed (200/304/non-2xx + conditional-GET headers) |
+| `internal/database` | 82% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState (payload shape, empty noop, 5xx), GetActiveSources circuit filter, retry logic, BumpBackfillAttempts |
 | `internal/logger` | 86% | Level filtering, text + JSON output, `With()` field propagation (thread-safe via atomic.Pointer) |
-| `main` | 74% | processSource, runFetch, processOGImageBackfill, processContentBackfill, runBackfill (tracks failed hashes and bumps attempts at end) |
+| `main` | 76% | processSource, runFetch, nextCircuitOpenUntil (threshold/exponential/cap/overflow), buildSourceFetchState (success resets, failure preserves ETag + trips circuit, 304 is success), runBackfill |
 | `_shared/*.ts` | — | Cache, CORS, ETag, memory cache utilities |
 
 Run tests before committing:
@@ -191,6 +198,9 @@ Optional environment variables:
 - `HOST_RATE_LIMIT_BURST` - per-host burst allowance (default `5`)
 - `BACKFILL_MAX_ATTEMPTS` - max retries per article before it's excluded from backfill (default `3`)
 - `BACKFILL_COOLDOWN_HOURS` - min gap between backfill attempts on the same article (default `24`)
+- `CIRCUIT_FAILURE_THRESHOLD` - consecutive fetch failures before the circuit trips (default `5`)
+- `CIRCUIT_BASE_BACKOFF_HOURS` - initial cool-off window on trip; doubles per additional failure (default `1`)
+- `CIRCUIT_MAX_BACKOFF_HOURS` - cap on the exponential circuit backoff (default `24`)
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
@@ -202,7 +212,7 @@ Graceful shutdown: `main()` installs `signal.NotifyContext(SIGINT, SIGTERM)` and
 
 Tables:
 - `categories` - 10 categories (including Podcasts & Videos)
-- `sources` - 133 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6)
+- `sources` - 133 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6). Migration 019 adds `etag`/`last_modified` (conditional GET validators) and `consecutive_failures`/`circuit_open_until` (circuit breaker state).
 - `articles` - News articles with full-text search (tsvector), media fields, denormalized source/category columns, and backfill tracking (`image_backfill_attempts`, `image_backfill_last_attempt_at`, `content_backfill_attempts`, `content_backfill_last_attempt_at` — migration 018)
 - `fetch_logs` - Monitoring records
 
@@ -211,9 +221,11 @@ Key functions:
 - `search_articles(search_query, result_limit)` - Full-text search
 - `batch_update_article_images(updates)` - Batch image URL updates
 - `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps `last_attempt_at`; `kind` is `"image"` or `"content"` (migration 018)
+- `batch_update_source_fetch_state(updates)` - One round-trip per fetch cycle; JSONB array of per-source state (etag, last_modified, consecutive_failures, circuit_open_until, last_fetched_at) — migration 020
 
-View:
+Views:
 - `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
+- `source_health` - Per-source health snapshot (circuit_open, consecutive_failures, most_recent_article_at, articles_last_24h); `security_invoker=on`. Powers `api-source-health` and the watchdog workflow.
 
 ## Code Style Guidelines
 
@@ -235,6 +247,7 @@ View:
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
 | `deploy-functions.yml` | On push to master | Auto-deploy Edge Functions |
+| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) when circuit/stale/high-failure counts exceed thresholds |
 
 Branch protection on `master` requires all 11 checks across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
 

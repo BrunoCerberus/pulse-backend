@@ -206,6 +206,8 @@ supabase functions deploy api-categories
 supabase functions deploy api-sources
 supabase functions deploy api-articles
 supabase functions deploy api-search
+supabase functions deploy api-health
+supabase functions deploy api-source-health
 ```
 
 **Local testing:**
