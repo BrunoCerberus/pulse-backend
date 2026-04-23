@@ -83,6 +83,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/018_add_backfill_tracking.sql` - Attempt counters + cooldown RPC for image/content backfills
    - `supabase/migrations/019_add_source_fetch_state_columns.sql` - `etag`, `last_modified`, `consecutive_failures`, `circuit_open_until` on sources
    - `supabase/migrations/020_add_source_health_infra.sql` - `batch_update_source_fetch_state` RPC + `source_health` view
+   - `supabase/migrations/021_batch_cleanup_old_articles.sql` - Batch `cleanup_old_articles` + per-function `statement_timeout` to avoid 57014 timeouts
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -189,7 +190,8 @@ pulse-backend/
 │   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
 │   │   ├── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
-│   │   └── 020_add_source_health_infra.sql       # batch_update_source_fetch_state RPC + source_health view
+│   │   ├── 020_add_source_health_infra.sql       # batch_update_source_fetch_state RPC + source_health view
+│   │   └── 021_batch_cleanup_old_articles.sql    # Batch cleanup_old_articles + per-function statement_timeout
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
