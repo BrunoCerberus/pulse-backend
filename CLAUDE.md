@@ -118,7 +118,8 @@ pulse-backend/
 │   │   ├── 017_backfill_denormalized_articles.sql # Backfill denormalized columns
 │   │   ├── 018_add_backfill_tracking.sql  # Attempt counters + cooldown RPC for backfills
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
-│   │   └── 020_add_source_health_infra.sql    # batch_update_source_fetch_state RPC + source_health view
+│   │   ├── 020_add_source_health_infra.sql    # batch_update_source_fetch_state RPC + source_health view
+│   │   └── 021_batch_cleanup_old_articles.sql # Batch cleanup_old_articles + raise per-function statement_timeout
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
