@@ -53,8 +53,8 @@ func TestLoad_DefaultValues(t *testing.T) {
 		t.Errorf("MaxConcurrent = %d, want 5", cfg.MaxConcurrent)
 	}
 
-	if cfg.ArticleRetentionDays != 30 {
-		t.Errorf("ArticleRetentionDays = %d, want 30", cfg.ArticleRetentionDays)
+	if cfg.ArticleRetentionDays != 7 {
+		t.Errorf("ArticleRetentionDays = %d, want 7", cfg.ArticleRetentionDays)
 	}
 
 	if cfg.HostRateLimitRPS != 2.0 {
