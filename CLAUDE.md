@@ -46,7 +46,7 @@ export SUPABASE_SERVICE_ROLE_KEY="your-service-role-key"
 # Build & Run
 make build             # Build the RSS worker binary
 make run               # Run the RSS worker (fetch feeds)
-make cleanup           # Remove articles older than 30 days
+make cleanup           # Remove articles older than 7 days (and same-age fetch_logs)
 make backfill-images   # Fetch og:images for articles missing images
 make backfill-content  # Extract full content for articles
 
@@ -276,7 +276,7 @@ Environment variables:
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
-- `ArticleRetentionDays`: 30 days
+- `ArticleRetentionDays`: 7 days (also drives fetch_logs retention via `CleanupOldFetchLogs`)
 
 Graceful shutdown: the worker installs a `signal.NotifyContext` handler for
 SIGINT/SIGTERM at startup. In-flight goroutines check `ctx.Done()` and HTTP

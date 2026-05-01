@@ -54,7 +54,7 @@ func Load() (*Config, error) {
 		SupabaseURL:           supabaseURL,
 		SupabaseKey:           supabaseKey,
 		MaxConcurrent:         5,
-		ArticleRetentionDays:  30,
+		ArticleRetentionDays:  7,
 		HostRateLimitRPS:      envFloat("HOST_RATE_LIMIT_RPS", 2.0),
 		HostRateLimitBurst:    envInt("HOST_RATE_LIMIT_BURST", 5),
 		BackfillMaxAttempts:     envInt("BACKFILL_MAX_ATTEMPTS", 3),
