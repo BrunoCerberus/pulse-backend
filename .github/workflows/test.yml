@@ -93,4 +93,4 @@ jobs:
 
       - name: Run Edge Function tests
         working-directory: ./supabase/functions
-        run: deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/
+        run: deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/

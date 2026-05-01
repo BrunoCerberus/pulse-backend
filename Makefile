@@ -47,7 +47,7 @@ test-go-race:
 	cd rss-worker && go test -v -race ./...
 
 test-deno:
-	cd supabase/functions && deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/
+	cd supabase/functions && deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/
 
 # =============================================================================
 # Build & Run

@@ -29,6 +29,10 @@ jobs:
       MAX_CIRCUIT_OPEN: 10
       MAX_STALE: 5
       MAX_HIGH_FAILURE: 15
+      # DB size as a % of quota. Free tier is 500 MB; alert at 70% so there's
+      # still ~150 MB of headroom to react before Supabase restricts the project
+      # (which is what the April 2026 incident hit at 100%).
+      MAX_DB_QUOTA_PCT: 70
 
     steps:
       - name: Query source health
@@ -44,10 +48,15 @@ jobs:
 
           echo "Summary:"
           echo "$response" | jq '.summary'
+          echo "Database:"
+          echo "$response" | jq '.database'
 
           circuit_open=$(echo "$response" | jq -r '.summary.circuit_open_count')
           stale=$(echo "$response" | jq -r '.summary.stale_count')
           high_failure=$(echo "$response" | jq -r '.summary.high_failure_count')
+          # `// empty` keeps the var unset when the RPC failed (database == null)
+          # so we don't false-alarm on transient size-check failures.
+          db_quota_pct=$(echo "$response" | jq -r '.database.quota_pct // empty')
 
           fail=0
           if (( circuit_open > MAX_CIRCUIT_OPEN )); then
@@ -62,6 +71,11 @@ jobs:
             echo "::error title=High failure count::high_failure_count=${high_failure} exceeds threshold ${MAX_HIGH_FAILURE}"
             fail=1
           fi
+          if [[ -n "$db_quota_pct" ]] && (( db_quota_pct > MAX_DB_QUOTA_PCT )); then
+            db_pretty=$(echo "$response" | jq -r '.database.size_pretty')
+            echo "::error title=DB quota::database is at ${db_quota_pct}% of quota (${db_pretty}), exceeds threshold ${MAX_DB_QUOTA_PCT}%"
+            fail=1
+          fi
 
           if (( fail == 1 )); then
             echo ""
@@ -74,4 +88,4 @@ jobs:
             exit 1
           fi
 
-          echo "OK: circuit_open=${circuit_open} stale=${stale} high_failure=${high_failure}"
+          echo "OK: circuit_open=${circuit_open} stale=${stale} high_failure=${high_failure} db_quota_pct=${db_quota_pct:-n/a}"
