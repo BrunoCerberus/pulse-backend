@@ -105,9 +105,15 @@ export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
   const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY");
   if (!supabaseUrl || !supabaseKey) return null;
 
-  const quotaBytes = Number(
-    Deno.env.get("SUPABASE_DB_QUOTA_BYTES") ?? DEFAULT_QUOTA_BYTES,
-  );
+  // Fall back to the default on missing/empty/non-numeric/zero/negative input.
+  // A typo in SUPABASE_DB_QUOTA_BYTES must NOT silently emit quota_pct: 0 —
+  // that would bypass the watchdog's MAX_DB_QUOTA_PCT check (0 > 70 is false)
+  // and defeat the purpose of the alert.
+  const quotaRaw = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
+  const quotaParsed = quotaRaw ? Number(quotaRaw) : DEFAULT_QUOTA_BYTES;
+  const quotaBytes = Number.isFinite(quotaParsed) && quotaParsed > 0
+    ? quotaParsed
+    : DEFAULT_QUOTA_BYTES;
 
   try {
     const response = await fetch(`${supabaseUrl}/rest/v1/rpc/get_db_size_bytes`, {
@@ -125,7 +131,7 @@ export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
     return {
       size_bytes: sizeBytes,
       size_pretty: formatBytes(sizeBytes),
-      quota_pct: quotaBytes > 0 ? Math.round((sizeBytes / quotaBytes) * 100) : 0,
+      quota_pct: Math.round((sizeBytes / quotaBytes) * 100),
     };
   } catch {
     return null;

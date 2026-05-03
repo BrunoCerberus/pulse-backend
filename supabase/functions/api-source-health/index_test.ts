@@ -301,19 +301,27 @@ Deno.test("fetchDatabaseSize: respects SUPABASE_DB_QUOTA_BYTES override", async 
   }
 });
 
-Deno.test("fetchDatabaseSize: quota_pct = 0 when quota is 0", async () => {
+// Misconfigured SUPABASE_DB_QUOTA_BYTES (empty string, non-numeric, "0",
+// negative) must fall back to DEFAULT_QUOTA_BYTES rather than silently emit
+// quota_pct: 0 — otherwise the watchdog's threshold check is bypassed and
+// no alert ever fires. Default is 524_288_000 (500 MB), so 100 MB → 19%.
+Deno.test("fetchDatabaseSize: invalid quota env falls back to default", async () => {
   const originalUrl = Deno.env.get("SUPABASE_URL");
   const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
   const originalQuota = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
   const originalFetch = globalThis.fetch;
   try {
     setupEnv();
-    Deno.env.set("SUPABASE_DB_QUOTA_BYTES", "0");
     globalThis.fetch = () =>
-      Promise.resolve(new Response("100", { status: 200 }));
-    const result = await fetchDatabaseSize();
-    assertEquals(result?.size_bytes, 100);
-    assertEquals(result?.quota_pct, 0);
+      Promise.resolve(new Response("104857600", { status: 200 })); // 100 MB
+
+    for (const bad of ["", "0", "-1", "500MB", "not-a-number"]) {
+      Deno.env.set("SUPABASE_DB_QUOTA_BYTES", bad);
+      const result = await fetchDatabaseSize();
+      assertEquals(result?.size_bytes, 104_857_600);
+      // 100 MB / 500 MB default ≈ 20%.
+      assertEquals(result?.quota_pct, 20, `expected fallback for ${JSON.stringify(bad)}`);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     if (originalQuota) Deno.env.set("SUPABASE_DB_QUOTA_BYTES", originalQuota);
