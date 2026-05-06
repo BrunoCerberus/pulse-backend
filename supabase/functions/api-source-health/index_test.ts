@@ -304,7 +304,7 @@ Deno.test("fetchDatabaseSize: respects SUPABASE_DB_QUOTA_BYTES override", async 
 // Misconfigured SUPABASE_DB_QUOTA_BYTES (empty string, non-numeric, "0",
 // negative) must fall back to DEFAULT_QUOTA_BYTES rather than silently emit
 // quota_pct: 0 — otherwise the watchdog's threshold check is bypassed and
-// no alert ever fires. Default is 524_288_000 (500 MB), so 100 MB → 19%.
+// no alert ever fires. Default is 524_288_000 (500 MB), so 100 MB → 20%.
 Deno.test("fetchDatabaseSize: invalid quota env falls back to default", async () => {
   const originalUrl = Deno.env.get("SUPABASE_URL");
   const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
