@@ -14,6 +14,11 @@
  * ```json
  * {
  *   "fetched_at": "2026-04-21T12:00:00.000Z",
+ *   "database": {
+ *     "size_bytes": 96468992,
+ *     "size_pretty": "92.0 MB",
+ *     "quota_pct": 18
+ *   },
  *   "summary": {
  *     "total": 133,
  *     "active": 131,
@@ -29,6 +34,10 @@
  * not yet open. `stale_count` = active sources with no article in 48h and
  * circuit still closed (silent degradation — the usual failure mode this
  * endpoint exists to catch).
+ *
+ * `database` is `null` if the size RPC fails — never blocks the source-health
+ * response. `quota_pct` is rounded to int (0–100+), computed against
+ * `SUPABASE_DB_QUOTA_BYTES` env (default 524288000 = 500 MB free-tier cap).
  *
  * ## Caching
  * - Cache-Control: 60s public. Health doesn't need to be perfectly fresh;
@@ -51,6 +60,7 @@ const CACHE_TTL_MS = 60 * 1000; // 60s
 const CACHE_CONTROL = "public, max-age=60";
 const HIGH_FAILURE_THRESHOLD = 3; // warn before circuit opens (default trip at 5)
 const STALE_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_QUOTA_BYTES = 524_288_000; // 500 MB Supabase free tier
 
 interface SourceHealthRow {
   id: string;
@@ -71,6 +81,61 @@ interface HealthSummary {
   circuit_open_count: number;
   high_failure_count: number;
   stale_count: number;
+}
+
+interface DatabaseSize {
+  size_bytes: number;
+  size_pretty: string;
+  quota_pct: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// Calls get_db_size_bytes RPC (migration 022) and shapes the result into the
+// `database` block. Returns null on any error so a flaky size check never
+// breaks the source-health response — the watchdog already tolerates
+// `database == null` as "no signal, don't alert".
+export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY");
+  if (!supabaseUrl || !supabaseKey) return null;
+
+  // Fall back to the default on missing/empty/non-numeric/zero/negative input.
+  // A typo in SUPABASE_DB_QUOTA_BYTES must NOT silently emit quota_pct: 0 —
+  // that would bypass the watchdog's MAX_DB_QUOTA_PCT check (0 > 70 is false)
+  // and defeat the purpose of the alert.
+  const quotaRaw = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
+  const quotaParsed = quotaRaw ? Number(quotaRaw) : DEFAULT_QUOTA_BYTES;
+  const quotaBytes = Number.isFinite(quotaParsed) && quotaParsed > 0
+    ? quotaParsed
+    : DEFAULT_QUOTA_BYTES;
+
+  try {
+    const response = await fetch(`${supabaseUrl}/rest/v1/rpc/get_db_size_bytes`, {
+      method: "POST",
+      headers: {
+        apikey: supabaseKey,
+        Authorization: `Bearer ${supabaseKey}`,
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    });
+    if (response.status !== 200) return null;
+    const sizeBytes = Number(await response.json());
+    if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return null;
+    return {
+      size_bytes: sizeBytes,
+      size_pretty: formatBytes(sizeBytes),
+      quota_pct: Math.round((sizeBytes / quotaBytes) * 100),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function summarize(rows: SourceHealthRow[]): HealthSummary {
@@ -119,7 +184,11 @@ export async function handler(req: Request): Promise<Response> {
     const cached = getCached(cacheKey);
 
     const body = cached ?? (await (async () => {
-      const result = await fetchFromSupabase(req, config);
+      // Fetch sources + db size in parallel — independent calls.
+      const [result, database] = await Promise.all([
+        fetchFromSupabase(req, config),
+        fetchDatabaseSize(),
+      ]);
       if (result.status !== 200) {
         // Don't cache failures — let the next request retry.
         return result.data;
@@ -127,6 +196,7 @@ export async function handler(req: Request): Promise<Response> {
       const rows: SourceHealthRow[] = JSON.parse(result.data);
       const payload = {
         fetched_at: new Date().toISOString(),
+        database,
         summary: summarize(rows),
         sources: rows,
       };

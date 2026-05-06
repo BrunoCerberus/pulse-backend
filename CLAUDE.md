@@ -119,7 +119,8 @@ pulse-backend/
 │   │   ├── 018_add_backfill_tracking.sql  # Attempt counters + cooldown RPC for backfills
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
 │   │   ├── 020_add_source_health_infra.sql    # batch_update_source_fetch_state RPC + source_health view
-│   │   └── 021_batch_cleanup_old_articles.sql # Batch cleanup_old_articles + raise per-function statement_timeout
+│   │   ├── 021_batch_cleanup_old_articles.sql # Batch cleanup_old_articles + raise per-function statement_timeout
+│   │   └── 022_add_db_size_rpc.sql            # get_db_size_bytes RPC for DB-size watchdog
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -136,7 +137,7 @@ pulse-backend/
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       ├── api-search/index.ts        # Search endpoint (1min private)
 │       ├── api-health/index.ts        # Health check endpoint (no-store)
-│       └── api-source-health/index.ts # Per-source fetch health + summary (60s cache)
+│       └── api-source-health/index.ts # Per-source fetch health + summary + DB size (60s cache)
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
@@ -192,7 +193,7 @@ Caching proxy layer for iOS app with Cache-Control headers:
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Health check (status + timestamp) |
-| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary (circuit/stale/high-failure counts); watchdog workflow polls this |
+| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary (circuit/stale/high-failure counts) + `database` block (size_bytes/size_pretty/quota_pct via `get_db_size_bytes` RPC, default cap 500 MB via `SUPABASE_DB_QUOTA_BYTES`); watchdog workflow polls this |
 
 **Deployment:**
 ```bash
@@ -313,7 +314,7 @@ make test-deno      # Deno Edge Function tests
 - **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy-functions.yml**: Auto-deploys Edge Functions on push to master.
-- **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, or `high_failure_count` exceed thresholds set inline in the workflow.
+- **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, `high_failure_count`, or `database.quota_pct` (default trip at 70%) exceed thresholds set inline in the workflow. The DB quota check tolerates `database == null` (RPC failure) without alerting so transient size-fetch errors don't false-page.
 
 All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
 
