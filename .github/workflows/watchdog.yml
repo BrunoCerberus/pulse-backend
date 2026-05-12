@@ -27,10 +27,13 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       # Thresholds — fail the job when any of these are exceeded.
       # Calibrated for the current ~136-source fleet which mixes daily news
-      # with weekly/monthly podcasts. Tighten once dead sources are pruned
-      # and we have a smaller, healthier baseline.
+      # with weekly/monthly podcasts and ~20 long-dead sources still marked
+      # active (last article 2020/2021 or never). Tighten once those are
+      # inactivated at the data layer — the baseline floor on 2026-05-12
+      # was stale=24 with the 7d window, so 30 gives ~6 sources of headroom
+      # before a real degradation alert fires.
       MAX_CIRCUIT_OPEN: 15
-      MAX_STALE: 10
+      MAX_STALE: 30
       MAX_HIGH_FAILURE: 15
       # DB size as a % of quota. Free tier is 500 MB; alert at 70% so there's
       # still ~150 MB of headroom to react before Supabase restricts the project
