@@ -26,14 +26,15 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       # Thresholds — fail the job when any of these are exceeded.
-      # Calibrated for the current ~136-source fleet which mixes daily news
-      # with weekly/monthly podcasts and ~20 long-dead sources still marked
-      # active (last article 2020/2021 or never). Tighten once those are
-      # inactivated at the data layer — the baseline floor on 2026-05-12
-      # was stale=24 with the 7d window, so 30 gives ~6 sources of headroom
-      # before a real degradation alert fires.
-      MAX_CIRCUIT_OPEN: 15
-      MAX_STALE: 30
+      # Calibrated post-cleanup (migration 023 inactivated 16 dead sources).
+      # Baseline floor on 2026-05-12 after cleanup: circuit_open=1, stale=23,
+      # high_failure=0. Headroom of ~4-7 sources before alert fires:
+      #   - stale at 23 → 27 catches widespread degradation, tolerates monthly
+      #     podcasts that happen to be at the bottom of their cycle.
+      #   - circuit_open at 1 → 8 absorbs transient network/DNS blips without
+      #     false-paging, fires on real outages.
+      MAX_CIRCUIT_OPEN: 8
+      MAX_STALE: 27
       MAX_HIGH_FAILURE: 15
       # DB size as a % of quota. Free tier is 500 MB; alert at 70% so there's
       # still ~150 MB of headroom to react before Supabase restricts the project
