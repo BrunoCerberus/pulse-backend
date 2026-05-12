@@ -26,8 +26,11 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       # Thresholds — fail the job when any of these are exceeded.
-      MAX_CIRCUIT_OPEN: 10
-      MAX_STALE: 5
+      # Calibrated for the current ~136-source fleet which mixes daily news
+      # with weekly/monthly podcasts. Tighten once dead sources are pruned
+      # and we have a smaller, healthier baseline.
+      MAX_CIRCUIT_OPEN: 15
+      MAX_STALE: 10
       MAX_HIGH_FAILURE: 15
       # DB size as a % of quota. Free tier is 500 MB; alert at 70% so there's
       # still ~150 MB of headroom to react before Supabase restricts the project
