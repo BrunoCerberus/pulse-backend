@@ -120,7 +120,8 @@ pulse-backend/
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
 │   │   ├── 020_add_source_health_infra.sql    # batch_update_source_fetch_state RPC + source_health view
 │   │   ├── 021_batch_cleanup_old_articles.sql # Batch cleanup_old_articles + raise per-function statement_timeout
-│   │   └── 022_add_db_size_rpc.sql            # get_db_size_bytes RPC for DB-size watchdog
+│   │   ├── 022_add_db_size_rpc.sql            # get_db_size_bytes RPC for DB-size watchdog
+│   │   └── 023_inactivate_dead_sources.sql    # Data cleanup: flip is_active=false on long-dead/never-produced sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
