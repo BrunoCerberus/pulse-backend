@@ -60,7 +60,7 @@ Deno.test("GET success returns summary + sources + database with 60s cache", asy
       row({ name: "Warning", consecutive_failures: 4 }),
       row({
         name: "Stale",
-        most_recent_article_at: new Date(Date.now() - 72 * 3600 * 1000).toISOString(),
+        most_recent_article_at: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(),
       }),
       row({ name: "Inactive", is_active: false }),
     ];
@@ -81,7 +81,7 @@ Deno.test("GET success returns summary + sources + database with 60s cache", asy
     assertEquals(body.summary.circuit_open_count, 1);
     // Warning (4 failures, circuit closed) — Tripped (7, circuit open) excluded.
     assertEquals(body.summary.high_failure_count, 1);
-    // Stale: active + not-open + no article in 48h.
+    // Stale: active + not-open + no article in 7 days.
     assertEquals(body.summary.stale_count, 1);
     // Database block populated from RPC.
     assertEquals(body.database.size_bytes, 96_468_992);

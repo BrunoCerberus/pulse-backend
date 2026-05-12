@@ -31,9 +31,11 @@
  * ```
  *
  * `high_failure_count` = sources with consecutive_failures ≥ 3 but circuit
- * not yet open. `stale_count` = active sources with no article in 48h and
+ * not yet open. `stale_count` = active sources with no article in 7 days and
  * circuit still closed (silent degradation — the usual failure mode this
- * endpoint exists to catch).
+ * endpoint exists to catch). The 7d window is calibrated for a fleet that
+ * mixes daily news with weekly/monthly podcasts; a tighter window false-pages
+ * on normal podcast cadence.
  *
  * `database` is `null` if the size RPC fails — never blocks the source-health
  * response. `quota_pct` is rounded to int (0–100+), computed against
@@ -59,7 +61,7 @@ const config: ProxyConfig = {
 const CACHE_TTL_MS = 60 * 1000; // 60s
 const CACHE_CONTROL = "public, max-age=60";
 const HIGH_FAILURE_THRESHOLD = 3; // warn before circuit opens (default trip at 5)
-const STALE_MS = 48 * 60 * 60 * 1000;
+const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_QUOTA_BYTES = 524_288_000; // 500 MB Supabase free tier
 
 interface SourceHealthRow {
