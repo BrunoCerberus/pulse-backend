@@ -1567,8 +1567,9 @@ func TestClampPublishedDate(t *testing.T) {
 }
 
 func TestExtractAuthor_EmptyAfterSanitize(t *testing.T) {
-	// Author name made entirely of control chars → empty after sanitize.
-	item := &gofeed.Item{Author: &gofeed.Person{Name: "‮"}}
+	// Author name made entirely of the RLO bidi override → empty after sanitize.
+	// Escape sequence used (not the literal char) so staticcheck doesn't flag.
+	item := &gofeed.Item{Author: &gofeed.Person{Name: "\u202e"}}
 	got := extractAuthor(item)
 	if got != nil {
 		t.Errorf("expected nil author when name is bidi-only, got %v", *got)
@@ -1641,7 +1642,8 @@ func TestExtractMediaInfo_RejectsBadMIME(t *testing.T) {
 }
 
 func TestSanitizeText_StripsControlAndBidi(t *testing.T) {
-	in := "Hello‮World\x01"
+	// Escape sequence used (not literal U+202E) so staticcheck stays happy.
+	in := "Hello\u202eWorld\x01"
 	out := sanitizeText(in, 0)
 	want := "HelloWorld"
 	if out != want {
@@ -1835,13 +1837,8 @@ func TestParseDuration_HHMMSS(t *testing.T) {
 }
 
 func TestIsAcceptableOGImage_URLParseFailure(t *testing.T) {
-	// A URL with malformed percent-encoding fails url.Parse but passes the
-	// control-char loop. Covers the parse-error branch.
-	if isAcceptableOGImage("https://example.com/%ZZ") {
-		// This particular URL is technically allowed by url.Parse (it returns
-		// the raw path including invalid escapes). Switch to a URL that
-		// definitely fails: malformed IPv6 brackets.
-	}
+	// Malformed IPv6 brackets fail url.Parse but pass the control-char loop —
+	// covers the parse-error branch.
 	if isAcceptableOGImage("https://[::1") {
 		t.Error("expected isAcceptableOGImage to reject malformed IPv6 bracket")
 	}

@@ -94,7 +94,9 @@ jobs:
         with:
           # Pin to a concrete release so a compromise of Deno's release
           # channel can't push a malicious binary into CI on the next run.
-          deno-version: v1.46.3
+          # Must be a 2.x release because deno.lock is on lockfile version 5
+          # (Deno 1.x only handles v3/4).
+          deno-version: v2.7.14
 
       - name: Run Edge Function tests
         working-directory: ./supabase/functions

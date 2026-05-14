@@ -10,7 +10,6 @@ package parser
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -824,9 +823,6 @@ func parseDuration(s string) int {
 // maxMediaDurationSeconds caps duration at 24 hours — anything longer is
 // almost certainly garbage. Bounds the int32 storage in the DB cleanly.
 const maxMediaDurationSeconds = 24 * 3600
-
-// errIntOverflow signals overflow inside parseSafeInt.
-var errIntOverflow = errors.New("int overflow")
 
 // parseSafeInt parses digits from s into int64 with overflow protection.
 // Non-digit runes are ignored (matching the previous behavior). Returns 0 on
