@@ -277,6 +277,12 @@ func main() {
 		logger.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Defence-in-depth: scrub the service-role key from the environment so a
+	// future bug that exec's a subprocess (or anything that dumps env to
+	// logs) can't leak it. cfg.SupabaseKey already holds the live value.
+	// On Linux/macOS, Unsetenv with a non-empty name cannot return an error.
+	_ = os.Unsetenv("SUPABASE_SERVICE_ROLE_KEY")
+
 	// Apply env-driven per-host rate limit before constructing any HTTP
 	// clients so every parser/extractor picks up the override.
 	parser.SetHostRateLimit(cfg.HostRateLimitRPS, cfg.HostRateLimitBurst)

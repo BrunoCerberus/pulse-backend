@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all configuration for the RSS worker
@@ -44,6 +45,13 @@ func Load() (*Config, error) {
 	if supabaseURL == "" {
 		return nil, fmt.Errorf("SUPABASE_URL environment variable is required")
 	}
+	// Require https:// to refuse cleartext (HTTP) requests that would expose
+	// the service-role key. A misconfigured typo-squat URL would otherwise
+	// silently leak credentials. Loopback http:// is allowed for local dev
+	// + tests (httptest.Server returns http://127.0.0.1:NNNN).
+	if !strings.HasPrefix(supabaseURL, "https://") && !isLoopbackHTTP(supabaseURL) {
+		return nil, fmt.Errorf("SUPABASE_URL must use https:// scheme, got: %q", supabaseURL)
+	}
 
 	supabaseKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
 	if supabaseKey == "" {
@@ -83,4 +91,20 @@ func envInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// isLoopbackHTTP reports whether url is http:// pointing at loopback. Used to
+// allow plaintext for local dev / test (httptest.Server). Production URLs
+// should never match.
+func isLoopbackHTTP(u string) bool {
+	for _, prefix := range []string{
+		"http://localhost/", "http://localhost:",
+		"http://127.0.0.1/", "http://127.0.0.1:",
+		"http://[::1]/", "http://[::1]:",
+	} {
+		if strings.HasPrefix(u, prefix) {
+			return true
+		}
+	}
+	return false
 }

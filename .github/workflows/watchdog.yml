@@ -24,7 +24,11 @@ jobs:
 
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      # Note: no SUPABASE_SERVICE_ROLE_KEY here. The Edge Function
+      # api-source-health is now declared `verify_jwt = false` and uses
+      # its own server-side service-role key to read the privileged
+      # source_health view. Sending a JWT in this workflow was a leak
+      # vector (function logs captured the bearer).
       # Thresholds — fail the job when any of these are exceeded.
       # Calibrated post-cleanup (migration 023 inactivated 16 dead sources).
       # Baseline floor on 2026-05-12 after cleanup: circuit_open=1, stale=23,
@@ -48,11 +52,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Hit the Edge Function so the summary is computed server-side.
-          # Service role is a valid JWT for --verify-jwt.
+          # Hit the Edge Function — no auth header needed (verify_jwt = false).
           response=$(curl -fsS --max-time 30 \
-            -H "apikey: ${SUPABASE_SERVICE_ROLE_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_SERVICE_ROLE_KEY}" \
             "${SUPABASE_URL}/functions/v1/api-source-health")
 
           echo "Summary:"
@@ -67,6 +68,19 @@ jobs:
           # so we don't false-alarm on transient size-check failures.
           db_quota_pct=$(echo "$response" | jq -r '.database.quota_pct // empty')
 
+          # Validate everything is a non-negative integer before arithmetic.
+          # Anything else is treated as missing (the `fail=0` default holds
+          # unless we explicitly trip a threshold) so a broken upstream
+          # never silently passes thresholds.
+          int_re='^[0-9]+$'
+          for v in circuit_open stale high_failure; do
+            val=${!v}
+            if ! [[ "$val" =~ $int_re ]]; then
+              echo "::error title=Watchdog input::expected integer for $v, got '$val'"
+              exit 1
+            fi
+          done
+
           fail=0
           if (( circuit_open > MAX_CIRCUIT_OPEN )); then
             echo "::error title=Circuit breaker::circuit_open_count=${circuit_open} exceeds threshold ${MAX_CIRCUIT_OPEN}"
@@ -80,7 +94,7 @@ jobs:
             echo "::error title=High failure count::high_failure_count=${high_failure} exceeds threshold ${MAX_HIGH_FAILURE}"
             fail=1
           fi
-          if [[ -n "$db_quota_pct" ]] && (( db_quota_pct > MAX_DB_QUOTA_PCT )); then
+          if [[ -n "$db_quota_pct" ]] && [[ "$db_quota_pct" =~ $int_re ]] && (( db_quota_pct > MAX_DB_QUOTA_PCT )); then
             db_pretty=$(echo "$response" | jq -r '.database.size_pretty')
             echo "::error title=DB quota::database is at ${db_quota_pct}% of quota (${db_pretty}), exceeds threshold ${MAX_DB_QUOTA_PCT}%"
             fail=1

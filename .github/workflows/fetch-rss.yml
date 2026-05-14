@@ -37,7 +37,10 @@ jobs:
       - name: Build worker
         working-directory: rss-worker
         run: |
-          go mod tidy
+          # Modules are pinned via go.sum; the pr-checks workflow enforces
+          # tidiness on every PR so we don't need (and don't want) `go mod
+          # tidy` here — it can silently pull a different module graph if
+          # an upstream go.mod changed.
           go build -o rss-worker .
 
       - name: Run RSS Worker
@@ -53,32 +56,7 @@ jobs:
             ./rss-worker
           fi
 
-  # Cleanup job runs once daily at 3 AM UTC
-  cleanup:
-    name: Cleanup Old Articles
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-
-    # Only run on schedule at 3 AM UTC (not on every 2-hour trigger)
-    if: github.event.schedule == '0 3 * * *' || github.event.inputs.cleanup == 'true'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        with:
-          go-version: '1.25'
-          cache: true
-          cache-dependency-path: rss-worker/go.sum
-
-      - name: Build and run cleanup
-        working-directory: rss-worker
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          go mod tidy
-          go build -o rss-worker .
-          ./rss-worker cleanup
+  # Cleanup is handled exclusively by `cleanup.yml` (separate workflow). The
+  # previous inline `cleanup` job here would double-fire alongside cleanup.yml
+  # at 03:00 UTC daily. The workflow_dispatch `cleanup` input above still
+  # routes to the same binary via the Run step.

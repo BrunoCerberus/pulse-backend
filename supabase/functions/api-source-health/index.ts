@@ -2,53 +2,42 @@
  * Source Health API Endpoint
  *
  * Exposes per-source fetch health plus an aggregate summary so the watchdog
- * workflow (and future dashboards) can detect silently-degraded feeds without
- * eyeballing the `fetch_logs` table.
+ * workflow (and future dashboards) can detect silently-degraded feeds.
  *
- * Reads from the `source_health` view (migration 020) which derives:
- * - circuit_open (whether the circuit is currently tripped)
- * - most_recent_article_at (content freshness signal)
- * - articles_last_24h (rate-of-ingestion signal)
+ * Reads from the `source_health` view (migration 020) — `security_invoker = on`
+ * so it inherits the caller's RLS. The Edge Function calls upstream with
+ * the service-role key (not anon), so the watchdog gets the full fleet
+ * view while still being callable with `verify_jwt = false`.
  *
- * ## Response
- * ```json
+ * ## Response shape
+ * ```
  * {
- *   "fetched_at": "2026-04-21T12:00:00.000Z",
- *   "database": {
- *     "size_bytes": 96468992,
- *     "size_pretty": "92.0 MB",
- *     "quota_pct": 18
- *   },
- *   "summary": {
- *     "total": 133,
- *     "active": 131,
- *     "circuit_open_count": 2,
- *     "high_failure_count": 5,
- *     "stale_count": 1
- *   },
- *   "sources": [...]
+ *   "fetched_at": "ISO-8601",
+ *   "database": { "size_bytes": N, "size_pretty": "X MB", "quota_pct": N } | null,
+ *   "summary":  { "total": N, "active": N, "circuit_open_count": N,
+ *                 "high_failure_count": N, "stale_count": N },
+ *   "sources":  [SourceHealthRow, ...]
  * }
  * ```
  *
  * `high_failure_count` = sources with consecutive_failures ≥ 3 but circuit
- * not yet open. `stale_count` = active sources with no article in 7 days and
- * circuit still closed (silent degradation — the usual failure mode this
- * endpoint exists to catch). The 7d window is calibrated for a fleet that
- * mixes daily news with weekly/monthly podcasts; a tighter window false-pages
- * on normal podcast cadence.
- *
- * `database` is `null` if the size RPC fails — never blocks the source-health
- * response. `quota_pct` is rounded to int (0–100+), computed against
- * `SUPABASE_DB_QUOTA_BYTES` env (default 524288000 = 500 MB free-tier cap).
+ * not yet open. `stale_count` = active sources with no article in 7 days
+ * and circuit still closed. `database` is `null` if the size RPC fails —
+ * the watchdog tolerates `null` so transient size-check failures don't
+ * false-page.
  *
  * ## Caching
- * - Cache-Control: 60s public. Health doesn't need to be perfectly fresh;
- *   this rate still lets the watchdog (6h cron) see the current state.
+ * Cache-Control: 60s public. Health doesn't need to be perfectly fresh.
  *
  * @module api-source-health
  */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
-import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.ts";
+import {
+  buildCacheKey,
+  buildProxyUrl,
+  tooLong,
+  type ProxyConfig,
+} from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
 const config: ProxyConfig = {
@@ -56,13 +45,14 @@ const config: ProxyConfig = {
   allowedParams: ["id", "slug", "is_active", "order"],
   defaultSelect:
     "id,name,slug,is_active,consecutive_failures,circuit_open_until,circuit_open,last_fetched_at,most_recent_article_at,articles_last_24h",
+  allowedOrderColumns: ["name", "slug", "consecutive_failures", "last_fetched_at"],
 };
 
-const CACHE_TTL_MS = 60 * 1000; // 60s
+const CACHE_TTL_MS = 60 * 1000;
 const CACHE_CONTROL = "public, max-age=60";
-const HIGH_FAILURE_THRESHOLD = 3; // warn before circuit opens (default trip at 5)
+const HIGH_FAILURE_THRESHOLD = 3;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
-const DEFAULT_QUOTA_BYTES = 524_288_000; // 500 MB Supabase free tier
+const DEFAULT_QUOTA_BYTES = 524_288_000;
 
 interface SourceHealthRow {
   id: string;
@@ -94,23 +84,35 @@ interface DatabaseSize {
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-// Calls get_db_size_bytes RPC (migration 022) and shapes the result into the
-// `database` block. Returns null on any error so a flaky size check never
-// breaks the source-health response — the watchdog already tolerates
-// `database == null` as "no signal, don't alert".
-export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
+function privilegedHeaders(): { url: string; headers: Record<string, string> } | null {
+  // `source_health` is now revoked from anon (migration 027). The Edge
+  // Function authenticates upstream as service_role so the watchdog can
+  // get the full fleet view while api-source-health stays callable with
+  // `verify_jwt = false`.
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY");
-  if (!supabaseUrl || !supabaseKey) return null;
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceKey) return null;
+  return {
+    url: supabaseUrl,
+    headers: {
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": "application/json",
+      Prefer: "count=estimated",
+    },
+  };
+}
 
-  // Fall back to the default on missing/empty/non-numeric/zero/negative input.
-  // A typo in SUPABASE_DB_QUOTA_BYTES must NOT silently emit quota_pct: 0 —
-  // that would bypass the watchdog's MAX_DB_QUOTA_PCT check (0 > 70 is false)
-  // and defeat the purpose of the alert.
+export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
+  const priv = privilegedHeaders();
+  if (!priv) return null;
+
   const quotaRaw = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
   const quotaParsed = quotaRaw ? Number(quotaRaw) : DEFAULT_QUOTA_BYTES;
   const quotaBytes = Number.isFinite(quotaParsed) && quotaParsed > 0
@@ -118,13 +120,9 @@ export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
     : DEFAULT_QUOTA_BYTES;
 
   try {
-    const response = await fetch(`${supabaseUrl}/rest/v1/rpc/get_db_size_bytes`, {
+    const response = await fetch(`${priv.url}/rest/v1/rpc/get_db_size_bytes`, {
       method: "POST",
-      headers: {
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: priv.headers,
       body: "{}",
     });
     if (response.status !== 200) return null;
@@ -140,7 +138,7 @@ export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
   }
 }
 
-function summarize(rows: SourceHealthRow[]): HealthSummary {
+export function summarize(rows: SourceHealthRow[]): HealthSummary {
   const staleCutoff = Date.now() - STALE_MS;
   let active = 0;
   let circuitOpenCount = 0;
@@ -170,6 +168,44 @@ function summarize(rows: SourceHealthRow[]): HealthSummary {
   };
 }
 
+async function fetchSourceHealth(
+  req: Request,
+): Promise<{ status: number; data: string } | null> {
+  const priv = privilegedHeaders();
+  if (!priv) return null;
+  const targetUrl = buildProxyUrl(req, config);
+  const response = await fetch(targetUrl, {
+    method: "GET",
+    headers: priv.headers,
+  });
+  const data = await response.text();
+  return { status: response.status, data };
+}
+
+async function buildPayload(req: Request): Promise<{ status: number; body: string }> {
+  const [result, database] = await Promise.all([
+    fetchSourceHealth(req),
+    fetchDatabaseSize(),
+  ]);
+  if (result === null) {
+    return {
+      status: 500,
+      body: JSON.stringify({ error: "Service configuration missing" }),
+    };
+  }
+  if (result.status !== 200) {
+    return { status: result.status, body: result.data };
+  }
+  const rows: SourceHealthRow[] = JSON.parse(result.data);
+  const payload = {
+    fetched_at: new Date().toISOString(),
+    database,
+    summary: summarize(rows),
+    sources: rows,
+  };
+  return { status: 200, body: JSON.stringify(payload) };
+}
+
 export async function handler(req: Request): Promise<Response> {
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
@@ -181,34 +217,28 @@ export async function handler(req: Request): Promise<Response> {
     });
   }
 
+  const oversized = tooLong(req, corsHeaders);
+  if (oversized) return oversized;
+
   try {
-    const cacheKey = "source-health:" + new URL(req.url).search;
+    const cacheKey = buildCacheKey("source-health", req, config);
     const cached = getCached(cacheKey);
-
-    const body = cached ?? (await (async () => {
-      // Fetch sources + db size in parallel — independent calls.
-      const [result, database] = await Promise.all([
-        fetchFromSupabase(req, config),
-        fetchDatabaseSize(),
-      ]);
-      if (result.status !== 200) {
-        // Don't cache failures — let the next request retry.
-        return result.data;
-      }
-      const rows: SourceHealthRow[] = JSON.parse(result.data);
-      const payload = {
-        fetched_at: new Date().toISOString(),
-        database,
-        summary: summarize(rows),
-        sources: rows,
-      };
-      const serialized = JSON.stringify(payload);
-      setCached(cacheKey, serialized, CACHE_TTL_MS);
-      return serialized;
-    })());
-
+    if (cached) {
+      return new Response(cached, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Cache-Control": CACHE_CONTROL,
+          "Content-Type": "application/json",
+        },
+      });
+    }
+    const { status, body } = await buildPayload(req);
+    if (status === 200) {
+      setCached(cacheKey, body, CACHE_TTL_MS);
+    }
     return new Response(body, {
-      status: 200,
+      status,
       headers: {
         ...corsHeaders,
         "Cache-Control": CACHE_CONTROL,

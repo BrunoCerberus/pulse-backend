@@ -3,7 +3,9 @@ package parser
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -40,7 +42,13 @@ var ogImagePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)<meta[^>]+content\s*=\s*["']([^"']+)["'][^>]+name\s*=\s*["']twitter:image:src["']`),
 }
 
-// ExtractOGImage fetches the article page and extracts the og:image URL
+// ExtractOGImage fetches the article page and extracts the og:image URL.
+//
+// The fetch goes through SafeTransport so SSRF protection is enforced at the
+// dial layer (cloud-metadata, RFC 1918, link-local, loopback are all
+// rejected). The extracted URL is also re-validated lexically — IP literals
+// in private ranges are rejected (so a third-party publisher's compromised
+// page can't push iOS clients into probing internal addresses).
 func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", articleURL, nil)
 	if err != nil {
@@ -76,12 +84,46 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 		matches := pattern.FindSubmatch(body)
 		if len(matches) > 1 {
 			imageURL := strings.TrimSpace(string(matches[1]))
-			// Validate it looks like a URL
-			if strings.HasPrefix(imageURL, "http://") || strings.HasPrefix(imageURL, "https://") {
+			if isAcceptableOGImage(imageURL) {
 				return imageURL, nil
 			}
 		}
 	}
 
 	return "", nil // No og:image found
+}
+
+// isAcceptableOGImage validates an extracted og:image URL before it lands in
+// the DB and propagates to iOS clients. Rejects:
+//   - control characters or NUL bytes (which can spoof URLs in iOS rendering)
+//   - non-http(s) schemes
+//   - empty host
+//   - IP-literal hosts that fall in forbidden ranges (private, loopback,
+//     link-local 169.254.169.254 cloud-metadata, multicast). Hostname
+//     resolution is deferred to the actual fetch (by iOS / image proxies),
+//     which we can't control from here.
+func isAcceptableOGImage(raw string) bool {
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	// If host is an IP literal, reject if it's in a forbidden range.
+	if ip := net.ParseIP(host); ip != nil {
+		if httputil.IsForbiddenIP(ip) {
+			return false
+		}
+	}
+	return true
 }

@@ -10,17 +10,19 @@
 /**
  * Standard CORS headers for API responses.
  *
- * - Allows requests from any origin (for public API)
- * - Permits GET and OPTIONS methods only (read-only API)
+ * - Allows requests from any origin (this is a public read-only API)
+ * - Permits GET and OPTIONS methods only
  * - Exposes ETag and Cache-Control for client-side caching
+ *
+ * Frozen so a downstream typo cannot mutate the shared object.
  */
-export const corsHeaders = {
+export const corsHeaders: Readonly<Record<string, string>> = Object.freeze({
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, if-none-match",
   "Access-Control-Expose-Headers": "etag, cache-control",
-};
+});
 
 /**
  * Handles CORS preflight requests (OPTIONS method).
@@ -31,13 +33,6 @@ export const corsHeaders = {
  *
  * @param req - The incoming HTTP request
  * @returns Response for OPTIONS requests, null for other methods
- *
- * @example
- * ```ts
- * const corsResponse = handleCors(req);
- * if (corsResponse) return corsResponse;
- * // Continue with actual request handling
- * ```
  */
 export function handleCors(req: Request): Response | null {
   if (req.method === "OPTIONS") {

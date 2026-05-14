@@ -1,73 +1,107 @@
 /**
  * Proxy utilities for forwarding requests to Supabase REST API.
  *
- * These functions provide a secure proxy layer that:
- * - Whitelists allowed query parameters to prevent injection
- * - Adds authentication headers automatically
- * - Handles response parsing and error propagation
+ * Hard-coded defaults:
+ * - `select` is always forced to `defaultSelect`. The client cannot override
+ *   it; this prevents column-leak attacks via `?select=*` (which would
+ *   otherwise reach PostgREST and return every column of the underlying view).
+ * - `limit` is clamped to `maxLimit` when the client provides one, or set
+ *   to `defaultLimit` when absent.
+ * - `order` is rejected unless it matches `<col>.<asc|desc>[.nullsfirst|.nullslast]`
+ *   and `<col>` is in `allowedOrderColumns` (if configured).
+ * - Empty param values are dropped (otherwise PostgREST treats `limit=` as
+ *   "no limit" and ignores `defaultLimit`).
+ * - Each forwarded value is capped at `maxValueLength` (default 256) to
+ *   bound the cost of `in.(...)` lists and similar operator abuse.
+ * - Total request URL is capped at MAX_QUERY_STRING_LENGTH to prevent
+ *   pathological cache-key inflation and PostgREST request smuggling.
  *
  * @module supabase-proxy
  */
 
-/**
- * Configuration for proxying requests to a Supabase table or view.
- */
 export interface ProxyConfig {
-  /** The Supabase table or view name to query (e.g., "articles_with_source") */
+  /** Supabase table or view name to query. */
   table: string;
 
-  /** Query parameters to forward from the client request (whitelist for security) */
+  /** Whitelist of query-param names the client may set. */
   allowedParams: string[];
 
-  /** Default PostgREST select clause if not specified by client */
-  defaultSelect?: string;
+  /**
+   * PostgREST select clause. Always applied — the client's `select` is
+   * never honored. This is the column-leak guard for the proxy.
+   */
+  defaultSelect: string;
+
+  /** Applied when client omits `limit`. */
+  defaultLimit?: number;
+
+  /** Hard upper bound on `limit` when client provides one. */
+  maxLimit?: number;
 
   /**
-   * Default `limit` applied when the client omits one. Caps an open-ended
-   * request to a bounded page so a bare `GET /api-articles` doesn't return
-   * the full table (which would burn egress bandwidth).
+   * When `order` is in `allowedParams`, the column referenced must be one
+   * of these. Other columns are rejected (silently dropped). Leave empty
+   * to allow any column the underlying view exposes (NOT recommended —
+   * lets clients sort by hidden columns and probe schema via 400s).
    */
-  defaultLimit?: number;
+  allowedOrderColumns?: string[];
+
+  /** Per-value length cap. Defaults to 256. */
+  maxValueLength?: number;
 }
 
-/**
- * Result of a proxied Supabase request.
- */
 export interface ProxyResult {
-  /** Raw JSON response body as string */
   data: string;
-
-  /** HTTP status code from Supabase */
   status: number;
-
-  /** Content-Range header for pagination (e.g., "0-9/100") */
   contentRange: string | null;
 }
 
+const MAX_QUERY_STRING_LENGTH = 4096;
+const DEFAULT_MAX_VALUE_LENGTH = 256;
+const ORDER_PATTERN =
+  /^([a-z_][a-z0-9_]*)\.(asc|desc)(?:\.(nullsfirst|nullslast))?$/i;
+
 /**
- * Builds a Supabase REST API URL from the incoming request and config.
+ * Rejects oversized request URIs before any DB work happens. Call this at
+ * the top of every handler that uses the proxy.
  *
- * Only whitelisted query parameters are forwarded to prevent
- * unauthorized access to sensitive data or injection attacks.
- *
- * @param req - The incoming HTTP request with query parameters
- * @param config - Proxy configuration specifying table and allowed params
- * @returns Full Supabase REST API URL with filtered query params
- * @throws Error if SUPABASE_URL environment variable is not set
- *
- * @example
- * ```ts
- * const url = buildProxyUrl(req, {
- *   table: "articles_with_source",
- *   allowedParams: ["limit", "offset", "category_slug"],
- * });
- * // url = "https://xxx.supabase.co/rest/v1/articles_with_source?limit=10"
- * ```
+ * @param baseHeaders - additional headers to include on the 414 (typically
+ *   `corsHeaders` so browser clients can read the response).
  */
-export function buildProxyUrl(
+export function tooLong(
   req: Request,
-  config: ProxyConfig
-): string {
+  baseHeaders: Record<string, string> = {},
+): Response | null {
+  const search = new URL(req.url).search;
+  if (search.length > MAX_QUERY_STRING_LENGTH) {
+    return new Response(
+      JSON.stringify({ error: "Request URI too long" }),
+      {
+        status: 414,
+        headers: { ...baseHeaders, "Content-Type": "application/json" },
+      },
+    );
+  }
+  return null;
+}
+
+export const MAX_QUERY_STRING_LEN = MAX_QUERY_STRING_LENGTH;
+
+function isValidOrder(value: string, allowedColumns?: string[]): boolean {
+  const m = ORDER_PATTERN.exec(value);
+  if (!m) return false;
+  if (allowedColumns && allowedColumns.length > 0 && !allowedColumns.includes(m[1])) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Builds the upstream Supabase REST URL with sanitized, sorted params so
+ * the same logical request always produces an identical URL (good for
+ * caching and request fingerprinting).
+ */
+export function buildProxyUrl(req: Request, config: ProxyConfig): string {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   if (!supabaseUrl) {
     throw new Error("SUPABASE_URL not configured");
@@ -75,60 +109,73 @@ export function buildProxyUrl(
 
   const requestUrl = new URL(req.url);
   const targetUrl = new URL(`${supabaseUrl}/rest/v1/${config.table}`);
+  const maxValueLength = config.maxValueLength ?? DEFAULT_MAX_VALUE_LENGTH;
 
-  // Add default select if provided
-  if (config.defaultSelect && !requestUrl.searchParams.has("select")) {
-    targetUrl.searchParams.set("select", config.defaultSelect);
-  }
+  // Always force defaultSelect — never honor client `select`. This is the
+  // single most important line in the file: it blocks `?select=*` from
+  // reaching PostgREST and returning every column of the view.
+  targetUrl.searchParams.set("select", config.defaultSelect);
 
-  // Whitelist and copy allowed query params
+  // Collect filtered/validated params into a sorted list so the final URL
+  // (and any derived cache key) is canonical.
+  const accepted: Array<[string, string]> = [];
+
   for (const param of config.allowedParams) {
-    const value = requestUrl.searchParams.get(param);
-    if (value !== null) {
-      targetUrl.searchParams.set(param, value);
+    const raw = requestUrl.searchParams.get(param);
+    if (raw === null || raw === "") continue;
+    if (raw.length > maxValueLength) continue;
+
+    if (param === "limit" || param === "offset") {
+      const parsed = parseInt(raw, 10);
+      if (!Number.isFinite(parsed) || parsed < 0) continue;
+      let clamped = parsed;
+      if (param === "limit" && config.maxLimit !== undefined) {
+        clamped = Math.min(clamped, config.maxLimit);
+      }
+      accepted.push([param, String(clamped)]);
+      continue;
     }
+
+    if (param === "order") {
+      if (!isValidOrder(raw, config.allowedOrderColumns)) continue;
+      accepted.push([param, raw]);
+      continue;
+    }
+
+    accepted.push([param, raw]);
   }
 
-  // Apply default limit when client omitted one and the config opts in.
-  if (
-    config.defaultLimit !== undefined &&
-    !targetUrl.searchParams.has("limit")
-  ) {
-    targetUrl.searchParams.set("limit", String(config.defaultLimit));
+  // Apply defaultLimit if no client-supplied limit survived validation.
+  const haveLimit = accepted.some(([k]) => k === "limit");
+  if (!haveLimit && config.defaultLimit !== undefined) {
+    accepted.push(["limit", String(config.defaultLimit)]);
+  }
+
+  accepted.sort(([a], [b]) => a.localeCompare(b));
+  for (const [k, v] of accepted) {
+    targetUrl.searchParams.set(k, v);
   }
 
   return targetUrl.toString();
 }
 
 /**
- * Fetches data from Supabase with exact count for pagination support.
- *
- * Adds `Prefer: count=exact` header to get total count in Content-Range
- * header, enabling pagination UIs to show total results.
- *
- * @param req - The incoming HTTP request with query parameters
- * @param config - Proxy configuration specifying table and allowed params
- * @returns ProxyResult with data, status, and optional content-range
- * @throws Error if SUPABASE_ANON_KEY environment variable is not set
- *
- * @example
- * ```ts
- * const result = await fetchFromSupabase(req, {
- *   table: "articles_with_source",
- *   allowedParams: ["limit", "offset", "category_slug"],
- *   defaultSelect: "id,title,summary,url",
- * });
- *
- * if (result.status !== 200) {
- *   return new Response(result.data, { status: result.status });
- * }
- *
- * // result.contentRange = "0-9/1234" for pagination
- * ```
+ * Canonical cache key derived from the sanitized upstream URL. Two
+ * requests that map to the same logical query share a cache entry; junk
+ * params (which `buildProxyUrl` drops) do not inflate the cache.
  */
+export function buildCacheKey(
+  prefix: string,
+  req: Request,
+  config: ProxyConfig,
+): string {
+  const url = new URL(buildProxyUrl(req, config));
+  return `${prefix}:${url.search}`;
+}
+
 export async function fetchFromSupabase(
   req: Request,
-  config: ProxyConfig
+  config: ProxyConfig,
 ): Promise<ProxyResult> {
   const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY");
   if (!supabaseKey) {

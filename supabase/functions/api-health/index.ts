@@ -1,27 +1,21 @@
 /**
  * Health Check API Endpoint
  *
- * Returns a simple health status indicating the API is operational.
- * Useful for uptime monitoring and load balancer health probes.
- *
- * ## Response
- * JSON object with fields:
- * - `status` - Always "ok" when the service is running
- * - `timestamp` - ISO 8601 timestamp of the response
+ * Minimal liveness probe. Returns `{ "status": "ok" }` when reachable.
+ * The body intentionally contains no clock or version data so a probe
+ * cannot be used to fingerprint the server.
  *
  * ## Caching
- * - Cache-Control: no-store (never cached)
+ * Cache-Control: no-store (never cached).
  *
  * @module api-health
  */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 
 export function handler(req: Request): Response {
-  // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
 
-  // Only allow GET
   if (req.method !== "GET") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
@@ -30,10 +24,7 @@ export function handler(req: Request): Response {
   }
 
   return new Response(
-    JSON.stringify({
-      status: "ok",
-      timestamp: new Date().toISOString(),
-    }),
+    JSON.stringify({ status: "ok" }),
     {
       status: 200,
       headers: {

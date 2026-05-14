@@ -89,6 +89,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/024_strip_content_from_search_vector.sql` - Drop `content` from `search_vector` to shrink the GIN index
    - `supabase/migrations/025_drop_unused_indexes.sql` - Drop indexes with `idx_scan=0` to cut write amplification
    - `supabase/migrations/026_add_batch_content_update_rpc.sql` - `batch_update_article_content` RPC for batched content backfill
+   - `supabase/migrations/027_security_hardening.sql` - Multi-finding hardening: `search_articles` explicit projection + 200-char input cap + 3s statement_timeout; SECURITY DEFINER funcs rebuilt with `search_path = ''` and in-function role check; column-level GRANT on `articles` (anon loses `url_hash` + backfill state); `articles_with_source` recreated with explicit projection; `source_health` + `get_db_size_bytes` revoked from anon (Edge Function uses service role internally); defence-in-depth REVOKE on `fetch_logs`
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -123,12 +124,23 @@ git push -u origin master
 
 ### 5. Configure GitHub Secrets
 
-In your GitHub repo → **Settings** → **Secrets and variables** → **Actions**:
+Two scopes:
 
-| Secret Name | Value |
-|-------------|-------|
-| `SUPABASE_URL` | Your Supabase Project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Your service_role key |
+**Repo secrets** (Settings → Secrets and variables → Actions):
+
+| Secret Name | Used by |
+|-------------|---------|
+| `SUPABASE_URL` | `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`, `watchdog.yml` |
+| `SUPABASE_SERVICE_ROLE_KEY` | `fetch-rss.yml`, `cleanup.yml`, `backfill.yml` (worker writes). `watchdog.yml` does **not** need it. |
+
+**`production` Environment secrets** (Settings → Environments → New environment "production"):
+
+| Secret Name | Used by |
+|-------------|---------|
+| `SUPABASE_ACCESS_TOKEN` | `deploy-functions.yml` |
+| `SUPABASE_PROJECT_REF` | `deploy-functions.yml` |
+
+Configure the `production` Environment with **required reviewers** (yourself) and **deployment branches: master only**. This gates every Edge Function deploy on a human approval click in the Actions UI and scopes the deploy secrets so they can't be exfiltrated from unrelated workflows.
 
 ### 6. Enable GitHub Actions
 
@@ -136,10 +148,15 @@ The workflows are already configured:
 - `fetch-rss.yml` - Runs every 2 hours
 - `cleanup.yml` - Runs daily at 3 AM UTC
 - `backfill.yml` - og:image + content backfill daily at 04:30 UTC (manual `workflow_dispatch` accepts `kind: both|images|content`)
+- `watchdog.yml` - Source-health check every 6 hours (fails the job + emails when circuit/stale/high-failure/DB-quota thresholds breach)
 
 Go to **Actions** tab and enable workflows if prompted.
 
 ### 7. Deploy Edge Functions
+
+Two paths:
+
+**Manual (first deploy):**
 
 ```bash
 # Install Supabase CLI
@@ -153,7 +170,9 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase functions deploy
 ```
 
-The Edge Functions provide a caching layer for the iOS app with Cache-Control headers.
+**Automated (after the `production` Environment is set up):** any merge to `master` touching `supabase/functions/**` queues a deploy in `deploy-functions.yml`. The job pauses on the "Waiting" step until a maintainer clicks **Approve and deploy** in the Actions UI, then ships the bundle.
+
+The Edge Functions provide a caching layer for the iOS app with Cache-Control headers. They also enforce request guards (column whitelist, `limit` clamp, `q` length cap, URL length cap, oversized-value drop) documented in `docs/api-reference.md`.
 
 ### 8. Test the Worker
 
@@ -202,7 +221,8 @@ pulse-backend/
 │   │   ├── 023_inactivate_dead_sources.sql       # Data cleanup: inactivate long-dead/never-produced sources
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector
 │   │   ├── 025_drop_unused_indexes.sql           # Drop indexes with zero usage
-│   │   └── 026_add_batch_content_update_rpc.sql  # Batch content-update RPC
+│   │   ├── 026_add_batch_content_update_rpc.sql  # Batch content-update RPC
+│   │   └── 027_security_hardening.sql            # Audit-driven hardening (search_articles, RLS column grants, view projection, REVOKE source_health/get_db_size_bytes from anon)
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -526,7 +546,7 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 | `test.yml` | Push/PR to `master` | Go tests (race + coverage), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, govulncheck, Deno tests |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
-| `deploy-functions.yml` | Push to `master` | Auto-deploy Edge Functions |
+| `deploy-functions.yml` | Push to `master` touching `supabase/functions/**` | Build + deploy Edge Functions. Gated by the `production` Environment — pauses for required-reviewer approval before shipping. |
 | `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure/DB-quota threshold breach |
 
 Branch protection on `master` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.

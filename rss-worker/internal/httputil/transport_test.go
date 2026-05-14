@@ -2,7 +2,9 @@ package httputil
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -238,12 +240,13 @@ func TestRateLimitingTransport_CancelShortCircuits(t *testing.T) {
 	}
 }
 
-// TestNewRateLimitingTransport_NilBaseUsesSharedTransport covers the `base == nil`
-// branch — callers can pass nil and the transport falls back to SharedTransport.
-func TestNewRateLimitingTransport_NilBaseUsesSharedTransport(t *testing.T) {
+// TestNewRateLimitingTransport_NilBaseUsesSafeTransport covers the `base == nil`
+// branch — callers can pass nil and the transport falls back to SafeTransport
+// (the SSRF-aware variant used by all user-content clients).
+func TestNewRateLimitingTransport_NilBaseUsesSafeTransport(t *testing.T) {
 	rt := NewRateLimitingTransport(nil, 10.0, 1)
-	if rt.base != SharedTransport {
-		t.Error("nil base should default to SharedTransport")
+	if rt.base != SafeTransport {
+		t.Error("nil base should default to SafeTransport")
 	}
 }
 
@@ -306,5 +309,231 @@ func TestNewRateLimitedClient_AppliesRedirectLimit(t *testing.T) {
 
 	if resp.StatusCode != http.StatusFound {
 		t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+}
+
+// --- SSRF guard tests ---
+
+func TestIsForbiddenIP(t *testing.T) {
+	// allowLoopback is enabled in TestMain so loopback returns false here.
+	cases := []struct {
+		name   string
+		ip     net.IP
+		want   bool
+	}{
+		{"nil", nil, true},
+		{"loopback v4 (exempted in tests)", net.ParseIP("127.0.0.1"), false},
+		{"loopback v6 (exempted in tests)", net.ParseIP("::1"), false},
+		{"private 10.x", net.ParseIP("10.0.0.1"), true},
+		{"private 172.16.x", net.ParseIP("172.16.0.1"), true},
+		{"private 192.168.x", net.ParseIP("192.168.1.1"), true},
+		{"link-local 169.254.x (AWS IMDS)", net.ParseIP("169.254.169.254"), true},
+		{"multicast", net.ParseIP("224.0.0.1"), true},
+		{"unspecified v4", net.ParseIP("0.0.0.0"), true},
+		{"unspecified v6", net.ParseIP("::"), true},
+		{"public 8.8.8.8", net.ParseIP("8.8.8.8"), false},
+		{"public 1.1.1.1", net.ParseIP("1.1.1.1"), false},
+		{"ULA v6", net.ParseIP("fc00::1"), true},
+		{"link-local v6", net.ParseIP("fe80::1"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsForbiddenIP(c.ip); got != c.want {
+				t.Errorf("IsForbiddenIP(%v) = %v, want %v", c.ip, got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsForbiddenIP_LoopbackToggle(t *testing.T) {
+	// Temporarily disable loopback exemption to exercise the blocked branch.
+	prev := SetAllowLoopback(false)
+	t.Cleanup(func() { SetAllowLoopback(prev) })
+	if !IsForbiddenIP(net.ParseIP("127.0.0.1")) {
+		t.Error("with allowLoopback=false, 127.0.0.1 should be forbidden")
+	}
+	if !IsForbiddenIP(net.ParseIP("::1")) {
+		t.Error("with allowLoopback=false, ::1 should be forbidden")
+	}
+}
+
+func TestValidateSSRFTarget_Schemes(t *testing.T) {
+	cases := []struct {
+		raw     string
+		wantErr bool
+	}{
+		{"https://example.com/path", false},
+		{"http://example.com", false},
+		{"javascript:alert(1)", true},
+		{"data:text/plain,hi", true},
+		{"file:///etc/passwd", true},
+		{"ftp://example.com", true},
+		{"://nohost", true},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			err := ValidateSSRFTarget(c.raw)
+			if (err != nil) != c.wantErr {
+				t.Errorf("ValidateSSRFTarget(%q) err=%v, wantErr=%v", c.raw, err, c.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateSSRFTarget_EmptyHost(t *testing.T) {
+	if err := ValidateSSRFTarget("https://"); err == nil {
+		t.Error("expected error on empty host")
+	}
+}
+
+func TestValidateSSRFTarget_IPLiteralForbidden(t *testing.T) {
+	prev := SetAllowLoopback(false)
+	t.Cleanup(func() { SetAllowLoopback(prev) })
+	for _, u := range []string{
+		"http://127.0.0.1/x",
+		"http://10.0.0.1/x",
+		"http://169.254.169.254/latest/meta-data",
+		"http://[::1]/x",
+	} {
+		if err := ValidateSSRFTarget(u); err == nil {
+			t.Errorf("expected SSRF block for %q", u)
+		}
+	}
+}
+
+func TestValidateSSRFTarget_IPLiteralAllowed(t *testing.T) {
+	// 8.8.8.8 (Google DNS) is public and routable.
+	if err := ValidateSSRFTarget("https://8.8.8.8/"); err != nil {
+		t.Errorf("unexpected error for public IP: %v", err)
+	}
+}
+
+func TestValidateSSRFTarget_LookupError(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return nil, errors.New("resolve error")
+	}
+	if err := ValidateSSRFTarget("https://nonexistent.example"); err == nil {
+		t.Error("expected resolution error")
+	}
+}
+
+func TestValidateSSRFTarget_LookupReturnsForbiddenIP(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("10.0.0.1")}, nil
+	}
+	if err := ValidateSSRFTarget("https://looks-public.example"); err == nil {
+		t.Error("expected SSRF block when DNS returns private IP")
+	}
+}
+
+func TestValidateSSRFTarget_LookupSuccess(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("8.8.8.8")}, nil
+	}
+	if err := ValidateSSRFTarget("https://example.com"); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSSRFTarget_ParseError(t *testing.T) {
+	// A malformed URL with control chars triggers url.Parse failure.
+	if err := ValidateSSRFTarget("ht%tp://bad"); err == nil {
+		t.Error("expected parse error")
+	}
+}
+
+func TestSecureDialContext_RejectsBadAddress(t *testing.T) {
+	_, err := SecureDialContext(context.Background(), "tcp", "no-port")
+	if err == nil {
+		t.Error("expected SplitHostPort error")
+	}
+}
+
+func TestSecureDialContext_RejectsForbiddenIPLiteral(t *testing.T) {
+	prev := SetAllowLoopback(false)
+	t.Cleanup(func() { SetAllowLoopback(prev) })
+	_, err := SecureDialContext(context.Background(), "tcp", "127.0.0.1:9999")
+	if err == nil {
+		t.Error("expected SSRF block for loopback")
+	}
+}
+
+func TestSecureDialContext_RejectsLookupError(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return nil, errors.New("dns fail")
+	}
+	_, err := SecureDialContext(context.Background(), "tcp", "example.com:443")
+	if err == nil {
+		t.Error("expected lookup error")
+	}
+}
+
+func TestSecureDialContext_RejectsEmptyResolvedIPs(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{}, nil
+	}
+	_, err := SecureDialContext(context.Background(), "tcp", "example.com:443")
+	if err == nil {
+		t.Error("expected error on empty IP list")
+	}
+}
+
+func TestSecureDialContext_RejectsForbiddenResolvedIP(t *testing.T) {
+	prev := lookupIP
+	t.Cleanup(func() { lookupIP = prev })
+	lookupIP = func(_ context.Context, _ string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("169.254.169.254")}, nil
+	}
+	_, err := SecureDialContext(context.Background(), "tcp", "looks-public.example:443")
+	if err == nil {
+		t.Error("expected SSRF block")
+	}
+}
+
+func TestSecureDialContext_ConnectsToAllowedHost(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	host, port, err := net.SplitHostPort(server.URL[len("http://"):])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SecureDialContext + 127.0.0.1 works under the test loopback exemption.
+	conn, err := SecureDialContext(context.Background(), "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+}
+
+func TestNewRateLimitedClient_RedirectsValidatedPerHop(t *testing.T) {
+	// Build a redirect chain whose final hop points at a forbidden host. The
+	// CheckRedirect should catch and reject it before the dial.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "http://169.254.169.254/", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	client := NewRateLimitedClient(5*time.Second, 100.0, 10, 3)
+	resp, err := client.Get(server.URL + "/start")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("expected redirect-to-IMDS to be blocked")
 	}
 }

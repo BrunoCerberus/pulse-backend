@@ -1,7 +1,7 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import { handler } from "./index.ts";
 
-Deno.test("GET returns 200 with status and timestamp", async () => {
+Deno.test("GET returns 200 with status only (no timestamp fingerprint)", async () => {
   const req = new Request("http://localhost/api-health");
   const res = handler(req);
 
@@ -9,11 +9,7 @@ Deno.test("GET returns 200 with status and timestamp", async () => {
   assertEquals(res.headers.get("Content-Type"), "application/json");
 
   const body = await res.json();
-  assertEquals(body.status, "ok");
-  assertEquals(typeof body.timestamp, "string");
-  // Verify timestamp is valid ISO 8601
-  const parsed = new Date(body.timestamp);
-  assertEquals(isNaN(parsed.getTime()), false);
+  assertEquals(body, { status: "ok" });
 });
 
 Deno.test("GET returns no-store cache header", () => {

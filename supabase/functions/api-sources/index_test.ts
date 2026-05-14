@@ -119,3 +119,66 @@ Deno.test("serves from cache on second request", async () => {
     else Deno.env.delete("SUPABASE_ANON_KEY");
   }
 });
+
+Deno.test("junk query params do not inflate cache (canonical key)", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    let fetchCount = 0;
+    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+      fetchCount++;
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+
+    // Three requests with different junk params — same canonical request.
+    await handler(new Request("http://localhost/api-sources?junk=a"));
+    await handler(new Request("http://localhost/api-sources?junk=b"));
+    await handler(new Request("http://localhost/api-sources?evil=c"));
+    assertEquals(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("client cannot override select via query param", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    const req = new Request("http://localhost/api-sources?select=*");
+    await handler(req);
+    const select = new URL(capturedUrl).searchParams.get("select");
+    assertEquals(
+      select,
+      "id,name,slug,website_url,logo_url,category_id,language,is_active",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("oversized request URI returns 414", async () => {
+  clearCache();
+  const big = "x".repeat(5000);
+  const req = new Request(`http://localhost/api-sources?slug=${big}`);
+  const res = await handler(req);
+  assertEquals(res.status, 414);
+});

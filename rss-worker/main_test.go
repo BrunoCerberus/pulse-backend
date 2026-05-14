@@ -17,6 +17,7 @@ import (
 
 	"github.com/pulsefeed/rss-worker/internal/config"
 	"github.com/pulsefeed/rss-worker/internal/database"
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 	"github.com/pulsefeed/rss-worker/internal/models"
 	"github.com/pulsefeed/rss-worker/internal/parser"
 )
@@ -24,7 +25,13 @@ import (
 // TestMain gives the test binary a "run main() instead of tests" mode, keyed
 // off the RSS_WORKER_TEST_MAIN env var. Subprocess tests re-invoke the test
 // binary with that var set to exercise main() and runCleanup's Fatalf path.
+//
+// SetAllowLoopback(true) is enabled for both the test process and any
+// re-entered subprocess so httptest.Server (127.0.0.1) is reachable. The
+// production binary never executes TestMain, so the default (loopback
+// blocked) holds in production.
 func TestMain(m *testing.M) {
+	httputil.SetAllowLoopback(true)
 	switch os.Getenv("RSS_WORKER_TEST_MAIN") {
 	case "main":
 		// Strip -test.* flags from os.Args so main() only sees its own args.
@@ -43,6 +50,7 @@ func TestMain(m *testing.M) {
 		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, 30)
 		return
 	}
+	defer httputil.SetAllowLoopback(false)
 	os.Exit(m.Run())
 }
 

@@ -10,8 +10,13 @@ package parser
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"html"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +31,10 @@ import (
 // Parser handles RSS/Atom feed parsing and article enrichment.
 // It combines gofeed for parsing with custom extractors for images and content.
 type Parser struct {
-	fp               *gofeed.Parser    // gofeed parser for RSS/Atom
+	// fp is set per ParseFeed call so concurrent goroutines don't share the
+	// gofeed.Parser's lazily-initialized translator fields. The shared HTTP
+	// client is reused via the fpClient field.
+	fpClient         *http.Client
 	ogExtractor      *OGImageExtractor // Extracts og:image from article pages
 	contentExtractor *ContentExtractor // Extracts article text via readability
 }
@@ -36,6 +44,20 @@ type Parser struct {
 const (
 	DefaultHostRPS   = 2.0
 	DefaultHostBurst = 5
+
+	// MaxFeedBodyBytes caps the RSS feed response body to prevent a hostile
+	// publisher from streaming gigabytes of XML and exhausting memory. 50 MB
+	// is generous — real feeds top out below 1 MB.
+	MaxFeedBodyBytes = 50 << 20
+
+	// Per-field length caps (in runes). Anything longer is silently
+	// truncated. Caps the DB-bloat amplification factor a single hostile
+	// item can produce.
+	maxTitleLen   = 500
+	maxSummaryLen = 4096
+	maxContentLen = 200_000
+	maxAuthorLen  = 200
+	maxURLLen     = 2048
 )
 
 // Package-level rate limits used by all parser/extractor HTTP clients built
@@ -58,13 +80,24 @@ func SetHostRateLimit(rps float64, burst int) {
 // New creates a new Parser. Uses the current package rate-limit settings;
 // call SetHostRateLimit first to override defaults.
 func New() *Parser {
-	fp := gofeed.NewParser()
-	fp.Client = httputil.NewRateLimitedClient(30*time.Second, hostRPS, hostBurst, 5)
 	return &Parser{
-		fp:               fp,
+		fpClient:         httputil.NewRateLimitedClient(30*time.Second, hostRPS, hostBurst, 5),
 		ogExtractor:      NewOGImageExtractor(),
 		contentExtractor: NewContentExtractor(),
 	}
+}
+
+// newGofeedParser returns a gofeed.Parser with all translator fields
+// pre-populated to avoid the lazy-init data race when the parser is shared
+// across goroutines. Each ParseFeed call instantiates its own gofeed.Parser
+// since gofeed's internal state is not safe for concurrent use beyond this.
+func newGofeedParser(client *http.Client) *gofeed.Parser {
+	fp := gofeed.NewParser()
+	fp.AtomTranslator = &gofeed.DefaultAtomTranslator{}
+	fp.RSSTranslator = &gofeed.DefaultRSSTranslator{}
+	fp.JSONTranslator = &gofeed.DefaultJSONTranslator{}
+	fp.Client = client
+	return fp
 }
 
 // ParseResult carries the articles extracted from a feed plus the conditional-GET
@@ -86,10 +119,13 @@ type ParseResult struct {
 //   - attach If-None-Match / If-Modified-Since from the source's stored
 //     validators, and
 //   - inspect the status code to short-circuit on 304 Not Modified, returning
-//     NotModified=true without touching the body.
+//     NotModified=true without touching the body, and
+//   - wrap the body in io.LimitReader so a hostile feed can't exhaust memory
+//     by streaming gigabytes of XML inside the request timeout.
 //
-// The shared rate-limited client (p.fp.Client, set in New()) is reused so
-// per-host throttling still applies.
+// The shared rate-limited client (set in New()) is reused so per-host
+// throttling still applies. A fresh gofeed.Parser is allocated per call to
+// avoid the lazy-translator data race.
 func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.FeedURL, nil)
 	if err != nil {
@@ -107,7 +143,7 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 		req.Header.Set("User-Agent", "pulse-rss-worker/1.0 (+gofeed)")
 	}
 
-	resp, err := p.fp.Client.Do(req)
+	resp, err := p.fpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +167,10 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 		return nil, fmt.Errorf("feed fetch failed: %s", resp.Status)
 	}
 
-	feed, err := p.fp.Parse(resp.Body)
+	// Cap body size to defend against memory exhaustion from a hostile feed.
+	body := io.LimitReader(resp.Body, MaxFeedBodyBytes)
+	fp := newGofeedParser(p.fpClient)
+	feed, err := fp.Parse(body)
 	if err != nil {
 		return nil, err
 	}
@@ -304,6 +343,7 @@ func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Art
 	}
 
 	if content != "" {
+		content = sanitizeText(content, maxContentLen)
 		article.Content = &content
 		logger.Debugf("[CONTENT] SUCCESS %s (%d chars)", article.URL, len(content))
 	} else {
@@ -311,19 +351,28 @@ func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Art
 	}
 }
 
-// itemToArticle converts a gofeed.Item to our Article model
+// itemToArticle converts a gofeed.Item to our Article model.
+// Returns nil if the item is missing a required field or has an unsafe URL.
 func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.Article {
-	if item.Link == "" || item.Title == "" {
+	if item.Title == "" {
+		return nil
+	}
+	link := strings.TrimSpace(item.Link)
+	if link == "" || !isSafeArticleURL(link) {
+		return nil
+	}
+	link = canonicalizeURL(link)
+	if len(link) > maxURLLen {
 		return nil
 	}
 
 	article := models.NewArticle(
-		strings.TrimSpace(item.Title),
-		strings.TrimSpace(item.Link),
+		sanitizeText(strings.TrimSpace(item.Title), maxTitleLen),
+		link,
 		source.ID,
 		source.CategoryID,
 		source.Language,
-		parsePublishedDate(item),
+		clampPublishedDate(parsePublishedDate(item)),
 	)
 
 	// Set denormalized source/category fields
@@ -340,12 +389,14 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 	if item.Description != "" {
 		desc := cleanHTML(item.Description)
 		desc = truncateToFirstParagraph(desc)
+		desc = sanitizeText(desc, maxSummaryLen)
 		article.Summary = &desc
 	}
 
 	// Content (if available)
 	if item.Content != "" {
 		content := cleanHTML(item.Content)
+		content = sanitizeText(content, maxContentLen)
 		article.Content = &content
 	}
 
@@ -353,7 +404,7 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 
 	// Image: Use RSS image as thumbnail, og:image will be fetched later for full-size
 	thumbnailURL := extractImageURL(item)
-	if thumbnailURL != "" {
+	if thumbnailURL != "" && isSafeMediaURL(thumbnailURL) {
 		article.ThumbnailURL = &thumbnailURL
 		// Also set ImageURL as fallback in case og:image fetch fails
 		article.ImageURL = &thumbnailURL
@@ -362,6 +413,49 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 	extractMediaInfo(item, article)
 
 	return article
+}
+
+// isSafeArticleURL accepts only http/https URLs with a non-empty host.
+// This is a lexical check; the network-layer SSRF guard runs in
+// httputil.SafeTransport when the URL is actually fetched.
+func isSafeArticleURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	if u.Host == "" {
+		return false
+	}
+	return true
+}
+
+// isSafeMediaURL is the same check applied to thumbnail/media enclosure URLs
+// before they are stored. Stops `javascript:`/`data:` URLs from propagating
+// to iOS clients via the article feed.
+func isSafeMediaURL(raw string) bool {
+	return isSafeArticleURL(raw)
+}
+
+// canonicalizeURL strips the fragment, lowercases scheme/host, and sorts the
+// query so semantically-equivalent URLs hash to the same SHA-256. Returns the
+// input untouched on parse error so dedup never silently widens.
+func canonicalizeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.Fragment = ""
+	u.Scheme = strings.ToLower(u.Scheme)
+	if u.Host != "" {
+		u.Host = strings.ToLower(u.Host)
+	}
+	if u.RawQuery != "" {
+		u.RawQuery = u.Query().Encode() // Encode() sorts keys
+	}
+	return u.String()
 }
 
 // parsePublishedDate extracts the publication date from a feed item,
@@ -376,15 +470,37 @@ func parsePublishedDate(item *gofeed.Item) time.Time {
 	return time.Now()
 }
 
+// clampPublishedDate bounds the published_at to [10y ago, now+1h]. A
+// far-future timestamp from a malicious feed would otherwise pin the article
+// at the top of the feed forever; a far-past timestamp would skip cleanup.
+func clampPublishedDate(t time.Time) time.Time {
+	now := time.Now()
+	earliest := now.AddDate(-10, 0, 0)
+	latest := now.Add(1 * time.Hour)
+	if t.Before(earliest) {
+		return earliest
+	}
+	if t.After(latest) {
+		return latest
+	}
+	return t
+}
+
 // extractAuthor returns the author name from a feed item, or nil if unavailable.
 func extractAuthor(item *gofeed.Item) *string {
+	var name string
 	if item.Author != nil && item.Author.Name != "" {
-		return &item.Author.Name
+		name = item.Author.Name
+	} else if len(item.Authors) > 0 && item.Authors[0].Name != "" {
+		name = item.Authors[0].Name
+	} else {
+		return nil
 	}
-	if len(item.Authors) > 0 && item.Authors[0].Name != "" {
-		return &item.Authors[0].Name
+	sanitized := sanitizeText(name, maxAuthorLen)
+	if sanitized == "" {
+		return nil
 	}
-	return nil
+	return &sanitized
 }
 
 // extractMediaInfo populates the article's media fields from RSS enclosures.
@@ -393,13 +509,35 @@ func extractMediaInfo(item *gofeed.Item, article *models.Article) {
 	if media == nil {
 		return
 	}
-	mediaType := determineMediaType(media.MIMEType)
+	if !isSafeMediaURL(media.URL) {
+		return
+	}
+	mimeType := sanitizeMIMEType(media.MIMEType)
+	if mimeType == "" {
+		return
+	}
+	// extractMediaEnclosure already filtered to audio/* or video/* prefixes,
+	// so determineMediaType can't return "" here.
+	mediaType := determineMediaType(mimeType)
 	article.MediaType = &mediaType
 	article.MediaURL = &media.URL
-	article.MediaMIMEType = &media.MIMEType
+	article.MediaMIMEType = &mimeType
 	if media.Duration > 0 {
 		article.MediaDuration = &media.Duration
 	}
+}
+
+// sanitizeMIMEType returns the MIME type if it matches a tight, header-safe
+// pattern; otherwise returns the empty string. Stops CRLF / extra-header
+// injection from a feed-supplied enclosure type.
+var mimeTypePattern = regexp.MustCompile(`^[a-zA-Z0-9!#$&^_-]+/[a-zA-Z0-9.+!#$&^_-]+$`)
+
+func sanitizeMIMEType(s string) string {
+	s = strings.TrimSpace(s)
+	if !mimeTypePattern.MatchString(s) {
+		return ""
+	}
+	return s
 }
 
 // extractImageURL tries to find an image URL from the feed item
@@ -433,21 +571,26 @@ func extractImageURL(item *gofeed.Item) string {
 	return ""
 }
 
-// htmlReplacer is a package-level Replacer for HTML entity/tag substitution.
-// It is safe for concurrent use and avoids rebuilding the lookup table on every call.
-var htmlReplacer = strings.NewReplacer(
+// brToNewline converts block-level HTML tags to newlines BEFORE the entity
+// decoder runs (so that `&lt;br&gt;` doesn't accidentally become a newline).
+// Also converts `&nbsp;` to a regular space — html.UnescapeString would
+// otherwise produce U+00A0 (non-breaking space) which renders inconsistently.
+var brToNewline = strings.NewReplacer(
 	"<br>", "\n",
 	"<br/>", "\n",
 	"<br />", "\n",
 	"<p>", "\n",
 	"</p>", "\n",
+	"<BR>", "\n",
+	"<BR/>", "\n",
+	"<BR />", "\n",
 	"&nbsp;", " ",
-	"&amp;", "&",
-	"&lt;", "<",
-	"&gt;", ">",
-	"&quot;", "\"",
-	"&#39;", "'",
+	"&NBSP;", " ",
 )
+
+// multiNewline collapses 3+ consecutive newlines down to 2 in a single
+// regex pass — replaces the previous O(n²) loop.
+var multiNewline = regexp.MustCompile(`\n{3,}`)
 
 // removeTagWithContent strips a given HTML tag and its contents (case-insensitive).
 // For example, removeTagWithContent(s, "script") removes <script>...</script> blocks.
@@ -469,7 +612,7 @@ func removeTagWithContent(s, tagName string) string {
 		}
 		// Check that the open tag is followed by '>' or whitespace (not a partial match)
 		afterTag := i + idx + len(openTag)
-		if afterTag < len(s) && s[afterTag] != '>' && s[afterTag] != ' ' && s[afterTag] != '\t' && s[afterTag] != '\n' {
+		if afterTag < len(s) && s[afterTag] != '>' && s[afterTag] != ' ' && s[afterTag] != '\t' && s[afterTag] != '\n' && s[afterTag] != '/' {
 			result.WriteString(s[i : i+idx+len(openTag)])
 			i = afterTag
 			continue
@@ -486,19 +629,35 @@ func removeTagWithContent(s, tagName string) string {
 	return result.String()
 }
 
-// cleanHTML removes HTML tags and cleans up text
+// cleanHTML removes HTML tags, decodes entities, and normalizes whitespace.
+//
+// Pipeline:
+//  1. Drop <script>/<style> blocks with contents.
+//  2. Convert <br>/<p> tags to newlines (before entity decode so encoded
+//     `&lt;br&gt;` doesn't become a newline).
+//  3. Decode entities (named, numeric, hex). Uses html.UnescapeString which
+//     catches `&#x3c;`/`&#60;` that the previous Replacer missed.
+//  4. Strip remaining tags via a simple state machine.
+//  5. Collapse runs of newlines via a single regex pass.
 func cleanHTML(s string) string {
-	// Strip script and style tags with their contents before tag removal
 	s = removeTagWithContent(s, "script")
 	s = removeTagWithContent(s, "style")
+	s = brToNewline.Replace(s)
+	s = html.UnescapeString(s)
+	s = stripTags(s)
+	s = multiNewline.ReplaceAllString(strings.TrimSpace(s), "\n\n")
+	return s
+}
 
-	result := htmlReplacer.Replace(s)
-
-	// Remove remaining HTML tags (simple regex-like removal)
-	var cleaned strings.Builder
-	cleaned.Grow(len(result))
+// stripTags removes any remaining HTML angle-bracket spans. Not a real HTML
+// parser — entity decoding has already happened so `<` only appears as a tag
+// start. Quoted attribute values containing `>` are still mishandled, but
+// they only affect content layout, not security (entities are gone).
+func stripTags(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
 	inTag := false
-	for _, r := range result {
+	for _, r := range s {
 		if r == '<' {
 			inTag = true
 			continue
@@ -508,19 +667,59 @@ func cleanHTML(s string) string {
 			continue
 		}
 		if !inTag {
-			cleaned.WriteRune(r)
+			b.WriteRune(r)
 		}
 	}
+	return b.String()
+}
 
-	// Clean up whitespace
-	result = strings.TrimSpace(cleaned.String())
-
-	// Collapse multiple newlines
-	for strings.Contains(result, "\n\n\n") {
-		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
+// sanitizeText strips control characters + bidi-override codepoints (which
+// can be used for visual spoofing in iOS feed views), then truncates to max
+// runes. Pass max=0 to skip truncation.
+func sanitizeText(s string, max int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if isControlOrBidi(r) {
+			continue
+		}
+		b.WriteRune(r)
 	}
+	out := b.String()
+	if max > 0 {
+		out = truncRunes(out, max)
+	}
+	return out
+}
 
-	return result
+// isControlOrBidi reports whether r is a C0/C1 control char (except tab and
+// newline, which are kept) or one of Unicode's bidirectional overrides
+// (which can flip rendering order to spoof URLs in iOS rendering).
+func isControlOrBidi(r rune) bool {
+	switch r {
+	case '\t', '\n':
+		return false
+	case 0x200E, 0x200F, // LRM, RLM
+		0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // bidi embedding/override
+		0x2066, 0x2067, 0x2068, 0x2069: // bidi isolate
+		return true
+	}
+	if r < 0x20 || r == 0x7f {
+		return true
+	}
+	if r >= 0x80 && r <= 0x9f {
+		return true
+	}
+	return false
+}
+
+// truncRunes returns the first max runes of s.
+func truncRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 // truncateToFirstParagraph limits text to the first paragraph ending with a period.
@@ -585,47 +784,64 @@ func extractDuration(item *gofeed.Item) int {
 	return 0
 }
 
-// parseDuration converts iTunes duration string to seconds
-// Accepts: "3600" (seconds), "60:00" (MM:SS), "1:00:00" (HH:MM:SS)
+// parseDuration converts iTunes duration string to seconds. Accepts:
+//   - "3600" (plain seconds)
+//   - "60:00" (MM:SS)
+//   - "1:00:00" (HH:MM:SS)
+//
+// Returns 0 on parse failure. Caps the result at maxMediaDurationSeconds to
+// prevent overflow when a hostile feed claims a gigayear-long podcast.
 func parseDuration(s string) int {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0
 	}
-
 	parts := strings.Split(s, ":")
+	var total int64
 	switch len(parts) {
 	case 1:
-		// Plain seconds
-		var seconds int
-		for _, c := range parts[0] {
-			if c >= '0' && c <= '9' {
-				seconds = seconds*10 + int(c-'0')
-			}
-		}
-		return seconds
+		total = parseSafeInt(parts[0])
 	case 2:
-		// MM:SS
-		minutes := parseIntFromString(parts[0])
-		seconds := parseIntFromString(parts[1])
-		return minutes*60 + seconds
+		minutes := parseSafeInt(parts[0])
+		seconds := parseSafeInt(parts[1])
+		total = minutes*60 + seconds
 	case 3:
-		// HH:MM:SS
-		hours := parseIntFromString(parts[0])
-		minutes := parseIntFromString(parts[1])
-		seconds := parseIntFromString(parts[2])
-		return hours*3600 + minutes*60 + seconds
+		hours := parseSafeInt(parts[0])
+		minutes := parseSafeInt(parts[1])
+		seconds := parseSafeInt(parts[2])
+		total = hours*3600 + minutes*60 + seconds
+	default:
+		return 0
 	}
-	return 0
+	// parseSafeInt returns a non-negative value (0 on overflow), so total is
+	// always ≥ 0 here.
+	if total > maxMediaDurationSeconds {
+		return maxMediaDurationSeconds
+	}
+	return int(total)
 }
 
-// parseIntFromString parses digits from a string, ignoring non-digits
-func parseIntFromString(s string) int {
-	var n int
+// maxMediaDurationSeconds caps duration at 24 hours — anything longer is
+// almost certainly garbage. Bounds the int32 storage in the DB cleanly.
+const maxMediaDurationSeconds = 24 * 3600
+
+// errIntOverflow signals overflow inside parseSafeInt.
+var errIntOverflow = errors.New("int overflow")
+
+// parseSafeInt parses digits from s into int64 with overflow protection.
+// Non-digit runes are ignored (matching the previous behavior). Returns 0 on
+// overflow or empty input.
+func parseSafeInt(s string) int64 {
+	var n int64
 	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
+		if c < '0' || c > '9' {
+			continue
 		}
+		d := int64(c - '0')
+		if n > (1<<62-d)/10 {
+			return 0 // bail on overflow rather than wrapping
+		}
+		n = n*10 + d
 	}
 	return n
 }

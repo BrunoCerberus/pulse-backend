@@ -9,6 +9,42 @@ The integration follows the existing architecture patterns in Pulse:
 - No changes needed to ViewModels, Interactors, or Views
 - Simply swap the service registration in `PulseSceneDelegate`
 
+## Backend security changes (2026-05-14) — what the client should know
+
+Migration `027_security_hardening.sql` and the Edge Function update from
+the same date tighten the public surface. The patterns in this guide
+still work, but a few things changed:
+
+- **`articles_with_source` view returns an explicit, public-safe column
+  set.** The view is no longer `SELECT *` — it omits internal columns
+  (`url_hash`, `image_backfill_attempts`, `content_backfill_*`). The set
+  iOS reads (id, title, summary, content, url, image_url, thumbnail_url,
+  author, published_at, created_at, language, source_id, category_id,
+  source_name, source_slug, category_name, category_slug, media_type,
+  media_url, media_duration, media_mime_type, search_vector) is preserved
+  in full. If your `SupabaseArticle` decoder targets any column outside
+  that set, it'll silently decode as nil (Optional fields) or throw
+  (non-Optional). Grep your codebase for `url_hash`, `image_backfill_*`,
+  `content_backfill_*` — they shouldn't appear on the client.
+- **`.textSearch("search_vector", ...)` keeps working.** The view still
+  exposes `search_vector` for this purpose. No code change.
+- **`articles` is now column-level granted to anon.** Direct
+  `client.from("articles").select(...)` works only for the safe columns
+  above. Prefer `articles_with_source` (the documented entry point) so
+  future column changes don't break you.
+- **No iOS endpoint changes are required for this release.** If you do
+  anything custom against `api-articles` Edge Function, note the new
+  request guards in [api-reference.md](./api-reference.md): the server
+  always projects the documented column set (no `?select=*` override),
+  `limit` is clamped to 100, and `q` on `api-search` is capped at 200
+  chars. Pagination via `range(from:to:)` or `limit/offset` continues to
+  work normally.
+
+The anon key is, by design, public (it ships inside the iOS bundle). All
+the protections that matter come from the DB-layer grants + RLS, which
+this section covers via the view above. Treat any operational column not
+in the safe set as "service-role only" and don't try to read it from iOS.
+
 ## Step 1: Add Supabase Swift SDK
 
 Add to your `Package.swift` or via Xcode:

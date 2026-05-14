@@ -31,7 +31,7 @@ jobs:
       - name: Build worker
         working-directory: rss-worker
         run: |
-          go mod tidy
+          # go.sum is the source of truth — no `go mod tidy` in cron jobs.
           go build -o rss-worker .
 
       - name: Run Cleanup
