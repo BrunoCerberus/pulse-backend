@@ -5,7 +5,7 @@
  * which joins articles with their source and category information.
  *
  * ## Query Parameters
- * - `limit` - Number of articles to return (default: all)
+ * - `limit` - Number of articles to return (default: 100)
  * - `offset` - Pagination offset
  * - `source_slug` - Filter by source (e.g., `source_slug=eq.bbc-news`)
  * - `category_slug` - Filter by category (e.g., `category_slug=eq.technology`)
@@ -44,6 +44,7 @@ const config: ProxyConfig = {
   ],
   defaultSelect:
     "id,title,summary,url,image_url,published_at,language,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
+  defaultLimit: 100,
 };
 
 export async function handler(req: Request): Promise<Response> {

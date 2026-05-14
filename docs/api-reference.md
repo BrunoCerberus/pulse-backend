@@ -20,14 +20,14 @@ All endpoints are public and require no authentication. The Edge Functions use t
 
 Returns a paginated list of articles with source and category information.
 
-**Cache:** 5 minutes (with stale-while-revalidate for 15 minutes)
+**Cache:** 15 minutes (with stale-while-revalidate for 30 minutes)
 **ETag:** Supported (send `If-None-Match` header for 304 responses)
 
 #### Query Parameters
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `limit` | integer | Number of articles to return | `limit=20` |
+| `limit` | integer | Number of articles to return (default: 100) | `limit=20` |
 | `offset` | integer | Pagination offset | `offset=40` |
 | `source_slug` | string | Filter by source slug (PostgREST syntax) | `source_slug=eq.bbc-tech` |
 | `category_slug` | string | Filter by category slug | `category_slug=eq.technology` |
@@ -61,7 +61,7 @@ Returns a paginated list of articles with source and category information.
 |--------|-------------|
 | `ETag` | Hash of response data for conditional requests |
 | `Content-Range` | Pagination info (e.g., `0-19/1234`) |
-| `Cache-Control` | `public, max-age=300, stale-while-revalidate=900` |
+| `Cache-Control` | `public, max-age=900, stale-while-revalidate=1800` |
 
 #### Example
 

@@ -118,6 +118,61 @@ Deno.test("buildProxyUrl uses explicit select over defaultSelect", () => {
   }
 });
 
+Deno.test("buildProxyUrl applies defaultLimit when limit not provided", () => {
+  const original = Deno.env.get("SUPABASE_URL");
+  try {
+    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+    const req = new Request("http://localhost/test");
+    const config = {
+      table: "articles",
+      allowedParams: ["limit"],
+      defaultLimit: 100,
+    };
+
+    const url = buildProxyUrl(req, config);
+    assertStringIncludes(url, "limit=100");
+  } finally {
+    if (original) Deno.env.set("SUPABASE_URL", original);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
+Deno.test("buildProxyUrl uses explicit limit over defaultLimit", () => {
+  const original = Deno.env.get("SUPABASE_URL");
+  try {
+    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+    const req = new Request("http://localhost/test?limit=5");
+    const config = {
+      table: "articles",
+      allowedParams: ["limit"],
+      defaultLimit: 100,
+    };
+
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("limit"), "5");
+  } finally {
+    if (original) Deno.env.set("SUPABASE_URL", original);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
+Deno.test("buildProxyUrl omits limit when defaultLimit not set", () => {
+  const original = Deno.env.get("SUPABASE_URL");
+  try {
+    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+    const req = new Request("http://localhost/test");
+    const config = { table: "articles", allowedParams: ["limit"] };
+
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.has("limit"), false);
+  } finally {
+    if (original) Deno.env.set("SUPABASE_URL", original);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
 Deno.test("buildProxyUrl handles request with no query params", () => {
   const original = Deno.env.get("SUPABASE_URL");
   try {

@@ -56,29 +56,33 @@ func newTestDBClient(server *httptest.Server) *database.Client {
 
 // --- processOGImageBackfill tests ---
 
+// captureQueue returns a queue closure that appends to a shared slice the
+// caller can inspect after the run.
+func captureQueue() (func(database.ImageUpdate), *[]database.ImageUpdate) {
+	var queued []database.ImageUpdate
+	return func(u database.ImageUpdate) { queued = append(queued, u) }, &queued
+}
+
 func TestProcessOGImageBackfill_Success(t *testing.T) {
 	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/new-og.jpg"></head></html>`))
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	ogExtractor := parser.NewOGImageExtractor()
 	article := database.ArticleForBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureQueue()
 
-	ctx := context.Background()
-	result := processOGImageBackfill(ctx, db, ogExtractor, article)
+	result := processOGImageBackfill(context.Background(), ogExtractor, article, queue)
 
 	if !result {
-		t.Error("expected true (updated), got false")
+		t.Error("expected true (queued), got false")
+	}
+	if len(*queued) != 1 || (*queued)[0].URLHash != "hash-1" || (*queued)[0].ImageURL != "https://example.com/new-og.jpg" {
+		t.Errorf("expected one ImageUpdate for hash-1, got %+v", *queued)
 	}
 }
 
@@ -88,24 +92,20 @@ func TestProcessOGImageBackfill_NoOGImage(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called when no og:image found")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	ogExtractor := parser.NewOGImageExtractor()
 	article := database.ArticleForBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureQueue()
 
-	ctx := context.Background()
-	result := processOGImageBackfill(ctx, db, ogExtractor, article)
+	result := processOGImageBackfill(context.Background(), ogExtractor, article, queue)
 
 	if result {
 		t.Error("expected false (no og:image), got true")
+	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued, got %+v", *queued)
 	}
 }
 
@@ -115,13 +115,6 @@ func TestProcessOGImageBackfill_SameImage(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called when og:image matches current image")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	ogExtractor := parser.NewOGImageExtractor()
 	existingImage := "https://example.com/same.jpg"
 	article := database.ArticleForBackfill{
@@ -129,12 +122,15 @@ func TestProcessOGImageBackfill_SameImage(t *testing.T) {
 		URL:      webServer.URL,
 		ImageURL: &existingImage,
 	}
+	queue, queued := captureQueue()
 
-	ctx := context.Background()
-	result := processOGImageBackfill(ctx, db, ogExtractor, article)
+	result := processOGImageBackfill(context.Background(), ogExtractor, article, queue)
 
 	if result {
 		t.Error("expected false (same image), got true")
+	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued, got %+v", *queued)
 	}
 }
 
@@ -144,51 +140,56 @@ func TestProcessOGImageBackfill_ExtractError(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called on extract error")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	ogExtractor := parser.NewOGImageExtractor()
 	article := database.ArticleForBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureQueue()
 
-	ctx := context.Background()
-	result := processOGImageBackfill(ctx, db, ogExtractor, article)
+	result := processOGImageBackfill(context.Background(), ogExtractor, article, queue)
 
 	if result {
 		t.Error("expected false (extract error), got true")
 	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued, got %+v", *queued)
+	}
 }
 
-func TestProcessOGImageBackfill_DBUpdateError(t *testing.T) {
-	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/new-og.jpg"></head></html>`))
-	}))
-	defer webServer.Close()
+// --- flushImageUpdates tests ---
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "db error"}`))
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
-	ogExtractor := parser.NewOGImageExtractor()
-	article := database.ArticleForBackfill{
-		URLHash: "hash-1",
-		URL:     webServer.URL,
+func TestFlushImageUpdates_BatchesAndCallsRPC(t *testing.T) {
+	db := &mockStore{}
+	// 120 updates → expect 3 batches: 50, 50, 20.
+	updates := make([]database.ImageUpdate, 120)
+	for i := range updates {
+		updates[i] = database.ImageUpdate{URLHash: fmt.Sprintf("h-%d", i), ImageURL: "u"}
 	}
 
-	ctx := context.Background()
-	result := processOGImageBackfill(ctx, db, ogExtractor, article)
+	if err := flushImageUpdates(db, updates); err != nil {
+		t.Fatalf("flushImageUpdates error: %v", err)
+	}
+	if got := len(db.batchedImages); got != 120 {
+		t.Errorf("batched count = %d, want 120", got)
+	}
+}
 
-	if result {
-		t.Error("expected false (DB update error), got true")
+func TestFlushImageUpdates_EmptyIsNoop(t *testing.T) {
+	db := &mockStore{batchImagesErr: errors.New("should not be called")}
+	if err := flushImageUpdates(db, nil); err != nil {
+		t.Errorf("flushImageUpdates(nil) error: %v", err)
+	}
+	if len(db.batchedImages) != 0 {
+		t.Errorf("expected no RPC call on empty input, got %+v", db.batchedImages)
+	}
+}
+
+func TestFlushImageUpdates_PropagatesBatchError(t *testing.T) {
+	db := &mockStore{batchImagesErr: errors.New("boom")}
+	err := flushImageUpdates(db, []database.ImageUpdate{{URLHash: "h-1", ImageURL: "u"}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
@@ -489,7 +490,7 @@ type mockStore struct {
 	ogArticlesErr     error
 	contentArticles   []database.ArticleForContentBackfill
 	contentErr        error
-	updateImageErr    error
+	batchImagesErr    error
 	updateContentErr  error
 	bumpErr           error
 
@@ -497,6 +498,11 @@ type mockStore struct {
 	// assert we recorded the attempted url_hashes for failed articles.
 	bumpedImage   []string
 	bumpedContent []string
+
+	// batchedImages captures every ImageUpdate seen by BatchUpdateArticleImages
+	// across all flush batches so tests can verify the backfill writes hit the
+	// batch RPC instead of per-row PATCHes.
+	batchedImages []database.ImageUpdate
 
 	// fetchStateUpdates captures the final BatchUpdateSourceFetchState call
 	// so tests can assert per-source circuit/ETag outcomes.
@@ -539,8 +545,9 @@ func (m *mockStore) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours 
 	return m.ogArticles, m.ogArticlesErr
 }
 
-func (m *mockStore) UpdateArticleImage(urlHash string, imageURL string) error {
-	return m.updateImageErr
+func (m *mockStore) BatchUpdateArticleImages(updates []database.ImageUpdate) error {
+	m.batchedImages = append(m.batchedImages, updates...)
+	return m.batchImagesErr
 }
 
 func (m *mockStore) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error) {
@@ -1228,6 +1235,30 @@ func TestRunOGImageBackfill_ProcessesArticles(t *testing.T) {
 	if err := runOGImageBackfill(context.Background(), db); err != nil {
 		t.Fatalf("runOGImageBackfill returned error: %v", err)
 	}
+	// Successful extraction must flow through the batch RPC, not per-row PATCH.
+	if len(db.batchedImages) != 1 || db.batchedImages[0].URLHash != "hash-1" {
+		t.Errorf("expected one batched update for hash-1, got %+v", db.batchedImages)
+	}
+}
+
+// runOGImageBackfill still returns nil and logs a warning when the batch
+// flush fails — the next run picks up unflushed articles naturally.
+func TestRunOGImageBackfill_FlushErrorLogged(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`<html><head><meta property="og:image" content="https://example.com/og.jpg"></head></html>`))
+	}))
+	defer webServer.Close()
+
+	db := &mockStore{
+		ogArticles: []database.ArticleForBackfill{
+			{URLHash: "hash-1", URL: webServer.URL},
+		},
+		batchImagesErr: errors.New("supabase 5xx"),
+	}
+
+	if err := runOGImageBackfill(context.Background(), db); err != nil {
+		t.Fatalf("runOGImageBackfill should swallow flush errors, got %v", err)
+	}
 }
 
 // --- runFetch NotModified + log branch ---
@@ -1303,17 +1334,15 @@ func TestProcessOGImageBackfill_ExtractTransportError(t *testing.T) {
 	unreachableURL := webServer.URL
 	webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called on extract error")
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	ogExtractor := parser.NewOGImageExtractor()
 	article := database.ArticleForBackfill{URLHash: "hash-1", URL: unreachableURL}
+	queue, queued := captureQueue()
 
-	if result := processOGImageBackfill(context.Background(), db, ogExtractor, article); result {
+	if result := processOGImageBackfill(context.Background(), ogExtractor, article, queue); result {
 		t.Error("expected false (extract error), got true")
+	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued on extract error, got %+v", *queued)
 	}
 }
 

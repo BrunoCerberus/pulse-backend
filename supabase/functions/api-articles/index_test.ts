@@ -31,7 +31,7 @@ Deno.test("GET success returns articles with cache and ETag", async () => {
     assertEquals(res.status, 200);
     assertStringIncludes(
       res.headers.get("Cache-Control") ?? "",
-      "public, max-age=300",
+      "public, max-age=900",
     );
     const etag = res.headers.get("ETag");
     assertEquals(etag !== null && etag !== "", true);
