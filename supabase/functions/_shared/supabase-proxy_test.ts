@@ -1,338 +1,446 @@
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
 } from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { buildProxyUrl, fetchFromSupabase } from "./supabase-proxy.ts";
+import {
+  buildCacheKey,
+  buildProxyUrl,
+  fetchFromSupabase,
+  MAX_QUERY_STRING_LEN,
+  type ProxyConfig,
+  tooLong,
+} from "./supabase-proxy.ts";
 
-// --- buildProxyUrl tests ---
+const baseConfig: ProxyConfig = {
+  table: "articles",
+  allowedParams: [],
+  defaultSelect: "id,title",
+};
 
-Deno.test("buildProxyUrl throws when SUPABASE_URL not set", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.delete("SUPABASE_URL");
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-
+function withEnv(
+  env: Record<string, string | undefined>,
+  fn: () => void | Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    const originals: Record<string, string | undefined> = {};
+    for (const k of Object.keys(env)) {
+      originals[k] = Deno.env.get(k);
+    }
     try {
-      buildProxyUrl(req, config);
+      for (const [k, v] of Object.entries(env)) {
+        if (v === undefined) Deno.env.delete(k);
+        else Deno.env.set(k, v);
+      }
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(originals)) {
+        if (v === undefined) Deno.env.delete(k);
+        else Deno.env.set(k, v);
+      }
+    }
+  };
+}
+
+// --- buildProxyUrl ---
+
+Deno.test(
+  "buildProxyUrl throws when SUPABASE_URL not set",
+  withEnv({ SUPABASE_URL: undefined }, () => {
+    const req = new Request("http://localhost/test");
+    try {
+      buildProxyUrl(req, baseConfig);
       throw new Error("should have thrown");
     } catch (e) {
       assertStringIncludes((e as Error).message, "SUPABASE_URL");
     }
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-  }
-});
+  }),
+);
 
-Deno.test("buildProxyUrl builds correct base URL", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+Deno.test(
+  "buildProxyUrl builds the upstream URL with defaultSelect always applied",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
     const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-
-    const url = buildProxyUrl(req, config);
+    const url = buildProxyUrl(req, baseConfig);
     assertStringIncludes(url, "https://test.supabase.co/rest/v1/articles");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("select"), "id,title");
+  }),
+);
 
-Deno.test("buildProxyUrl whitelists allowed params", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+Deno.test(
+  "buildProxyUrl ignores client select to prevent column-leak",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?select=*");
+    const url = buildProxyUrl(req, baseConfig);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("select"), "id,title");
+  }),
+);
+
+Deno.test(
+  "buildProxyUrl forwards allow-listed params",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
     const req = new Request("http://localhost/test?limit=10&offset=5");
-    const config = {
-      table: "articles",
+    const config: ProxyConfig = {
+      ...baseConfig,
       allowedParams: ["limit", "offset"],
     };
-
     const url = buildProxyUrl(req, config);
-    assertStringIncludes(url, "limit=10");
-    assertStringIncludes(url, "offset=5");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("limit"), "10");
+    assertEquals(parsed.searchParams.get("offset"), "5");
+  }),
+);
 
-Deno.test("buildProxyUrl drops unknown params", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+Deno.test(
+  "buildProxyUrl drops unknown params",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
     const req = new Request("http://localhost/test?limit=10&evil=drop");
-    const config = {
-      table: "articles",
-      allowedParams: ["limit"],
-    };
-
+    const config: ProxyConfig = { ...baseConfig, allowedParams: ["limit"] };
     const url = buildProxyUrl(req, config);
-    assertStringIncludes(url, "limit=10");
     assertEquals(url.includes("evil"), false);
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+  }),
+);
 
-Deno.test("buildProxyUrl applies defaultSelect when select not provided", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test");
-    const config = {
-      table: "articles",
-      allowedParams: ["select"],
-      defaultSelect: "id,title",
-    };
-
-    const url = buildProxyUrl(req, config);
-    assertStringIncludes(url, "select=id%2Ctitle");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
-
-Deno.test("buildProxyUrl uses explicit select over defaultSelect", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test?select=id");
-    const config = {
-      table: "articles",
-      allowedParams: ["select"],
-      defaultSelect: "id,title,summary",
-    };
-
-    const url = buildProxyUrl(req, config);
-    // Should have the explicit select=id, not the default
-    const parsed = new URL(url);
-    assertEquals(parsed.searchParams.get("select"), "id");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
-
-Deno.test("buildProxyUrl applies defaultLimit when limit not provided", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test");
-    const config = {
-      table: "articles",
-      allowedParams: ["limit"],
+Deno.test(
+  "buildProxyUrl drops empty allow-listed params",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?limit=&category=tech");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["limit", "category"],
       defaultLimit: 100,
     };
-
     const url = buildProxyUrl(req, config);
-    assertStringIncludes(url, "limit=100");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    const parsed = new URL(url);
+    // Empty limit dropped → defaultLimit applied
+    assertEquals(parsed.searchParams.get("limit"), "100");
+    assertEquals(parsed.searchParams.get("category"), "tech");
+  }),
+);
 
-Deno.test("buildProxyUrl uses explicit limit over defaultLimit", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test?limit=5");
-    const config = {
-      table: "articles",
+Deno.test(
+  "buildProxyUrl applies maxLimit clamp",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?limit=999999");
+    const config: ProxyConfig = {
+      ...baseConfig,
       allowedParams: ["limit"],
-      defaultLimit: 100,
+      maxLimit: 100,
     };
-
     const url = buildProxyUrl(req, config);
     const parsed = new URL(url);
-    assertEquals(parsed.searchParams.get("limit"), "5");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    assertEquals(parsed.searchParams.get("limit"), "100");
+  }),
+);
 
-Deno.test("buildProxyUrl omits limit when defaultLimit not set", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: ["limit"] };
-
+Deno.test(
+  "buildProxyUrl drops NaN limit and uses defaultLimit",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?limit=NaN");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["limit"],
+      defaultLimit: 50,
+      maxLimit: 100,
+    };
     const url = buildProxyUrl(req, config);
     const parsed = new URL(url);
-    assertEquals(parsed.searchParams.has("limit"), false);
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    assertEquals(parsed.searchParams.get("limit"), "50");
+  }),
+);
 
-Deno.test("buildProxyUrl handles request with no query params", () => {
-  const original = Deno.env.get("SUPABASE_URL");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    const req = new Request("http://localhost/test");
-    const config = { table: "categories", allowedParams: ["select", "order"] };
-
+Deno.test(
+  "buildProxyUrl drops negative offset",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?offset=-1");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["offset"],
+    };
     const url = buildProxyUrl(req, config);
-    assertStringIncludes(url, "https://test.supabase.co/rest/v1/categories");
-  } finally {
-    if (original) Deno.env.set("SUPABASE_URL", original);
-    else Deno.env.delete("SUPABASE_URL");
-  }
-});
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.has("offset"), false);
+  }),
+);
 
-// --- fetchFromSupabase tests ---
+Deno.test(
+  "buildProxyUrl accepts whitelisted order column",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?order=published_at.desc");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["order"],
+      allowedOrderColumns: ["published_at"],
+    };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("order"), "published_at.desc");
+  }),
+);
 
-Deno.test("fetchFromSupabase throws when SUPABASE_ANON_KEY not set", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.delete("SUPABASE_ANON_KEY");
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
+Deno.test(
+  "buildProxyUrl drops order on non-whitelisted column",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?order=secret_col.desc");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["order"],
+      allowedOrderColumns: ["published_at"],
+    };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.has("order"), false);
+  }),
+);
 
-    await assertRejects(
-      () => fetchFromSupabase(req, config),
-      Error,
-      "SUPABASE_ANON_KEY",
+Deno.test(
+  "buildProxyUrl drops malformed order value",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?order=published_at-desc");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["order"],
+      allowedOrderColumns: ["published_at"],
+    };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.has("order"), false);
+  }),
+);
+
+Deno.test(
+  "buildProxyUrl honors nullsfirst/nullslast suffix",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request(
+      "http://localhost/test?order=published_at.desc.nullslast",
     );
-  } finally {
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-  }
-});
-
-Deno.test("fetchFromSupabase returns data on success", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.set("SUPABASE_ANON_KEY", "test-key");
-
-    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
-      return Promise.resolve(
-        new Response('[{"id":"1"}]', {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["order"],
+      allowedOrderColumns: ["published_at"],
     };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(
+      parsed.searchParams.get("order"),
+      "published_at.desc.nullslast",
+    );
+  }),
+);
 
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-    const result = await fetchFromSupabase(req, config);
-
-    assertEquals(result.status, 200);
-    assertEquals(result.data, '[{"id":"1"}]');
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-    else Deno.env.delete("SUPABASE_ANON_KEY");
-  }
-});
-
-Deno.test("fetchFromSupabase forwards content-range header", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.set("SUPABASE_ANON_KEY", "test-key");
-
-    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
-      return Promise.resolve(
-        new Response("[]", {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Range": "0-9/100",
-          },
-        }),
-      );
+Deno.test(
+  "buildProxyUrl allows any column when allowedOrderColumns is empty/unset",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req = new Request("http://localhost/test?order=anything.asc");
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["order"],
     };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.get("order"), "anything.asc");
+  }),
+);
 
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-    const result = await fetchFromSupabase(req, config);
-
-    assertEquals(result.contentRange, "0-9/100");
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-    else Deno.env.delete("SUPABASE_ANON_KEY");
-  }
-});
-
-Deno.test("fetchFromSupabase proxies non-200 status", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.set("SUPABASE_ANON_KEY", "test-key");
-
-    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
-      return Promise.resolve(
-        new Response('{"error":"bad request"}', { status: 400 }),
-      );
+Deno.test(
+  "buildProxyUrl drops oversized param values",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const huge = "x".repeat(500);
+    const req = new Request(`http://localhost/test?slug=${huge}`);
+    const config: ProxyConfig = {
+      ...baseConfig,
+      allowedParams: ["slug"],
+      maxValueLength: 256,
     };
+    const url = buildProxyUrl(req, config);
+    const parsed = new URL(url);
+    assertEquals(parsed.searchParams.has("slug"), false);
+  }),
+);
 
+Deno.test(
+  "buildProxyUrl produces a canonical (sorted) URL",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const req1 = new Request("http://localhost/test?b=2&a=1");
+    const req2 = new Request("http://localhost/test?a=1&b=2");
+    const config: ProxyConfig = { ...baseConfig, allowedParams: ["a", "b"] };
+    const url1 = buildProxyUrl(req1, config);
+    const url2 = buildProxyUrl(req2, config);
+    assertEquals(url1, url2);
+  }),
+);
+
+// --- buildCacheKey ---
+
+Deno.test(
+  "buildCacheKey is identical for equivalent requests",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
+    const r1 = new Request("http://localhost/test?b=2&a=1&junk=zzz");
+    const r2 = new Request("http://localhost/test?a=1&b=2");
+    const config: ProxyConfig = { ...baseConfig, allowedParams: ["a", "b"] };
+    assertEquals(buildCacheKey("foo", r1, config), buildCacheKey("foo", r2, config));
+  }),
+);
+
+Deno.test(
+  "buildCacheKey carries the prefix",
+  withEnv({ SUPABASE_URL: "https://test.supabase.co" }, () => {
     const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-    const result = await fetchFromSupabase(req, config);
+    const key = buildCacheKey("sources", req, baseConfig);
+    assert(key.startsWith("sources:"));
+  }),
+);
 
-    assertEquals(result.status, 400);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-    else Deno.env.delete("SUPABASE_ANON_KEY");
-  }
+// --- tooLong ---
+
+Deno.test("tooLong returns null for normal requests", () => {
+  const req = new Request("http://localhost/test?a=1");
+  assertEquals(tooLong(req), null);
 });
 
-Deno.test("fetchFromSupabase sends Prefer count=estimated header", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
-  let capturedHeaders: Headers | undefined;
-  try {
-    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.set("SUPABASE_ANON_KEY", "test-key");
+Deno.test("tooLong returns 414 for oversized search string", async () => {
+  const big = "a".repeat(MAX_QUERY_STRING_LEN + 1);
+  const req = new Request(`http://localhost/test?q=${big}`);
+  const resp = tooLong(req, { "X-Foo": "bar" });
+  assert(resp !== null);
+  assertEquals(resp!.status, 414);
+  assertEquals(resp!.headers.get("X-Foo"), "bar");
+  const body = await resp!.json();
+  assertEquals(body.error, "Request URI too long");
+});
 
-    globalThis.fetch = (input: string | URL | Request, init?: RequestInit) => {
-      if (init?.headers) {
-        capturedHeaders = new Headers(init.headers as HeadersInit);
-      } else if (input instanceof Request) {
-        capturedHeaders = input.headers;
+// --- fetchFromSupabase ---
+
+Deno.test(
+  "fetchFromSupabase throws when SUPABASE_ANON_KEY not set",
+  withEnv(
+    { SUPABASE_URL: "https://test.supabase.co", SUPABASE_ANON_KEY: undefined },
+    async () => {
+      const req = new Request("http://localhost/test");
+      await assertRejects(
+        () => fetchFromSupabase(req, baseConfig),
+        Error,
+        "SUPABASE_ANON_KEY",
+      );
+    },
+  ),
+);
+
+Deno.test(
+  "fetchFromSupabase returns data on success",
+  withEnv(
+    {
+      SUPABASE_URL: "https://test.supabase.co",
+      SUPABASE_ANON_KEY: "test-key",
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) =>
+          Promise.resolve(
+            new Response('[{"id":"1"}]', {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        const result = await fetchFromSupabase(
+          new Request("http://localhost/test"),
+          baseConfig,
+        );
+        assertEquals(result.status, 200);
+        assertEquals(result.data, '[{"id":"1"}]');
+      } finally {
+        globalThis.fetch = originalFetch;
       }
-      return Promise.resolve(new Response("[]", { status: 200 }));
-    };
+    },
+  ),
+);
 
-    const req = new Request("http://localhost/test");
-    const config = { table: "articles", allowedParams: [] };
-    await fetchFromSupabase(req, config);
+Deno.test(
+  "fetchFromSupabase forwards content-range header",
+  withEnv(
+    {
+      SUPABASE_URL: "https://test.supabase.co",
+      SUPABASE_ANON_KEY: "test-key",
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) =>
+          Promise.resolve(
+            new Response("[]", {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "Content-Range": "0-9/100",
+              },
+            }),
+          );
+        const result = await fetchFromSupabase(
+          new Request("http://localhost/test"),
+          baseConfig,
+        );
+        assertEquals(result.contentRange, "0-9/100");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  ),
+);
 
-    assertEquals(capturedHeaders?.get("Prefer"), "count=estimated");
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
-    else Deno.env.delete("SUPABASE_URL");
-    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-    else Deno.env.delete("SUPABASE_ANON_KEY");
-  }
-});
+Deno.test(
+  "fetchFromSupabase proxies non-200 status",
+  withEnv(
+    {
+      SUPABASE_URL: "https://test.supabase.co",
+      SUPABASE_ANON_KEY: "test-key",
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) =>
+          Promise.resolve(
+            new Response('{"error":"bad request"}', { status: 400 }),
+          );
+        const result = await fetchFromSupabase(
+          new Request("http://localhost/test"),
+          baseConfig,
+        );
+        assertEquals(result.status, 400);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  ),
+);
+
+Deno.test(
+  "fetchFromSupabase sends Prefer count=estimated header",
+  withEnv(
+    {
+      SUPABASE_URL: "https://test.supabase.co",
+      SUPABASE_ANON_KEY: "test-key",
+    },
+    async () => {
+      const originalFetch = globalThis.fetch;
+      let captured: Headers | undefined;
+      try {
+        globalThis.fetch = (input: string | URL | Request, init?: RequestInit) => {
+          if (init?.headers) captured = new Headers(init.headers as HeadersInit);
+          else if (input instanceof Request) captured = input.headers;
+          return Promise.resolve(new Response("[]", { status: 200 }));
+        };
+        await fetchFromSupabase(
+          new Request("http://localhost/test"),
+          baseConfig,
+        );
+        assertEquals(captured?.get("Prefer"), "count=estimated");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  ),
+);

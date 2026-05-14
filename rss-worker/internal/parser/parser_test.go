@@ -11,6 +11,7 @@ import (
 
 	"github.com/mmcdole/gofeed"
 	ext "github.com/mmcdole/gofeed/extensions"
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 	"github.com/pulsefeed/rss-worker/internal/models"
 )
 
@@ -569,8 +570,8 @@ func TestNew(t *testing.T) {
 	if p == nil {
 		t.Fatal("New() returned nil")
 	}
-	if p.fp == nil {
-		t.Error("fp (gofeed.Parser) is nil")
+	if p.fpClient == nil {
+		t.Error("fpClient (shared HTTP client) is nil")
 	}
 	if p.ogExtractor == nil {
 		t.Error("ogExtractor is nil")
@@ -1503,4 +1504,350 @@ func TestEnrichWithContent_FeedLoopCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	p.enrichWithContent(ctx, articles)
+}
+
+// --- Security hardening tests ---
+
+func TestIsSafeArticleURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"https://example.com/a", true},
+		{"http://example.com", true},
+		{"javascript:alert(1)", false},
+		{"data:text/html,x", false},
+		{"file:///etc/passwd", false},
+		{"https://", false},
+		{"://nohost", false},
+		{"", false},
+		{"   ", false},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			if got := isSafeArticleURL(c.raw); got != c.want {
+				t.Errorf("isSafeArticleURL(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeURL(t *testing.T) {
+	// Fragment dropped + scheme/host lowercased + query keys sorted
+	got := canonicalizeURL("HTTPS://Example.com/path?b=2&a=1#frag")
+	want := "https://example.com/path?a=1&b=2"
+	if got != want {
+		t.Errorf("canonicalizeURL = %q, want %q", got, want)
+	}
+	// Parse error returns input unchanged
+	bad := "ht\x7ftp://broken"
+	if canonicalizeURL(bad) != bad {
+		t.Errorf("canonicalizeURL should pass through on parse error")
+	}
+}
+
+func TestClampPublishedDate(t *testing.T) {
+	now := time.Now()
+	// Past — clamped to 10y ago
+	got := clampPublishedDate(now.AddDate(-50, 0, 0))
+	if got.Before(now.AddDate(-10, 0, -1)) {
+		t.Errorf("past clamp did not apply: got %v", got)
+	}
+	// Future — clamped to now+1h
+	got = clampPublishedDate(now.AddDate(100, 0, 0))
+	if got.After(now.Add(2 * time.Hour)) {
+		t.Errorf("future clamp did not apply: got %v", got)
+	}
+	// In range — unchanged
+	target := now.AddDate(0, -1, 0)
+	got = clampPublishedDate(target)
+	if !got.Equal(target) {
+		t.Errorf("in-range value modified: got %v want %v", got, target)
+	}
+}
+
+func TestExtractAuthor_EmptyAfterSanitize(t *testing.T) {
+	// Author name made entirely of the RLO bidi override → empty after sanitize.
+	// Escape sequence used (not the literal char) so staticcheck doesn't flag.
+	item := &gofeed.Item{Author: &gofeed.Person{Name: "\u202e"}}
+	got := extractAuthor(item)
+	if got != nil {
+		t.Errorf("expected nil author when name is bidi-only, got %v", *got)
+	}
+}
+
+func TestExtractAuthor_FromAuthorsArray(t *testing.T) {
+	item := &gofeed.Item{Authors: []*gofeed.Person{{Name: "Jane Doe"}}}
+	got := extractAuthor(item)
+	if got == nil || *got != "Jane Doe" {
+		t.Errorf("expected Jane Doe, got %v", got)
+	}
+}
+
+func TestExtractAuthor_None(t *testing.T) {
+	if extractAuthor(&gofeed.Item{}) != nil {
+		t.Error("expected nil author when no fields set")
+	}
+}
+
+func TestSanitizeMIMEType(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"audio/mpeg", "audio/mpeg"},
+		{"video/mp4", "video/mp4"},
+		{"audio/x-m4a", "audio/x-m4a"},
+		{"audio/mpeg; charset=utf-8\r\nX-Inject: evil", ""},
+		{"", ""},
+		{"  audio/mpeg  ", "audio/mpeg"},
+		{"audio/", ""},
+		{"/mpeg", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := sanitizeMIMEType(c.in); got != c.want {
+				t.Errorf("sanitizeMIMEType(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractMediaInfo_RejectsUnsafeURL(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{{
+			URL:  "javascript:alert(1)",
+			Type: "audio/mpeg",
+		}},
+	}
+	article := &models.Article{}
+	extractMediaInfo(item, article)
+	if article.MediaURL != nil {
+		t.Errorf("expected MediaURL nil for javascript URL, got %v", *article.MediaURL)
+	}
+}
+
+func TestExtractMediaInfo_RejectsBadMIME(t *testing.T) {
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{{
+			URL:  "https://example.com/a.mp3",
+			Type: "audio/mpeg\r\nX-Inject: evil",
+		}},
+	}
+	article := &models.Article{}
+	extractMediaInfo(item, article)
+	if article.MediaMIMEType != nil {
+		t.Error("expected MediaMIMEType nil when MIME has injection")
+	}
+}
+
+func TestSanitizeText_StripsControlAndBidi(t *testing.T) {
+	// Escape sequence used (not literal U+202E) so staticcheck stays happy.
+	in := "Hello\u202eWorld\x01"
+	out := sanitizeText(in, 0)
+	want := "HelloWorld"
+	if out != want {
+		t.Errorf("sanitizeText = %q, want %q", out, want)
+	}
+}
+
+func TestSanitizeText_TruncatesToMaxRunes(t *testing.T) {
+	in := strings.Repeat("a", 50)
+	out := sanitizeText(in, 10)
+	if len([]rune(out)) != 10 {
+		t.Errorf("len = %d, want 10", len([]rune(out)))
+	}
+}
+
+func TestIsControlOrBidi(t *testing.T) {
+	cases := []struct {
+		r    rune
+		want bool
+	}{
+		{'\t', false}, // tab kept
+		{'\n', false}, // newline kept
+		{'a', false},
+		{0x01, true},  // C0
+		{0x7F, true},  // DEL
+		{0x9F, true},  // C1
+		{0x200E, true}, // LRM
+		{0x202E, true}, // RLO
+		{0x2069, true}, // PDI
+	}
+	for _, c := range cases {
+		t.Run(string(c.r), func(t *testing.T) {
+			if got := isControlOrBidi(c.r); got != c.want {
+				t.Errorf("isControlOrBidi(%q) = %v, want %v", c.r, got, c.want)
+			}
+		})
+	}
+}
+
+func TestTruncRunes(t *testing.T) {
+	if truncRunes("hello", 100) != "hello" {
+		t.Error("truncRunes should return input unchanged when shorter")
+	}
+	if truncRunes("hello", 3) != "hel" {
+		t.Error("truncRunes should truncate")
+	}
+	// Multi-byte rune truncation respects rune boundaries.
+	if truncRunes("héllo", 2) != "hé" {
+		t.Errorf("truncRunes broke rune boundary, got %q", truncRunes("héllo", 2))
+	}
+}
+
+func TestParseDuration_Overflow(t *testing.T) {
+	// Long digit sequence → parseSafeInt overflow bails to 0.
+	if parseDuration(strings.Repeat("9", 25)) != 0 {
+		t.Error("expected 0 on overflow")
+	}
+	// Plain seconds capped at 24h.
+	if parseDuration("999999") != 24*3600 {
+		t.Errorf("expected duration capped at 86400, got %d", parseDuration("999999"))
+	}
+	// Too-many-parts → 0.
+	if parseDuration("1:2:3:4") != 0 {
+		t.Error("expected 0 for 4-part duration")
+	}
+}
+
+func TestParseSafeInt(t *testing.T) {
+	if parseSafeInt("") != 0 {
+		t.Error("empty → 0")
+	}
+	if parseSafeInt("abc") != 0 {
+		t.Error("non-digit → 0")
+	}
+	if parseSafeInt("123") != 123 {
+		t.Error("normal parse")
+	}
+	// Many digits → overflow safe-bail to 0.
+	if parseSafeInt(strings.Repeat("9", 25)) != 0 {
+		t.Error("expected overflow bail to 0")
+	}
+}
+
+func TestIsAcceptableOGImage(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"https://cdn.example.com/img.jpg", true},
+		{"http://cdn.example.com/img.jpg", true},
+		{"https://10.0.0.1/img.jpg", false},
+		{"https://127.0.0.1/img.jpg", false},
+		{"https://169.254.169.254/img.jpg", false},
+		{"file:///etc/passwd", false},
+		{"javascript:alert(1)", false},
+		{"https://cdn.example.com/\x00img.jpg", false}, // control char
+		{"https://cdn.example.com/\nimg.jpg", false}, // control char
+		{"https://", false},
+		{"not a url", false},
+	}
+	// Temporarily disable loopback exemption so private/loopback are rejected here.
+	prev := httputil.SetAllowLoopback(false)
+	defer httputil.SetAllowLoopback(prev)
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			if got := isAcceptableOGImage(c.raw); got != c.want {
+				t.Errorf("isAcceptableOGImage(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+func TestItemToArticle_DropsUnsafeURL(t *testing.T) {
+	p := New()
+	source := models.Source{
+		ID:         "src-1",
+		Name:       "Test",
+		CategoryID: strPtr("cat-1"),
+		Language:   "en",
+	}
+	item := &gofeed.Item{Title: "T", Link: "javascript:alert(1)"}
+	if got := p.itemToArticle(item, source); got != nil {
+		t.Error("expected nil for javascript: link")
+	}
+}
+
+func TestItemToArticle_DropsOversizedURL(t *testing.T) {
+	p := New()
+	source := models.Source{ID: "src-1", Name: "Test", CategoryID: strPtr("cat-1"), Language: "en"}
+	huge := "https://example.com/" + strings.Repeat("x", maxURLLen+1)
+	item := &gofeed.Item{Title: "T", Link: huge}
+	if got := p.itemToArticle(item, source); got != nil {
+		t.Error("expected nil for oversized URL")
+	}
+}
+
+func TestItemToArticle_DropsUnsafeThumbnail(t *testing.T) {
+	p := New()
+	source := models.Source{ID: "src-1", Name: "Test", CategoryID: strPtr("cat-1"), Language: "en"}
+	item := &gofeed.Item{
+		Title: "T",
+		Link:  "https://example.com/a",
+		Image: &gofeed.Image{URL: "javascript:alert(1)"},
+	}
+	article := p.itemToArticle(item, source)
+	if article == nil {
+		t.Fatal("article should not be nil")
+	}
+	if article.ThumbnailURL != nil {
+		t.Errorf("expected nil thumbnail for unsafe URL, got %v", *article.ThumbnailURL)
+	}
+}
+
+func TestIsAcceptableOGImage_ParseFailure(t *testing.T) {
+	// A URL that fails url.Parse: control characters inside the scheme part
+	if isAcceptableOGImage("ht\x01tp://x") {
+		t.Error("expected isAcceptableOGImage to reject control chars at parse")
+	}
+}
+
+func TestExtractMediaInfo_NoEnclosure(t *testing.T) {
+	article := &models.Article{}
+	extractMediaInfo(&gofeed.Item{}, article)
+	if article.MediaType != nil {
+		t.Error("expected no media on empty item")
+	}
+}
+
+func TestExtractMediaInfo_UnknownMediaTypePrefix(t *testing.T) {
+	// MIME passes sanitizeMIMEType but determineMediaType doesn't recognize it.
+	item := &gofeed.Item{
+		Enclosures: []*gofeed.Enclosure{{
+			URL:  "https://example.com/a",
+			Type: "application/octet-stream",
+		}},
+	}
+	article := &models.Article{}
+	// Note: extractMediaEnclosure only returns audio/video enclosures, so
+	// application/octet-stream is filtered out before our determineMediaType
+	// check. This is the documented behavior; covers the "no enclosure" path.
+	extractMediaInfo(item, article)
+	if article.MediaType != nil {
+		t.Error("expected no media for non-audio/video MIME")
+	}
+}
+
+func TestParseDuration_HHMMSS(t *testing.T) {
+	if got := parseDuration("1:02:03"); got != 3723 {
+		t.Errorf("parseDuration(1:02:03) = %d, want 3723", got)
+	}
+}
+
+func TestIsAcceptableOGImage_URLParseFailure(t *testing.T) {
+	// Malformed IPv6 brackets fail url.Parse but pass the control-char loop —
+	// covers the parse-error branch.
+	if isAcceptableOGImage("https://[::1") {
+		t.Error("expected isAcceptableOGImage to reject malformed IPv6 bracket")
+	}
+}
+
+func TestParseSafeInt_OverflowGuard(t *testing.T) {
+	// 19 nines is within int64 range. 20 digits overflows.
+	in := strings.Repeat("9", 20)
+	if parseSafeInt(in) != 0 {
+		t.Errorf("expected 0 on overflow, got %d", parseSafeInt(in))
+	}
 }

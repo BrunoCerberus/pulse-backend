@@ -12,17 +12,22 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Only run on PRs from trusted authors. Fork PRs from external contributors
+    # carry attacker-controlled diff/title/body that the action ingests as
+    # input; combined with `pull-requests: write` + the OAuth token, this is
+    # an indirect-prompt-injection vector (PR auto-approve via fake comment).
+    if: |
+      github.event.pull_request.author_association == 'OWNER' ||
+      github.event.pull_request.author_association == 'MEMBER' ||
+      github.event.pull_request.author_association == 'COLLABORATOR'
 
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      issues: write
+      # Note: `issues: write` removed — the review action posts PR comments,
+      # not issue comments. Dropping it shrinks the blast radius if the
+      # action is ever coerced via prompt injection.
       id-token: write
 
     steps:

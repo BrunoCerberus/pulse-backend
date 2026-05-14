@@ -86,7 +86,7 @@ pulse-backend/
 │       │   ├── supabase.go            # Supabase REST API client (with retry logic)
 │       │   └── supabase_test.go       # Database client tests
 │       ├── httputil/
-│       │   └── transport.go           # Shared HTTP transport with connection pooling
+│       │   └── transport.go           # SharedTransport (Supabase) + SafeTransport (SSRF-aware DialContext) + RateLimitingTransport (per-host token bucket); IsForbiddenIP/ValidateSSRFTarget guards
 │       └── logger/
 │           ├── logger.go              # Structured logging with level support
 │           └── logger_test.go         # Logger tests
@@ -117,7 +117,8 @@ pulse-backend/
 │   │   ├── 023_inactivate_dead_sources.sql        # Data cleanup: inactivate long-dead/never-produced sources
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector
 │   │   ├── 025_drop_unused_indexes.sql            # Drop indexes with zero usage
-│   │   └── 026_add_batch_content_update_rpc.sql   # Batch content-update RPC
+│   │   ├── 026_add_batch_content_update_rpc.sql   # Batch content-update RPC
+│   │   └── 027_security_hardening.sql             # Audit-driven hardening: explicit search_articles projection, search_path='' on SECURITY DEFINER funcs, column-level GRANT on articles, view re-projection, source_health/get_db_size_bytes revoked from anon
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -158,7 +159,7 @@ pulse-backend/
 | OG Image | `internal/parser/ogimage.go` | Extracts og:image from article HTML (100KB limit) |
 | Content | `internal/parser/content.go` | Extracts article text via go-readability |
 | Database | `internal/database/supabase.go` | Supabase REST API client with batch inserts (50/batch), batch image RPC, retry logic (exponential backoff on 429/5xx). `GetActiveSources()` filters by `fetch_interval_hours` and `circuit_open_until`. `BatchUpdateSourceFetchState()` persists per-source etag/last_modified/consecutive_failures/circuit_open_until via the `batch_update_source_fetch_state` RPC (migration 020). Backfill queries take `(limit, maxAttempts, cooldownHours)`; `BumpBackfillAttempts(urlHashes, kind)` marks failed attempts |
-| HTTP Utils | `internal/httputil/transport.go` | Shared HTTP transport with tuned connection pooling; `NewClient`, `NewClientWithRedirectLimit`, and `NewRateLimitedClient` (wraps `RateLimitingTransport` with per-host token bucket from `golang.org/x/time/rate`) |
+| HTTP Utils | `internal/httputil/transport.go` | Two base transports: `SharedTransport` (Supabase, trusted single host) and `SafeTransport` (user-content, SSRF-aware via `SecureDialContext` + `IsForbiddenIP` — rejects loopback/RFC1918/link-local/multicast/unspecified at the dial layer). Clients: `NewClient`, `NewClientWithRedirectLimit` (both Shared), and `NewRateLimitedClient` (SafeTransport + per-host token bucket + per-redirect SSRF re-validation) |
 | Logger | `internal/logger/logger.go` | slog-backed: LOG_LEVEL gates emission; LOG_FORMAT=text (default, slog.TextHandler) or json (slog.JSONHandler). Printf-style `Debugf/Infof/Warnf/Errorf/Fatalf` plus `With(k, v, ...)` returning a sub-*slog.Logger for structured correlation |
 
 ### Edge Functions (`supabase/functions/`)
@@ -169,7 +170,7 @@ pulse-backend/
 | `/api-sources` | 1h public | RSS source list |
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
-| `/api-health` | no-store | Health check (status + timestamp) |
+| `/api-health` | no-store | Liveness probe — returns `{"status":"ok"}` only (no clock fingerprint) |
 | `/api-source-health` | 60s public | Per-source fetch health + aggregate summary + DB size block (size_bytes/size_pretty/quota_pct via `get_db_size_bytes` RPC; default 500 MB cap via `SUPABASE_DB_QUOTA_BYTES`); watchdog.yml polls this |
 
 ## Testing
@@ -179,9 +180,9 @@ Tests use Go's standard testing package with `httptest` for mocking HTTP calls, 
 | Package | Coverage | Description |
 |---------|----------|-------------|
 | `internal/models` | 100% | HashURL, NewArticle, ShouldFetch, CategoryName |
-| `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*, CIRCUIT_*) |
-| `internal/httputil` | 100% | SharedTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit, nil-base default, zero-maxRedirects path) |
-| `internal/parser` | 100% | HTML cleaning (partial-tag + no-closing-tag edges), image extraction, OG/content fetching (body-read + readability errors), itemToArticle (embedded category), ParseFeed (200/304/non-2xx + conditional-GET, bad-URL + transport errors), parseDuration |
+| `internal/config` | 100% | Env var loading + defaults (HOST_RATE_LIMIT_*, BACKFILL_*, CIRCUIT_*); `https://` validation on `SUPABASE_URL` with loopback http exemption for dev/tests; `isLoopbackHTTP` table-driven |
+| `internal/httputil` | 100% | SharedTransport, SafeTransport, NewClient, NewClientWithRedirectLimit, RateLimitingTransport (per-host serialization, cross-host independence, ctx-cancel short-circuit, nil-base defaults to SafeTransport, zero-maxRedirects path), `IsForbiddenIP` table-driven (loopback toggle, private/RFC1918/link-local/ULA/multicast/unspecified), `ValidateSSRFTarget` (bad scheme, empty host, IP-literal blocked/allowed, DNS error / DNS-resolves-forbidden / DNS-resolves-allowed, parse failure), `SecureDialContext` (bad address, IP-literal forbidden, lookup error, empty IPs, forbidden resolved IP, allowed dial), redirect-time re-validation |
+| `internal/parser` | 100% | HTML cleaning (partial-tag + no-closing-tag + numeric-entity decode edges), image extraction, OG/content fetching (body-read + readability errors), itemToArticle (embedded category, unsafe URL drop, oversized URL drop, unsafe thumbnail drop), ParseFeed (200/304/non-2xx + conditional-GET + bad-URL + transport errors + 50 MB body cap), parseDuration (HH:MM:SS + overflow guard + 24h cap + too-many-parts), `isSafeArticleURL`, `canonicalizeURL` (fragment drop / lowercase / sorted query / parse-error passthrough), `clampPublishedDate` (past / future / in-range), `extractAuthor` (Authors[] fallback, empty-after-sanitize), `sanitizeMIMEType` (CRLF reject), `extractMediaInfo` (unsafe URL / bad MIME), `sanitizeText` (control/bidi strip + truncate), `isControlOrBidi`, `truncRunes` (rune boundary), `parseSafeInt` (overflow), `isAcceptableOGImage` (control chars / scheme / IP literal / parse failure) |
 | `internal/database` | 100% | Batch inserts, batch image RPC, BatchUpdateSourceFetchState, GetActiveSources circuit filter, retry logic, BumpBackfillAttempts, plus bad-URL/transport/marshal/decode error branches across every method |
 | `internal/logger` | 100% | Level filtering, text + JSON output, `With()` field propagation (thread-safe via atomic.Pointer), nil-atomic fallbacks, subprocess-driven Fatalf |
 | `main` | 100% | processSource (+ panic recovery), runFetch, nextCircuitOpenUntil, buildSourceFetchState, runBackfill, newRunID fallback, plus subprocess-driven TestMain covering every command (fetch/cleanup/backfill-images/backfill-content + config-load and runtime-error paths) |
@@ -226,16 +227,23 @@ Tables:
 - `articles` - News articles with full-text search (tsvector), media fields, denormalized source/category columns, and backfill tracking (`image_backfill_attempts`, `image_backfill_last_attempt_at`, `content_backfill_attempts`, `content_backfill_last_attempt_at` — migration 018)
 - `fetch_logs` - Monitoring records
 
-Key functions:
-- `cleanup_old_articles(days_to_keep)` - Remove old articles
-- `search_articles(search_query, result_limit)` - Full-text search
-- `batch_update_article_images(updates)` - Batch image URL updates
-- `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps `last_attempt_at`; `kind` is `"image"` or `"content"` (migration 018)
-- `batch_update_source_fetch_state(updates)` - One round-trip per fetch cycle; JSONB array of per-source state (etag, last_modified, consecutive_failures, circuit_open_until, last_fetched_at) — migration 020
+Key functions (all SECURITY DEFINER use `SET search_path = ''` + qualified refs + in-function `CURRENT_USER` check after migration 027):
+- `cleanup_old_articles(days_to_keep)` - Remove old articles (service_role only)
+- `search_articles(search_query, result_limit)` - Full-text search; explicit TABLE projection (no SETOF articles), 200-char input cap, 3s statement_timeout, SECURITY DEFINER (bypasses anon column grants)
+- `batch_update_article_images(updates)` - Batch image URL updates (service_role only)
+- `batch_update_article_content(updates)` - Batch content updates (migration 026, service_role only)
+- `bump_backfill_attempts(url_hashes, kind)` - Increments attempt counter + stamps `last_attempt_at`; `kind` is `"image"` or `"content"` (migration 018, service_role only, 10K array cap)
+- `batch_update_source_fetch_state(updates)` - One round-trip per fetch cycle; JSONB array of per-source state (etag, last_modified, consecutive_failures, circuit_open_until, last_fetched_at) — migration 020 (service_role only)
+- `get_db_size_bytes()` - Returns `pg_database_size(current_database())`; service_role only after migration 027 (Edge Function calls it with service-role key internally)
 
 Views:
-- `articles_with_source` - Simple SELECT from articles (no JOINs after denormalization)
-- `source_health` - Per-source health snapshot (circuit_open, consecutive_failures, most_recent_article_at, articles_last_24h); `security_invoker=on`. Powers `api-source-health` and the watchdog workflow.
+- `articles_with_source` - Explicit projection of `articles` (migration 027 dropped `url_hash` and backfill state from the view). `security_invoker=on`. Anon reads safe columns; iOS app uses this view.
+- `source_health` - Per-source health snapshot (circuit_open, consecutive_failures, most_recent_article_at, articles_last_24h); `security_invoker=on`. Revoked from anon after migration 027 — `api-source-health` Edge Function authenticates upstream as service_role.
+
+RLS + grants:
+- `articles`: column-level `GRANT SELECT (safe-cols)` to anon/authenticated after migration 027; backfill columns + `url_hash` are service_role only.
+- `fetch_logs`: anon/authenticated have nothing (REVOKE belt-and-suspenders on top of RLS).
+- `categories`, `sources`: unchanged anon SELECT.
 
 ## Code Style Guidelines
 
@@ -257,9 +265,12 @@ Views:
 | `test.yml` | On push/PR | Go tests (race + coverage), **100% coverage gate**, golangci-lint, govulncheck, Deno tests |
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
-| `deploy-functions.yml` | On push to master | Auto-deploy Edge Functions |
+| `deploy-functions.yml` | On push to master under `supabase/functions/**` | Build + deploy Edge Functions. Gated by the `production` Environment (required reviewer + master-only branch rule); pauses for human approval in the Actions UI before shipping |
 | `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) when circuit/stale/high-failure counts or `database.quota_pct` exceed thresholds |
 
 Branch protection on `master` requires all 11 checks across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
 
-Secrets needed: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`
+Secrets — split by scope so deploy credentials sit behind the Environment approval:
+
+- **Repo secrets** (Settings → Secrets and variables → Actions): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — used by `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`. `watchdog.yml` only needs `SUPABASE_URL` (the Edge Function reads service-role from auto-injected project env internally).
+- **`production` Environment secrets** (Settings → Environments → production): `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF` — used by `deploy-functions.yml` only.

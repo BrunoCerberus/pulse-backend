@@ -1,33 +1,39 @@
 /**
  * Articles API Endpoint
  *
- * Returns a paginated list of articles from the articles_with_source view,
- * which joins articles with their source and category information.
+ * Returns a paginated list of articles from the `articles_with_source` view.
  *
  * ## Query Parameters
- * - `limit` - Number of articles to return (default: 100)
- * - `offset` - Pagination offset
- * - `source_slug` - Filter by source (e.g., `source_slug=eq.bbc-news`)
- * - `category_slug` - Filter by category (e.g., `category_slug=eq.technology`)
- * - `order` - Sort order (e.g., `order=published_at.desc`)
- * - `published_at` - Date filter (e.g., `published_at=gte.2024-01-01`)
+ * - `limit` (default 100, max 100)
+ * - `offset` (pagination)
+ * - `source_slug` (e.g., `source_slug=eq.bbc-news`)
+ * - `category_slug` (e.g., `category_slug=eq.technology`)
+ * - `language` (e.g., `language=eq.en`)
+ * - `media_type` (e.g., `media_type=eq.podcast`)
+ * - `published_at` (e.g., `published_at=gte.2024-01-01`)
+ * - `order` (only `published_at.asc|desc[.nullsfirst|.nullslast]`)
+ * - `id` (e.g., `id=eq.<uuid>`)
  *
  * ## Response
  * JSON array of article objects with fields:
- * - `id`, `title`, `summary`, `content`, `url`, `image_url`
- * - `published_at`, `source_name`, `source_slug`, `category_name`, `category_slug`
- * - `media_type`, `media_url`, `media_duration`, `media_mime_type` (for podcasts/videos)
+ * - `id`, `title`, `summary`, `url`, `image_url`
+ * - `published_at`, `language`, `source_name`, `source_slug`, `category_name`, `category_slug`
+ * - `media_type`, `media_url`, `media_duration`, `media_mime_type`
  *
  * ## Caching
- * - Cache-Control: 5 minutes fresh, 15 minutes stale-while-revalidate
- * - ETag support for conditional requests (304 Not Modified)
+ * - Cache-Control: 15 min fresh, 30 min stale-while-revalidate
+ * - ETag/304 supported, but only for 200 OK upstream responses
  *
  * @module api-articles
  */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import { generateETag, checkConditionalRequest } from "../_shared/etag.ts";
-import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.ts";
+import {
+  fetchFromSupabase,
+  tooLong,
+  type ProxyConfig,
+} from "../_shared/supabase-proxy.ts";
 
 const config: ProxyConfig = {
   table: "articles_with_source",
@@ -45,14 +51,14 @@ const config: ProxyConfig = {
   defaultSelect:
     "id,title,summary,url,image_url,published_at,language,source_name,source_slug,category_name,category_slug,media_type,media_url,media_duration,media_mime_type",
   defaultLimit: 100,
+  maxLimit: 100,
+  allowedOrderColumns: ["published_at"],
 };
 
 export async function handler(req: Request): Promise<Response> {
-  // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
 
-  // Only allow GET
   if (req.method !== "GET") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
@@ -60,15 +66,24 @@ export async function handler(req: Request): Promise<Response> {
     });
   }
 
+  const oversized = tooLong(req, corsHeaders);
+  if (oversized) return oversized;
+
   try {
     const result = await fetchFromSupabase(req, config);
 
-    // Generate ETag from response data
-    const etag = await generateETag(result.data);
+    // ETag/304 only on success — never cache error bodies (which would
+    // pin clients to a stale error state on `If-None-Match` replay).
+    if (result.status !== 200) {
+      return new Response(result.data, {
+        status: result.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
-    // Check for conditional request (304 Not Modified)
-    const conditionalResponse = checkConditionalRequest(req, etag);
-    if (conditionalResponse) {
+    const etag = await generateETag(result.data);
+    const conditional = checkConditionalRequest(req, etag);
+    if (conditional) {
       return new Response(null, {
         status: 304,
         headers: {
@@ -85,8 +100,6 @@ export async function handler(req: Request): Promise<Response> {
       "Content-Type": "application/json",
       ETag: etag,
     };
-
-    // Include content-range if present (for pagination)
     if (result.contentRange) {
       headers["Content-Range"] = result.contentRange;
     }
@@ -102,7 +115,7 @@ export async function handler(req: Request): Promise<Response> {
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      },
     );
   }
 }

@@ -1,49 +1,50 @@
 /**
  * Sources API Endpoint
  *
- * Returns a list of RSS news sources configured in the system.
- * Sources represent individual news outlets (e.g., BBC News, TechCrunch).
+ * Returns the list of RSS news sources.
  *
  * ## Query Parameters
- * - `category_id` - Filter by category UUID
- * - `is_active` - Filter by active status (e.g., `is_active=eq.true`)
- * - `slug` - Filter by source slug
- * - `order` - Sort order
+ * - `id` (UUID equality, e.g., `id=eq.<uuid>`)
+ * - `slug` (e.g., `slug=eq.bbc-news`)
+ * - `category_id` (UUID)
+ * - `language` (e.g., `language=eq.en`)
+ * - `is_active` (e.g., `is_active=eq.true`)
+ * - `order` (only `name|slug|language.asc|desc`)
  *
  * ## Response
- * JSON array of source objects with fields:
- * - `id` - UUID
- * - `name` - Display name (e.g., "BBC News")
- * - `slug` - URL-safe identifier (e.g., "bbc-news")
- * - `website_url` - Source website
- * - `logo_url` - Source logo image
- * - `category_id` - Associated category UUID
- * - `is_active` - Whether source is being fetched
+ * JSON array of source objects with fields: `id`, `name`, `slug`,
+ * `website_url`, `logo_url`, `category_id`, `language`, `is_active`.
  *
  * ## Caching
- * - Cache-Control: 1 hour (public, max-age=3600)
+ * - Cache-Control: 1 hour (public)
+ * - Plus 30-minute in-memory cache to absorb burst load on the
+ *   sa-east-1 Edge Function instance.
  *
  * @module api-sources
  */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
-import { fetchFromSupabase, type ProxyConfig } from "../_shared/supabase-proxy.ts";
+import {
+  buildCacheKey,
+  fetchFromSupabase,
+  tooLong,
+  type ProxyConfig,
+} from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
 const config: ProxyConfig = {
   table: "sources",
   allowedParams: ["id", "slug", "category_id", "language", "is_active", "order"],
   defaultSelect: "id,name,slug,website_url,logo_url,category_id,language,is_active",
+  allowedOrderColumns: ["name", "slug", "language"],
 };
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 export async function handler(req: Request): Promise<Response> {
-  // Handle CORS preflight
   const corsResponse = handleCors(req);
   if (corsResponse) return corsResponse;
 
-  // Only allow GET
   if (req.method !== "GET") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
@@ -51,9 +52,12 @@ export async function handler(req: Request): Promise<Response> {
     });
   }
 
+  const oversized = tooLong(req, corsHeaders);
+  if (oversized) return oversized;
+
   try {
-    // Check in-memory cache (key includes query string for param variations)
-    const cacheKey = "sources:" + new URL(req.url).search;
+    // Canonical cache key — junk/empty/oversized params never inflate cache.
+    const cacheKey = buildCacheKey("sources", req, config);
     const cached = getCached(cacheKey);
 
     const data = cached ?? (await (async () => {
@@ -79,7 +83,7 @@ export async function handler(req: Request): Promise<Response> {
       {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      },
     );
   }
 }

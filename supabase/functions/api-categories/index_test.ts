@@ -104,13 +104,11 @@ Deno.test("serves from cache on second request", async () => {
       );
     };
 
-    // First request populates cache
     const req1 = new Request("http://localhost/api-categories");
     const res1 = await handler(req1);
     assertEquals(res1.status, 200);
     assertEquals(fetchCount, 1);
 
-    // Second request should use cache
     const req2 = new Request("http://localhost/api-categories");
     const res2 = await handler(req2);
     assertEquals(res2.status, 200);
@@ -122,4 +120,12 @@ Deno.test("serves from cache on second request", async () => {
     if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
     else Deno.env.delete("SUPABASE_ANON_KEY");
   }
+});
+
+Deno.test("oversized request URI returns 414", async () => {
+  clearCache();
+  const big = "x".repeat(5000);
+  const req = new Request(`http://localhost/api-categories?id=${big}`);
+  const res = await handler(req);
+  assertEquals(res.status, 414);
 });

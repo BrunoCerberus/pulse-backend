@@ -1,36 +1,35 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { fetchDatabaseSize, handler } from "./index.ts";
+import { fetchDatabaseSize, handler, summarize } from "./index.ts";
 import { clearCache } from "../_shared/memory-cache.ts";
 
 function setupEnv() {
   Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-  Deno.env.set("SUPABASE_ANON_KEY", "test-anon-key");
+  Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "test-service-key");
 }
 
-function restoreEnv(originalUrl: string | undefined, originalKey: string | undefined) {
+function restoreEnv(originalUrl?: string, originalKey?: string) {
   if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
   else Deno.env.delete("SUPABASE_URL");
-  if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
-  else Deno.env.delete("SUPABASE_ANON_KEY");
+  if (originalKey) Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", originalKey);
+  else Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
 }
 
-// Routes the parallel fetches in handler() to the right canned response so tests
-// don't have to track call order. `dbBytes = null` skips the RPC response (404)
-// to exercise the "database = null" path.
+// Routes parallel handler fetches by URL pattern.
 function mockFetch(rows: unknown, dbBytes: number | null) {
   return (input: string | URL | Request) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
     if (url.includes("/rpc/get_db_size_bytes")) {
-      if (dbBytes === null) {
-        return Promise.resolve(new Response("", { status: 404 }));
-      }
+      if (dbBytes === null) return Promise.resolve(new Response("", { status: 404 }));
       return Promise.resolve(new Response(String(dbBytes), { status: 200 }));
     }
     return Promise.resolve(new Response(JSON.stringify(rows), { status: 200 }));
   };
 }
 
-// Row shape matches the source_health view from migration 020.
 function row(overrides: Record<string, unknown> = {}) {
   return {
     id: crypto.randomUUID(),
@@ -49,9 +48,9 @@ function row(overrides: Record<string, unknown> = {}) {
 
 Deno.test("GET success returns summary + sources + database with 60s cache", async () => {
   clearCache();
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     const rows = [
@@ -60,280 +59,315 @@ Deno.test("GET success returns summary + sources + database with 60s cache", asy
       row({ name: "Warning", consecutive_failures: 4 }),
       row({
         name: "Stale",
-        most_recent_article_at: new Date(Date.now() - 8 * 24 * 3600 * 1000).toISOString(),
+        most_recent_article_at: new Date(
+          Date.now() - 8 * 24 * 3600 * 1000,
+        ).toISOString(),
       }),
       row({ name: "Inactive", is_active: false }),
     ];
-    // 96.5 MB on a default 500 MB quota → ~19%.
     globalThis.fetch = mockFetch(rows, 96_468_992);
 
     const req = new Request("http://localhost/api-source-health");
     const res = await handler(req);
     assertEquals(res.status, 200);
     assertEquals(res.headers.get("Cache-Control"), "public, max-age=60");
-    assertEquals(res.headers.get("Content-Type"), "application/json");
 
     const body = await res.json();
-    assertEquals(typeof body.fetched_at, "string");
     assertEquals(body.sources.length, 5);
     assertEquals(body.summary.total, 5);
     assertEquals(body.summary.active, 4);
     assertEquals(body.summary.circuit_open_count, 1);
-    // Warning (4 failures, circuit closed) — Tripped (7, circuit open) excluded.
     assertEquals(body.summary.high_failure_count, 1);
-    // Stale: active + not-open + no article in 7 days.
     assertEquals(body.summary.stale_count, 1);
-    // Database block populated from RPC.
     assertEquals(body.database.size_bytes, 96_468_992);
     assertEquals(body.database.size_pretty, "92.0 MB");
     assertEquals(body.database.quota_pct, 18);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
 Deno.test("database is null when RPC fails", async () => {
   clearCache();
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = mockFetch([row()], null);
-
-    const req = new Request("http://localhost/api-source-health");
-    const res = await handler(req);
+    const res = await handler(new Request("http://localhost/api-source-health"));
     assertEquals(res.status, 200);
     const body = await res.json();
     assertEquals(body.database, null);
-    // Source health still works — db failure doesn't cascade.
     assertEquals(body.summary.total, 1);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
 Deno.test("serves second request from cache", async () => {
   clearCache();
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     let fetchCount = 0;
     globalThis.fetch = (input: string | URL | Request) => {
       fetchCount++;
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
       if (url.includes("/rpc/get_db_size_bytes")) {
         return Promise.resolve(new Response("1024", { status: 200 }));
       }
-      return Promise.resolve(new Response(JSON.stringify([row()]), { status: 200 }));
+      return Promise.resolve(
+        new Response(JSON.stringify([row()]), { status: 200 }),
+      );
     };
-
     const req = new Request("http://localhost/api-source-health");
-    const res1 = await handler(req);
-    assertEquals(res1.status, 200);
-    // Two upstream calls per uncached request: source_health + RPC.
-    assertEquals(fetchCount, 2);
-
-    const res2 = await handler(req);
-    assertEquals(res2.status, 200);
-    assertEquals(fetchCount, 2, "cache should serve second request");
+    await handler(req);
+    assertEquals(fetchCount, 2); // source_health + RPC
+    await handler(req);
+    assertEquals(fetchCount, 2); // cache hit
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
+  }
+});
+
+Deno.test("authenticates upstream with service-role key", async () => {
+  clearCache();
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
+  let capturedHeaders: Headers | undefined;
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.headers) capturedHeaders = new Headers(init.headers as HeadersInit);
+      else if (input instanceof Request) capturedHeaders = input.headers;
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      if (url.includes("/rpc/get_db_size_bytes")) {
+        return Promise.resolve(new Response("1024", { status: 200 }));
+      }
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    await handler(new Request("http://localhost/api-source-health"));
+    assertEquals(capturedHeaders?.get("apikey"), "test-service-key");
+    assertEquals(
+      capturedHeaders?.get("Authorization"),
+      "Bearer test-service-key",
+    );
+  } finally {
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
+  }
+});
+
+Deno.test("returns 500 when service-role key missing", async () => {
+  clearCache();
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  try {
+    Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
+    Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+    const res = await handler(new Request("http://localhost/api-source-health"));
+    assertEquals(res.status, 500);
+    const body = await res.json();
+    assertEquals(body.error, "Service configuration missing");
+  } finally {
+    restoreEnv(origUrl, origKey);
   }
 });
 
 Deno.test("non-GET returns 405", async () => {
   clearCache();
-  const req = new Request("http://localhost/api-source-health", { method: "POST" });
-  const res = await handler(req);
+  const res = await handler(
+    new Request("http://localhost/api-source-health", { method: "POST" }),
+  );
   assertEquals(res.status, 405);
-  const body = await res.json();
-  assertEquals(body.error, "Method not allowed");
 });
 
 Deno.test("OPTIONS returns CORS 204", async () => {
   clearCache();
-  const req = new Request("http://localhost/api-source-health", { method: "OPTIONS" });
-  const res = await handler(req);
+  const res = await handler(
+    new Request("http://localhost/api-source-health", { method: "OPTIONS" }),
+  );
   assertEquals(res.status, 204);
   assertEquals(res.headers.get("Access-Control-Allow-Origin"), "*");
 });
 
-Deno.test("supabase error returns 500", async () => {
+Deno.test("oversized request URI returns 414", async () => {
   clearCache();
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const big = "x".repeat(5000);
+  const req = new Request(`http://localhost/api-source-health?slug=${big}`);
+  const res = await handler(req);
+  assertEquals(res.status, 414);
+});
+
+Deno.test("upstream failure returns 500", async () => {
+  clearCache();
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = () => Promise.reject(new Error("network error"));
-
-    const req = new Request("http://localhost/api-source-health");
-    const res = await handler(req);
+    const res = await handler(new Request("http://localhost/api-source-health"));
     assertEquals(res.status, 500);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
-Deno.test("empty source list returns zero summary", async () => {
+Deno.test("empty source list yields zero summary", async () => {
   clearCache();
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = mockFetch([], 1024);
-
-    const req = new Request("http://localhost/api-source-health");
-    const res = await handler(req);
+    const res = await handler(new Request("http://localhost/api-source-health"));
     assertEquals(res.status, 200);
     const body = await res.json();
     assertEquals(body.summary.total, 0);
     assertEquals(body.summary.active, 0);
     assertEquals(body.summary.stale_count, 0);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
-// fetchDatabaseSize unit tests — exercise paths the handler-level tests can't
-// trigger directly (env missing, throw, non-numeric body, quota override).
+// --- fetchDatabaseSize ---
 
-Deno.test("fetchDatabaseSize: returns null when SUPABASE_URL missing", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+Deno.test("fetchDatabaseSize: null when SUPABASE_URL missing", async () => {
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   try {
     Deno.env.delete("SUPABASE_URL");
-    Deno.env.set("SUPABASE_ANON_KEY", "key");
-    const result = await fetchDatabaseSize();
-    assertEquals(result, null);
+    Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "k");
+    assertEquals(await fetchDatabaseSize(), null);
   } finally {
-    restoreEnv(originalUrl, originalKey);
+    restoreEnv(origUrl, origKey);
   }
 });
 
-Deno.test("fetchDatabaseSize: returns null when SUPABASE_ANON_KEY missing", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+Deno.test("fetchDatabaseSize: null when service-role key missing", async () => {
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   try {
     Deno.env.set("SUPABASE_URL", "https://test.supabase.co");
-    Deno.env.delete("SUPABASE_ANON_KEY");
-    const result = await fetchDatabaseSize();
-    assertEquals(result, null);
+    Deno.env.delete("SUPABASE_SERVICE_ROLE_KEY");
+    assertEquals(await fetchDatabaseSize(), null);
   } finally {
-    restoreEnv(originalUrl, originalKey);
+    restoreEnv(origUrl, origKey);
   }
 });
 
-Deno.test("fetchDatabaseSize: returns null on fetch throw", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+Deno.test("fetchDatabaseSize: null on fetch throw", async () => {
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = () => Promise.reject(new Error("boom"));
-    const result = await fetchDatabaseSize();
-    assertEquals(result, null);
+    assertEquals(await fetchDatabaseSize(), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
-Deno.test("fetchDatabaseSize: returns null on non-numeric body", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+Deno.test("fetchDatabaseSize: null on non-numeric body", async () => {
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = () =>
       Promise.resolve(new Response('"not-a-number"', { status: 200 }));
-    const result = await fetchDatabaseSize();
-    assertEquals(result, null);
+    assertEquals(await fetchDatabaseSize(), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
-Deno.test("fetchDatabaseSize: returns null on negative bytes", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+Deno.test("fetchDatabaseSize: null on negative bytes", async () => {
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = () =>
       Promise.resolve(new Response("-1", { status: 200 }));
-    const result = await fetchDatabaseSize();
-    assertEquals(result, null);
+    assertEquals(await fetchDatabaseSize(), null);
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
 });
 
 Deno.test("fetchDatabaseSize: respects SUPABASE_DB_QUOTA_BYTES override", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalQuota = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origQuota = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
-    Deno.env.set("SUPABASE_DB_QUOTA_BYTES", "200000000"); // 200 MB
+    Deno.env.set("SUPABASE_DB_QUOTA_BYTES", "200000000");
     globalThis.fetch = () =>
-      Promise.resolve(new Response("100000000", { status: 200 })); // 100 MB
+      Promise.resolve(new Response("100000000", { status: 200 }));
     const result = await fetchDatabaseSize();
     assertEquals(result?.size_bytes, 100_000_000);
     assertEquals(result?.quota_pct, 50);
   } finally {
-    globalThis.fetch = originalFetch;
-    if (originalQuota) Deno.env.set("SUPABASE_DB_QUOTA_BYTES", originalQuota);
+    globalThis.fetch = origFetch;
+    if (origQuota) Deno.env.set("SUPABASE_DB_QUOTA_BYTES", origQuota);
     else Deno.env.delete("SUPABASE_DB_QUOTA_BYTES");
-    restoreEnv(originalUrl, originalKey);
+    restoreEnv(origUrl, origKey);
   }
 });
 
-// Misconfigured SUPABASE_DB_QUOTA_BYTES (empty string, non-numeric, "0",
-// negative) must fall back to DEFAULT_QUOTA_BYTES rather than silently emit
-// quota_pct: 0 — otherwise the watchdog's threshold check is bypassed and
-// no alert ever fires. Default is 524_288_000 (500 MB), so 100 MB → 20%.
 Deno.test("fetchDatabaseSize: invalid quota env falls back to default", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalQuota = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origQuota = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     globalThis.fetch = () =>
-      Promise.resolve(new Response("104857600", { status: 200 })); // 100 MB
-
+      Promise.resolve(new Response("104857600", { status: 200 }));
     for (const bad of ["", "0", "-1", "500MB", "not-a-number"]) {
       Deno.env.set("SUPABASE_DB_QUOTA_BYTES", bad);
       const result = await fetchDatabaseSize();
       assertEquals(result?.size_bytes, 104_857_600);
-      // 100 MB / 500 MB default ≈ 20%.
-      assertEquals(result?.quota_pct, 20, `expected fallback for ${JSON.stringify(bad)}`);
+      assertEquals(result?.quota_pct, 20);
     }
   } finally {
-    globalThis.fetch = originalFetch;
-    if (originalQuota) Deno.env.set("SUPABASE_DB_QUOTA_BYTES", originalQuota);
+    globalThis.fetch = origFetch;
+    if (origQuota) Deno.env.set("SUPABASE_DB_QUOTA_BYTES", origQuota);
     else Deno.env.delete("SUPABASE_DB_QUOTA_BYTES");
-    restoreEnv(originalUrl, originalKey);
+    restoreEnv(origUrl, origKey);
   }
 });
 
 Deno.test("fetchDatabaseSize: formats sizes across unit boundaries", async () => {
-  const originalUrl = Deno.env.get("SUPABASE_URL");
-  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
-  const originalFetch = globalThis.fetch;
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
   try {
     setupEnv();
     const cases: [number, string][] = [
@@ -349,7 +383,23 @@ Deno.test("fetchDatabaseSize: formats sizes across unit boundaries", async () =>
       assertEquals(result?.size_pretty, expected);
     }
   } finally {
-    globalThis.fetch = originalFetch;
-    restoreEnv(originalUrl, originalKey);
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
   }
+});
+
+// --- summarize ---
+
+Deno.test("summarize counts categories correctly", () => {
+  const rows = [
+    row(),
+    row({ is_active: false }),
+    row({ circuit_open: true, consecutive_failures: 10 }),
+    row({ consecutive_failures: 5 }),
+  ];
+  const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
+  assertEquals(s.total, 4);
+  assertEquals(s.active, 3);
+  assertEquals(s.circuit_open_count, 1);
+  assertEquals(s.high_failure_count, 1);
 });

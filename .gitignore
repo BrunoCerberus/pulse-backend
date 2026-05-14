@@ -35,3 +35,6 @@ Thumbs.db
 
 # Supabase CLI temp files
 supabase/.temp/
+
+# Claude Code session state (worktrees, transcripts, agent caches)
+.claude/

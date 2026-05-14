@@ -281,3 +281,74 @@ func TestLoad_EmptySupabaseKey(t *testing.T) {
 		t.Error("Load() should return nil config when error occurs")
 	}
 }
+
+func TestLoad_RejectsNonHTTPSUrl(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+	}()
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
+
+	// Plain HTTP non-loopback host must be rejected to prevent cleartext
+	// leak of the service-role key on a misconfig.
+	os.Setenv("SUPABASE_URL", "http://attacker.example.com")
+	if _, err := Load(); err == nil {
+		t.Error("Load() should reject http:// non-loopback URL")
+	}
+}
+
+func TestLoad_AllowsLoopbackHTTP(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+	}()
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "k")
+
+	for _, u := range []string{
+		"http://localhost:54321",
+		"http://localhost/",
+		"http://127.0.0.1:8000",
+		"http://127.0.0.1/",
+		"http://[::1]:8000",
+		"http://[::1]/",
+	} {
+		os.Setenv("SUPABASE_URL", u)
+		if _, err := Load(); err != nil {
+			t.Errorf("Load() rejected loopback http %q: %v", u, err)
+		}
+	}
+}
+
+func TestIsLoopbackHTTP(t *testing.T) {
+	allowed := []string{
+		"http://localhost:8000",
+		"http://localhost/",
+		"http://127.0.0.1:9999",
+		"http://127.0.0.1/path",
+		"http://[::1]:1",
+		"http://[::1]/",
+	}
+	for _, u := range allowed {
+		if !isLoopbackHTTP(u) {
+			t.Errorf("isLoopbackHTTP(%q) = false, want true", u)
+		}
+	}
+
+	rejected := []string{
+		"http://attacker.com",
+		"http://example.com:8080",
+		"https://localhost",
+		"http://localhost.evil.com",
+		"http://127.0.0.1.evil.com",
+		"",
+	}
+	for _, u := range rejected {
+		if isLoopbackHTTP(u) {
+			t.Errorf("isLoopbackHTTP(%q) = true, want false", u)
+		}
+	}
+}
