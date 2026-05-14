@@ -998,6 +998,64 @@ func TestRunBackfill_MoreWorkersThanItems(t *testing.T) {
 	}
 }
 
+// TestRunBackfill_NoDeadlockBeyondChannelCapacity is the regression for a
+// producer-consumer deadlock that capped real-world throughput at exactly
+// 3 worker cycles per run (~20 items for 5 workers, ~12 for 3 workers).
+//
+// Before the fix the producer pushed items synchronously on the main
+// goroutine; the consumer that drained `results` ran after the producer.
+// Workers blocked on a full results channel; the producer blocked on a
+// full work channel; the consumer never started. Everything stalled
+// until ctx expired.
+//
+// To trigger it we need items > work_buffer + results_buffer + maxWorkers
+// (i.e. more than 3 × maxWorkers). 100 items with 5 workers is well over
+// that, and every item must actually be observed by `process` — that's
+// what the per-item counter asserts.
+func TestRunBackfill_NoDeadlockBeyondChannelCapacity(t *testing.T) {
+	const total = 100
+	const workers = 5
+	items := make([]int, total)
+	for i := range items {
+		items[i] = i
+	}
+
+	var processed atomic.Int64
+	cfg := backfillConfig[int]{
+		name:       "deadlock-regression",
+		timeout:    10 * time.Second,
+		limit:      total,
+		maxWorkers: workers,
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]int, error) {
+			return items, nil
+		},
+		process: func(ctx context.Context, item int) bool {
+			processed.Add(1)
+			return true
+		},
+		hashOf: func(i int) string { return fmt.Sprintf("h-%d", i) },
+	}
+
+	// Generous-but-not-infinite timeout. The full run should finish in
+	// well under a second on this hardware; tests that fail by hanging
+	// here would have hit the 10s ctx cap pre-fix.
+	done := make(chan error, 1)
+	go func() { done <- runBackfill(context.Background(), cfg) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runBackfill returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("runBackfill deadlocked (processed only %d/%d items)", processed.Load(), total)
+	}
+
+	if got := processed.Load(); int(got) != total {
+		t.Errorf("processed = %d, want %d (deadlock truncates this to ~3*workers)", got, total)
+	}
+}
+
 // --- runOGImageBackfill tests ---
 
 func TestRunOGImageBackfill_EmptyList(t *testing.T) {

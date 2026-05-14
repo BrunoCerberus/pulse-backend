@@ -232,13 +232,22 @@ func runBackfill[T any](baseCtx context.Context, cfg backfillConfig[T]) error {
 		}()
 	}
 
-	for _, item := range items {
-		select {
-		case work <- item:
-		case <-ctx.Done():
+	// Producer runs in its own goroutine so the results consumer (the main
+	// loop below) can drain results concurrently with item enqueueing. If
+	// they shared a goroutine, the consumer wouldn't start until the
+	// producer finished — and the producer can't finish while workers
+	// are blocked pushing to a full results channel. That deadlock was the
+	// reason the original implementation stalled after exactly 3 worker
+	// cycles per goroutine (work_buffer + results_buffer + one stuck push).
+	go func() {
+		for _, item := range items {
+			select {
+			case work <- item:
+			case <-ctx.Done():
+			}
 		}
-	}
-	close(work)
+		close(work)
+	}()
 
 	go func() {
 		wg.Wait()
