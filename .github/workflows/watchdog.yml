@@ -36,10 +36,12 @@ jobs:
       MAX_CIRCUIT_OPEN: 8
       MAX_STALE: 27
       MAX_HIGH_FAILURE: 15
-      # DB size as a % of quota. Free tier is 500 MB; alert at 70% so there's
-      # still ~150 MB of headroom to react before Supabase restricts the project
+      # DB size as a % of quota. Free tier is 500 MB; the May 2026 cleanup
+      # (search_vector + unused-index drops) brought us from 41% to 21%, so
+      # this can tighten from 70% → 60% (~300 MB) for earlier warning while
+      # still leaving ~200 MB of headroom before Supabase restricts the project
       # (which is what the April 2026 incident hit at 100%).
-      MAX_DB_QUOTA_PCT: 70
+      MAX_DB_QUOTA_PCT: 60
 
     steps:
       - name: Query source health

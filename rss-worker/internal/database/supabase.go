@@ -612,33 +612,39 @@ func (c *Client) BumpBackfillAttempts(urlHashes []string, kind string) error {
 	return nil
 }
 
-// UpdateArticleContent updates the content field for an existing article
-func (c *Client) UpdateArticleContent(urlHash string, content string) error {
-	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
+// ContentUpdate holds a url_hash and content pair for batch content updates.
+type ContentUpdate struct {
+	URLHash string `json:"url_hash"`
+	Content string `json:"content"`
+}
 
-	data := map[string]interface{}{
-		"content": content,
+// BatchUpdateArticleContent updates the content field for multiple articles
+// via the batch_update_article_content RPC (migration 026). Mirrors the
+// shape of BatchUpdateArticleImages — turns the per-row PATCH in the
+// content backfill loop into one round-trip per chunk.
+func (c *Client) BatchUpdateArticleContent(updates []ContentUpdate) error {
+	if len(updates) == 0 {
+		return nil
 	}
 
-	body, err := jsonMarshal(data)
+	url := fmt.Sprintf("%s/rpc/batch_update_article_content", c.baseURL)
+
+	payload := map[string]interface{}{
+		"updates": updates,
+	}
+	data, err := jsonMarshal(payload)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doWithRetry("POST", url, data)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("failed to update article content: %s - %s", resp.Status, readErrorBody(resp))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("batch content update failed: %s - %s", resp.Status, readErrorBody(resp))
 	}
 
 	return nil

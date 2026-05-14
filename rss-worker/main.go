@@ -92,7 +92,7 @@ type Store interface {
 	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error)
 	BatchUpdateArticleImages(updates []database.ImageUpdate) error
 	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
-	UpdateArticleContent(urlHash string, content string) error
+	BatchUpdateArticleContent(updates []database.ContentUpdate) error
 	BumpBackfillAttempts(urlHashes []string, kind string) error
 }
 
@@ -651,11 +651,29 @@ func flushImageUpdates(db Store, updates []database.ImageUpdate) error {
 	return errors.Join(errs...)
 }
 
+// contentFlushBatchSize chunks the post-pool content flush. 50 mirrors the
+// image flush; content payloads are larger (text bodies), but jsonb_to_recordset
+// handles them comfortably and 50 keeps the request body well within limits.
+const contentFlushBatchSize = 50
+
 // runContentBackfill extracts full article content for articles that are
-// missing the content field using the generic backfill runner.
+// missing the content field and writes the results via the batch RPC at
+// the end of the run. Same queue/flush pattern as runOGImageBackfill —
+// turns per-row PATCHes into one RPC per chunk.
 func runContentBackfill(ctx context.Context, db Store) error {
 	contentExtractor := parser.NewContentExtractor()
-	return runBackfill(ctx, backfillConfig[database.ArticleForContentBackfill]{
+
+	var (
+		mu      sync.Mutex
+		pending []database.ContentUpdate
+	)
+	queue := func(update database.ContentUpdate) {
+		mu.Lock()
+		pending = append(pending, update)
+		mu.Unlock()
+	}
+
+	err := runBackfill(ctx, backfillConfig[database.ArticleForContentBackfill]{
 		name:          "content",
 		kind:          "content",
 		timeout:       contentBackfillTimeout,
@@ -665,17 +683,29 @@ func runContentBackfill(ctx context.Context, db Store) error {
 		maxWorkers:    contentBackfillWorkers,
 		fetch:         db.GetArticlesNeedingContent,
 		process: func(ctx context.Context, article database.ArticleForContentBackfill) bool {
-			return processContentBackfill(ctx, db, contentExtractor, article)
+			return processContentBackfill(ctx, contentExtractor, article, queue)
 		},
 		hashOf:       func(a database.ArticleForContentBackfill) string { return a.URLHash },
 		bumpAttempts: db.BumpBackfillAttempts,
 	})
+
+	// Flush whatever was queued even on error/cancel — same rationale as the
+	// image backfill: partial progress beats none, and unflushed articles
+	// resurface in the next run's candidate set naturally.
+	if flushErr := flushContentUpdates(db, pending); flushErr != nil {
+		logger.Warnf("Failed to flush content updates (%d queued): %v", len(pending), flushErr)
+	} else if len(pending) > 0 {
+		logger.Infof("Flushed %d content updates", len(pending))
+	}
+
+	return err
 }
 
 // processContentBackfill uses go-readability to extract the main text content
-// from a single article's webpage. If valid content is extracted, updates
-// the database. Returns true if the article was updated.
-func processContentBackfill(ctx context.Context, db Store, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill) bool {
+// from a single article's webpage. If valid content is extracted, enqueues
+// a ContentUpdate for the caller to batch-write later. Returns true if an
+// update was queued.
+func processContentBackfill(ctx context.Context, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill, queue func(database.ContentUpdate)) bool {
 	articleLog := logger.With("kind", "content", "url_hash", article.URLHash, "url", article.URL)
 
 	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)
@@ -689,12 +719,31 @@ func processContentBackfill(ctx context.Context, db Store, contentExtractor *par
 		return false
 	}
 
-	// Update the article's content
-	if err := db.UpdateArticleContent(article.URLHash, content); err != nil {
-		articleLog.Error("backfill_update_error", "err", err.Error())
-		return false
-	}
-
-	articleLog.Info("backfill_success", "chars", len(content))
+	queue(database.ContentUpdate{
+		URLHash: article.URLHash,
+		Content: content,
+	})
+	articleLog.Info("backfill_queued", "chars", len(content))
 	return true
+}
+
+// flushContentUpdates writes the queued content updates via
+// BatchUpdateArticleContent in chunks of contentFlushBatchSize. Per-batch
+// errors are accumulated and returned together so one bad batch doesn't
+// drop the rest.
+func flushContentUpdates(db Store, updates []database.ContentUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	var errs []error
+	for i := 0; i < len(updates); i += contentFlushBatchSize {
+		end := i + contentFlushBatchSize
+		if end > len(updates) {
+			end = len(updates)
+		}
+		if err := db.BatchUpdateArticleContent(updates[i:end]); err != nil {
+			errs = append(errs, fmt.Errorf("batch %d-%d: %w", i, end, err))
+		}
+	}
+	return errors.Join(errs...)
 }

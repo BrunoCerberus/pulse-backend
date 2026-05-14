@@ -116,7 +116,8 @@ pulse-backend/
 │   │   ├── 022_add_db_size_rpc.sql                # get_db_size_bytes RPC for DB-size watchdog
 │   │   ├── 023_inactivate_dead_sources.sql        # Data cleanup: inactivate long-dead/never-produced sources
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector
-│   │   └── 025_drop_unused_indexes.sql            # Drop indexes with zero usage
+│   │   ├── 025_drop_unused_indexes.sql            # Drop indexes with zero usage
+│   │   └── 026_add_batch_content_update_rpc.sql   # Batch content-update RPC
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts

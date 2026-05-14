@@ -88,6 +88,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/023_inactivate_dead_sources.sql` - Data cleanup: flip `is_active=false` on long-dead/never-produced sources
    - `supabase/migrations/024_strip_content_from_search_vector.sql` - Drop `content` from `search_vector` to shrink the GIN index
    - `supabase/migrations/025_drop_unused_indexes.sql` - Drop indexes with `idx_scan=0` to cut write amplification
+   - `supabase/migrations/026_add_batch_content_update_rpc.sql` - `batch_update_article_content` RPC for batched content backfill
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -199,7 +200,8 @@ pulse-backend/
 │   │   ├── 022_add_db_size_rpc.sql               # get_db_size_bytes RPC for DB-size watchdog
 │   │   ├── 023_inactivate_dead_sources.sql       # Data cleanup: inactivate long-dead/never-produced sources
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector
-│   │   └── 025_drop_unused_indexes.sql           # Drop indexes with zero usage
+│   │   ├── 025_drop_unused_indexes.sql           # Drop indexes with zero usage
+│   │   └── 026_add_batch_content_update_rpc.sql  # Batch content-update RPC
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)

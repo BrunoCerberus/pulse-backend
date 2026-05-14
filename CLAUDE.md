@@ -123,7 +123,8 @@ pulse-backend/
 │   │   ├── 022_add_db_size_rpc.sql            # get_db_size_bytes RPC for DB-size watchdog
 │   │   ├── 023_inactivate_dead_sources.sql    # Data cleanup: flip is_active=false on long-dead/never-produced sources
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector to shrink GIN index
-│   │   └── 025_drop_unused_indexes.sql        # Drop indexes with idx_scan=0 to cut write amplification
+│   │   ├── 025_drop_unused_indexes.sql        # Drop indexes with idx_scan=0 to cut write amplification
+│   │   └── 026_add_batch_content_update_rpc.sql # Batch content updates RPC for backfill
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers
@@ -177,7 +178,7 @@ pulse-backend/
 - Batch image updates: `batch_update_article_images` RPC for og:image updates on duplicates
 - Batch source state: `BatchUpdateSourceFetchState()` calls `batch_update_source_fetch_state` RPC (migration 020) to persist per-source etag, last_modified, consecutive_failures, and circuit_open_until in one round-trip after every fetch cycle.
 - Adaptive fetch + circuit breaker: `GetActiveSources()` filters by `fetch_interval_hours`, `last_fetched_at`, and `or=(circuit_open_until.is.null,circuit_open_until.lt.{now})` so sources in an open-circuit cool-off are skipped.
-- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `BatchUpdateSourceFetchState()`, `CleanupOldArticles()`, `GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours)`, `GetArticlesNeedingContent(limit, maxAttempts, cooldownHours)`, `BumpBackfillAttempts(urlHashes, kind)`
+- Key methods: `GetActiveSources()`, `InsertArticles()`, `BatchUpdateArticleImages()`, `BatchUpdateArticleContent()`, `BatchUpdateSourceFetchState()`, `CleanupOldArticles()`, `GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours)`, `GetArticlesNeedingContent(limit, maxAttempts, cooldownHours)`, `BumpBackfillAttempts(urlHashes, kind)`
 
 ### Data Models (`internal/models/models.go`)
 - `Source` struct with `FetchIntervalHours`, `EmbeddedCategory`, `ShouldFetch()` method. Also carries conditional-GET validators (`ETag`, `LastModified`) and circuit-breaker state (`ConsecutiveFailures`, `CircuitOpenUntil`) from migration 019.
