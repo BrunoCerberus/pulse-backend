@@ -1,0 +1,97 @@
+name: Daily Backfill
+
+# Backfills og:image and full content for articles that landed without them
+# (paywalled feeds, slow CDNs, lazy-loaded social images, etc.). Both
+# commands respect the per-article cooldown (BACKFILL_COOLDOWN_HOURS, default
+# 24h) and attempt cap (BACKFILL_MAX_ATTEMPTS, default 3) baked into the
+# database queries — so re-runs only touch articles that aren't already
+# exhausted or cooling off.
+#
+# Cadence: once a day. The 24h cooldown is the natural ceiling on how often
+# this is useful. Time chosen (04:30 UTC) staggers from cleanup (03:00 UTC)
+# and the every-2h fetch cron (00/02/04/06/... UTC).
+#
+# Image and content jobs run in parallel — they target independent worker
+# pools, are per-host rate limited (HOST_RATE_LIMIT_RPS), and write to
+# disjoint columns (image_url vs content). Total wall time is bounded by
+# the slower one (content, 60 min timeout).
+
+on:
+  schedule:
+    - cron: '30 4 * * *'
+
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'Which backfill to run (default: both)'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - images
+          - content
+
+permissions:
+  contents: read
+
+jobs:
+  backfill-images:
+    name: Backfill og:images
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: github.event_name == 'schedule' || github.event.inputs.kind == 'both' || github.event.inputs.kind == 'images'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Build worker
+        working-directory: rss-worker
+        run: |
+          go mod tidy
+          go build -o rss-worker .
+
+      - name: Run image backfill
+        working-directory: rss-worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: ./rss-worker backfill-images
+
+  backfill-content:
+    name: Backfill article content
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    if: github.event_name == 'schedule' || github.event.inputs.kind == 'both' || github.event.inputs.kind == 'content'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: rss-worker/go.sum
+
+      - name: Build worker
+        working-directory: rss-worker
+        run: |
+          go mod tidy
+          go build -o rss-worker .
+
+      - name: Run content backfill
+        working-directory: rss-worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: ./rss-worker backfill-content

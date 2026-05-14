@@ -145,6 +145,7 @@ pulse-backend/
 ├── .github/workflows/
 │   ├── fetch-rss.yml                  # Runs every 2 hours
 │   ├── cleanup.yml                    # Runs daily at 3 AM UTC
+│   ├── backfill.yml                   # og:image + content backfill daily at 04:30 UTC
 │   ├── test.yml                       # Unit tests + lint + govulncheck on push/PR
 │   ├── security.yml                   # Secret scan, SAST, deps, SBOM (push/PR + weekly)
 │   ├── deploy-functions.yml           # Auto-deploy Edge Functions on push
@@ -314,11 +315,12 @@ make test-deno      # Deno Edge Function tests
 
 - **fetch-rss.yml**: Every 2 hours + manual trigger. Runs the Go RSS worker against the Supabase production DB.
 - **cleanup.yml**: Daily at 3 AM UTC + manual trigger. Removes articles older than `ArticleRetentionDays`.
+- **backfill.yml**: Daily at 04:30 UTC + manual trigger. Two parallel jobs (`backfill-images`, `backfill-content`) that drain articles missing og:image/content. The `workflow_dispatch` form takes a `kind` input (`both`/`images`/`content`) so you can run one in isolation. Cooldowns and attempt caps live in the DB queries (`BACKFILL_COOLDOWN_HOURS`, `BACKFILL_MAX_ATTEMPTS`); the daily cadence matches the 24h cooldown so re-runs are cheap.
 - **test.yml**: Runs on push/PR to master (Go tests with race detector + coverage, 100% coverage gate, golangci-lint, govulncheck, Deno tests). The coverage step parses `go tool cover -func` output and fails the job if total coverage is below 100.0%, listing sub-100% functions.
 - **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact.
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy-functions.yml**: Auto-deploys Edge Functions on push to master.
-- **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, `high_failure_count`, or `database.quota_pct` (default trip at 70%) exceed thresholds set inline in the workflow. The DB quota check tolerates `database == null` (RPC failure) without alerting so transient size-fetch errors don't false-page.
+- **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, `high_failure_count`, or `database.quota_pct` (trips at 60% — tightened from 70% after the May 2026 cleanup brought the DB to 21%) exceed thresholds set inline in the workflow. The DB quota check tolerates `database == null` (RPC failure) without alerting so transient size-fetch errors don't false-page.
 
 All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
 

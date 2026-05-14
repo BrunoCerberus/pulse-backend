@@ -135,6 +135,7 @@ In your GitHub repo → **Settings** → **Secrets and variables** → **Actions
 The workflows are already configured:
 - `fetch-rss.yml` - Runs every 2 hours
 - `cleanup.yml` - Runs daily at 3 AM UTC
+- `backfill.yml` - og:image + content backfill daily at 04:30 UTC (manual `workflow_dispatch` accepts `kind: both|images|content`)
 
 Go to **Actions** tab and enable workflows if prompted.
 

@@ -135,6 +135,7 @@ pulse-backend/
 │   ├── workflows/
 │   │   ├── fetch-rss.yml              # Runs every 2 hours
 │   │   ├── cleanup.yml                # Runs daily at 3 AM UTC
+│   │   ├── backfill.yml               # Daily backfill (og:images + content) at 04:30 UTC
 │   │   ├── test.yml                   # Unit tests + lint + govulncheck on push/PR
 │   │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
 │   │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
@@ -252,6 +253,7 @@ Views:
 |----------|----------|-------------|
 | `fetch-rss.yml` | Every 2 hours | Fetch RSS feeds |
 | `cleanup.yml` | Daily 3 AM UTC | Remove old articles |
+| `backfill.yml` | Daily 04:30 UTC + manual | og:image and content backfill (two parallel jobs); workflow_dispatch input picks one or both |
 | `test.yml` | On push/PR | Go tests (race + coverage), **100% coverage gate**, golangci-lint, govulncheck, Deno tests |
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
