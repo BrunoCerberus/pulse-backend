@@ -28,7 +28,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
 │                                                                              │
 │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────────┐    │
 │   │  articles   │    │   sources   │    │       Edge Functions        │    │
-│   │  (30 days)  │    │ (133 feeds) │    │    (Caching Proxy Layer)    │    │
+│   │  (7 days)   │    │ (133 feeds) │    │    (Caching Proxy Layer)    │    │
 │   └─────────────┘    └─────────────┘    └─────────────────────────────┘    │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -84,6 +84,8 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/019_add_source_fetch_state_columns.sql` - `etag`, `last_modified`, `consecutive_failures`, `circuit_open_until` on sources
    - `supabase/migrations/020_add_source_health_infra.sql` - `batch_update_source_fetch_state` RPC + `source_health` view
    - `supabase/migrations/021_batch_cleanup_old_articles.sql` - Batch `cleanup_old_articles` + per-function `statement_timeout` to avoid 57014 timeouts
+   - `supabase/migrations/022_add_db_size_rpc.sql` - `get_db_size_bytes` RPC for DB-size watchdog
+   - `supabase/migrations/023_inactivate_dead_sources.sql` - Data cleanup: flip `is_active=false` on long-dead/never-produced sources
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -191,7 +193,9 @@ pulse-backend/
 │   │   ├── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
 │   │   ├── 020_add_source_health_infra.sql       # batch_update_source_fetch_state RPC + source_health view
-│   │   └── 021_batch_cleanup_old_articles.sql    # Batch cleanup_old_articles + per-function statement_timeout
+│   │   ├── 021_batch_cleanup_old_articles.sql    # Batch cleanup_old_articles + per-function statement_timeout
+│   │   ├── 022_add_db_size_rpc.sql               # get_db_size_bytes RPC for DB-size watchdog
+│   │   └── 023_inactivate_dead_sources.sql       # Data cleanup: inactivate long-dead/never-produced sources
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)
@@ -199,7 +203,7 @@ pulse-backend/
 │       ├── api-articles/              # Articles endpoint (5min + ETag)
 │       ├── api-search/                # Search endpoint (1min private)
 │       ├── api-health/                # Health check endpoint (no-store)
-│       └── api-source-health/         # Per-source fetch health + summary (60s cache)
+│       └── api-source-health/         # Per-source fetch health + summary + DB size (60s cache)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
@@ -384,7 +388,8 @@ GET /api-search?q=climate&limit=20
 # Health check (no caching)
 GET /api-health
 
-# Per-source fetch health + summary (60s cache) — powers the watchdog workflow
+# Per-source fetch health + summary + DB size (60s cache) — powers the watchdog workflow
+# Response includes a `database` block (size_bytes/size_pretty/quota_pct) via get_db_size_bytes RPC
 GET /api-source-health
 ```
 
@@ -430,6 +435,9 @@ export CIRCUIT_FAILURE_THRESHOLD=5      # consecutive fetch failures before the 
 export CIRCUIT_BASE_BACKOFF_HOURS=1     # initial cool-off window on trip; doubles per additional failure
 export CIRCUIT_MAX_BACKOFF_HOURS=24     # cap on the exponential circuit backoff
 
+# Edge Functions only (read by api-source-health):
+export SUPABASE_DB_QUOTA_BYTES=524288000 # DB-size cap for quota_pct calculation (default 500 MB free tier)
+
 # Run the worker
 make run
 
@@ -456,7 +464,7 @@ make test-deno         # Run Deno Edge Function tests
 # Build & Run
 make build             # Build the RSS worker binary
 make run               # Run the RSS worker (fetch feeds)
-make cleanup           # Remove articles older than 30 days
+make cleanup           # Remove articles older than 7 days (and same-age fetch_logs)
 make backfill-images   # Fetch og:images for articles missing images
 make backfill-content  # Extract content for articles
 
@@ -512,7 +520,7 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
 | `deploy-functions.yml` | Push to `master` | Auto-deploy Edge Functions |
-| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure threshold breach |
+| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure/DB-quota threshold breach |
 
 Branch protection on `master` requires all 11 jobs across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (even for admins); every change goes through a PR. Repo is configured with squash-only merges and `delete_branch_on_merge`.
 
@@ -533,7 +541,7 @@ The system uses URL hashing for deduplication. If you see duplicates:
 
 ### Database approaching limit
 
-1. Reduce `ArticleRetentionDays` in config (default: 30)
+1. Reduce `ArticleRetentionDays` in config (default: 7)
 2. Manually run cleanup: `go run . cleanup`
 3. Reduce number of active sources
 

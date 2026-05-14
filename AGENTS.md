@@ -49,7 +49,7 @@ make test-deno         # Run Deno Edge Function tests
 # Build & Run (requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars)
 make build             # Build the RSS worker binary
 make run               # Run the RSS worker (fetch feeds)
-make cleanup           # Remove articles older than 30 days
+make cleanup           # Remove articles older than 7 days (and same-age fetch_logs)
 make backfill-images   # Fetch og:images for articles missing images
 make backfill-content  # Extract full content for articles
 
@@ -112,7 +112,9 @@ pulse-backend/
 │   │   ├── 018_add_backfill_tracking.sql         # Attempt counters + cooldown RPC for backfills
 │   │   ├── 019_add_source_fetch_state_columns.sql # etag, last_modified, consecutive_failures, circuit_open_until on sources
 │   │   ├── 020_add_source_health_infra.sql        # batch_update_source_fetch_state RPC + source_health view
-│   │   └── 021_batch_cleanup_old_articles.sql     # Batch cleanup_old_articles + raise per-function statement_timeout
+│   │   ├── 021_batch_cleanup_old_articles.sql     # Batch cleanup_old_articles + raise per-function statement_timeout
+│   │   ├── 022_add_db_size_rpc.sql                # get_db_size_bytes RPC for DB-size watchdog
+│   │   └── 023_inactivate_dead_sources.sql        # Data cleanup: inactivate long-dead/never-produced sources
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
@@ -125,7 +127,7 @@ pulse-backend/
 │       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
 │       ├── api-search/index.ts        # Search endpoint (1min private)
 │       ├── api-health/index.ts        # Health check endpoint (no-store)
-│       └── api-source-health/index.ts # Per-source fetch health + summary (60s cache)
+│       └── api-source-health/index.ts # Per-source fetch health + summary + DB size (60s cache)
 ├── .github/
 │   ├── workflows/
 │   │   ├── fetch-rss.yml              # Runs every 2 hours
@@ -164,7 +166,7 @@ pulse-backend/
 | `/api-articles` | 5min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Health check (status + timestamp) |
-| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary; watchdog.yml polls this |
+| `/api-source-health` | 60s public | Per-source fetch health + aggregate summary + DB size block (size_bytes/size_pretty/quota_pct via `get_db_size_bytes` RPC; default 500 MB cap via `SUPABASE_DB_QUOTA_BYTES`); watchdog.yml polls this |
 
 ## Testing
 
@@ -203,9 +205,12 @@ Optional environment variables:
 - `CIRCUIT_BASE_BACKOFF_HOURS` - initial cool-off window on trip; doubles per additional failure (default `1`)
 - `CIRCUIT_MAX_BACKOFF_HOURS` - cap on the exponential circuit backoff (default `24`)
 
+Edge Function env vars (read by `api-source-health`):
+- `SUPABASE_DB_QUOTA_BYTES` - DB-size cap used to compute `quota_pct` in the `database` block (default `524288000` = 500 MB free tier). Invalid/empty values fall back to the default.
+
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
-- `ArticleRetentionDays`: 30 days
+- `ArticleRetentionDays`: 7 days (also drives fetch_logs retention via `CleanupOldFetchLogs`)
 
 Graceful shutdown: `main()` installs `signal.NotifyContext(SIGINT, SIGTERM)` and threads that baseCtx into every run* command, so GHA cancellations and runner rotations exit cleanly instead of orphaning batches.
 
@@ -248,7 +253,7 @@ Views:
 | `security.yml` | On push/PR + weekly Mon 06:00 UTC | gitleaks + TruffleHog (secrets), gosec (Go SAST), govulncheck, Trivy (deps/secrets/misconfig), CycloneDX SBOM |
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
 | `deploy-functions.yml` | On push to master | Auto-deploy Edge Functions |
-| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) when circuit/stale/high-failure counts exceed thresholds |
+| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) when circuit/stale/high-failure counts or `database.quota_pct` exceed thresholds |
 
 Branch protection on `master` requires all 11 checks across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
 
