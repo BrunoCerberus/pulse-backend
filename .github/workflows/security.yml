@@ -51,7 +51,7 @@ jobs:
         run: gitleaks detect --source . --verbose --redact --no-banner
 
       - name: Run TruffleHog
-        uses: trufflesecurity/trufflehog@17456f8c7d042d8c82c9a8ca9e937231f9f42e26 # v3.95.2
+        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab # v3.95.3
         with:
           # The action injects --fail automatically; adding it to extra_args
           # causes "flag 'fail' cannot be repeated".
