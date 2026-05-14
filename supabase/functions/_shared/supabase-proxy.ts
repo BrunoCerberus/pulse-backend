@@ -21,6 +21,13 @@ export interface ProxyConfig {
 
   /** Default PostgREST select clause if not specified by client */
   defaultSelect?: string;
+
+  /**
+   * Default `limit` applied when the client omits one. Caps an open-ended
+   * request to a bounded page so a bare `GET /api-articles` doesn't return
+   * the full table (which would burn egress bandwidth).
+   */
+  defaultLimit?: number;
 }
 
 /**
@@ -80,6 +87,14 @@ export function buildProxyUrl(
     if (value !== null) {
       targetUrl.searchParams.set(param, value);
     }
+  }
+
+  // Apply default limit when client omitted one and the config opts in.
+  if (
+    config.defaultLimit !== undefined &&
+    !targetUrl.searchParams.has("limit")
+  ) {
+    targetUrl.searchParams.set("limit", String(config.defaultLimit));
   }
 
   return targetUrl.toString();

@@ -356,47 +356,6 @@ func TestBatchUpdateArticleImages_Empty(t *testing.T) {
 	}
 }
 
-func TestUpdateArticleImage_Success(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PATCH" {
-			t.Errorf("method = %s, want PATCH", r.Method)
-		}
-		if !strings.Contains(r.URL.String(), "url_hash=eq.") {
-			t.Error("expected url_hash filter in URL")
-		}
-
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "image_url") {
-			t.Error("expected image_url in request body")
-		}
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	client := newTestClient(server)
-	err := client.UpdateArticleImage("test-hash", "https://example.com/new-image.jpg")
-
-	if err != nil {
-		t.Errorf("UpdateArticleImage error: %v", err)
-	}
-}
-
-func TestUpdateArticleImage_Error(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "database error"}`))
-	}))
-	defer server.Close()
-
-	client := newTestClient(server)
-	err := client.UpdateArticleImage("test-hash", "https://example.com/image.jpg")
-
-	if err == nil {
-		t.Error("expected error for 500 response")
-	}
-}
-
 func TestCleanupOldArticles_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -1070,13 +1029,6 @@ func newUnreachableClient(t *testing.T) *Client {
 
 // --- http.NewRequest bad-URL branches ---
 
-func TestUpdateArticleImage_BadURL(t *testing.T) {
-	c := newBadURLClient()
-	if err := c.UpdateArticleImage("h1", "http://x/i.jpg"); err == nil {
-		t.Error("expected bad-URL error, got nil")
-	}
-}
-
 func TestUpdateArticleContent_BadURL(t *testing.T) {
 	c := newBadURLClient()
 	if err := c.UpdateArticleContent("h1", "body"); err == nil {
@@ -1136,13 +1088,6 @@ func TestGetActiveSources_BadURL(t *testing.T) {
 }
 
 // --- httpClient.Do transport-error branches (distinct from 5xx retries) ---
-
-func TestUpdateArticleImage_TransportError(t *testing.T) {
-	c := newUnreachableClient(t)
-	if err := c.UpdateArticleImage("h1", "http://x/i.jpg"); err == nil {
-		t.Error("expected transport error, got nil")
-	}
-}
 
 func TestUpdateArticleContent_TransportError(t *testing.T) {
 	c := newUnreachableClient(t)
@@ -1298,15 +1243,6 @@ func TestBatchUpdateArticleImages_MarshalError(t *testing.T) {
 	withFailingJSONMarshal(t, func() {
 		c := newBadURLClient()
 		if err := c.BatchUpdateArticleImages([]ImageUpdate{{URLHash: "h", ImageURL: "u"}}); err == nil {
-			t.Error("expected marshal error, got nil")
-		}
-	})
-}
-
-func TestUpdateArticleImage_MarshalError(t *testing.T) {
-	withFailingJSONMarshal(t, func() {
-		c := newBadURLClient()
-		if err := c.UpdateArticleImage("h", "u"); err == nil {
 			t.Error("expected marshal error, got nil")
 		}
 	})

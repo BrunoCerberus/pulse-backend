@@ -227,38 +227,6 @@ func (c *Client) BatchUpdateArticleImages(updates []ImageUpdate) error {
 	return nil
 }
 
-// UpdateArticleImage updates just the image_url for an existing article.
-func (c *Client) UpdateArticleImage(urlHash string, imageURL string) error {
-	url := fmt.Sprintf("%s/articles?url_hash=eq.%s", c.baseURL, urlHash)
-
-	data := map[string]interface{}{
-		"image_url": imageURL,
-	}
-
-	body, err := jsonMarshal(data)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(body))
-	if err != nil {
-		return err
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("failed to update article image: %s - %s", resp.Status, readErrorBody(resp))
-	}
-
-	return nil
-}
-
 // SourceFetchState is the per-source state persisted after each fetch cycle.
 // Passed to BatchUpdateSourceFetchState so one RPC call can record different
 // outcomes across sources: success with fresh ETag, success-304 with preserved

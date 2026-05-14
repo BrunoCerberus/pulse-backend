@@ -90,7 +90,7 @@ type Store interface {
 	CleanupOldArticles(daysToKeep int) (int, error)
 	CleanupOldFetchLogs(daysToKeep int) (int, error)
 	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error)
-	UpdateArticleImage(urlHash string, imageURL string) error
+	BatchUpdateArticleImages(updates []database.ImageUpdate) error
 	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
 	UpdateArticleContent(urlHash string, content string) error
 	BumpBackfillAttempts(urlHashes []string, kind string) error
@@ -544,11 +544,33 @@ func runCleanup(ctx context.Context, db Store, daysToKeep int) {
 	}
 }
 
-// runOGImageBackfill fetches og:image URLs for articles that are missing
-// high-resolution images using the generic backfill runner.
+// imageFlushBatchSize is the chunk size used when flushing queued image
+// updates via the batch RPC. 50 mirrors the article-insert batch and keeps
+// the JSON payload comfortably under PostgREST/Supabase limits.
+const imageFlushBatchSize = 50
+
+// runOGImageBackfill fetches og:image URLs for articles missing high-res
+// images and writes them via a single batched RPC at the end of the run.
+//
+// Per-article extractions are concurrent via the generic backfill runner;
+// each successful extraction enqueues an ImageUpdate to an in-memory slice
+// rather than issuing a per-row PATCH. The slice is flushed in chunks of
+// imageFlushBatchSize after the worker pool drains — turning ~500
+// single-row UPDATEs per run into ~10 RPC calls.
 func runOGImageBackfill(ctx context.Context, db Store) error {
 	ogExtractor := parser.NewOGImageExtractor()
-	return runBackfill(ctx, backfillConfig[database.ArticleForBackfill]{
+
+	var (
+		mu      sync.Mutex
+		pending []database.ImageUpdate
+	)
+	queue := func(update database.ImageUpdate) {
+		mu.Lock()
+		pending = append(pending, update)
+		mu.Unlock()
+	}
+
+	err := runBackfill(ctx, backfillConfig[database.ArticleForBackfill]{
 		name:          "og:image",
 		kind:          "image",
 		timeout:       ogImageBackfillTimeout,
@@ -558,17 +580,30 @@ func runOGImageBackfill(ctx context.Context, db Store) error {
 		maxWorkers:    ogImageBackfillWorkers,
 		fetch:         db.GetArticlesNeedingOGImage,
 		process: func(ctx context.Context, article database.ArticleForBackfill) bool {
-			return processOGImageBackfill(ctx, db, ogExtractor, article)
+			return processOGImageBackfill(ctx, ogExtractor, article, queue)
 		},
 		hashOf:       func(a database.ArticleForBackfill) string { return a.URLHash },
 		bumpAttempts: db.BumpBackfillAttempts,
 	})
+
+	// Flush whatever was queued even if runBackfill errored or was canceled —
+	// partial progress is more valuable than none. Articles whose writes fail
+	// here keep `image_url IS NULL` and resurface in the next run's candidate
+	// set, so there's no risk of permanent loss.
+	if flushErr := flushImageUpdates(db, pending); flushErr != nil {
+		logger.Warnf("Failed to flush og:image updates (%d queued): %v", len(pending), flushErr)
+	} else if len(pending) > 0 {
+		logger.Infof("Flushed %d og:image updates", len(pending))
+	}
+
+	return err
 }
 
 // processOGImageBackfill attempts to extract the og:image URL from a single
 // article's webpage. If a valid image is found and differs from the current
-// image, updates the database. Returns true if the article was updated.
-func processOGImageBackfill(ctx context.Context, db Store, ogExtractor *parser.OGImageExtractor, article database.ArticleForBackfill) bool {
+// image, enqueues an ImageUpdate for the caller to batch-write later.
+// Returns true if an update was queued.
+func processOGImageBackfill(ctx context.Context, ogExtractor *parser.OGImageExtractor, article database.ArticleForBackfill, queue func(database.ImageUpdate)) bool {
 	articleLog := logger.With("kind", "og_image", "url_hash", article.URLHash, "url", article.URL)
 
 	ogImage, err := ogExtractor.ExtractOGImage(ctx, article.URL)
@@ -588,14 +623,32 @@ func processOGImageBackfill(ctx context.Context, db Store, ogExtractor *parser.O
 		return false
 	}
 
-	// Update the article's image_url
-	if err := db.UpdateArticleImage(article.URLHash, ogImage); err != nil {
-		articleLog.Error("backfill_update_error", "err", err.Error())
-		return false
-	}
-
-	articleLog.Info("backfill_success", "og_image", ogImage)
+	queue(database.ImageUpdate{
+		URLHash:  article.URLHash,
+		ImageURL: ogImage,
+	})
+	articleLog.Info("backfill_queued", "og_image", ogImage)
 	return true
+}
+
+// flushImageUpdates writes the queued image updates via BatchUpdateArticleImages
+// in chunks of imageFlushBatchSize. Per-batch errors are accumulated and
+// returned together so one bad batch doesn't drop the rest.
+func flushImageUpdates(db Store, updates []database.ImageUpdate) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	var errs []error
+	for i := 0; i < len(updates); i += imageFlushBatchSize {
+		end := i + imageFlushBatchSize
+		if end > len(updates) {
+			end = len(updates)
+		}
+		if err := db.BatchUpdateArticleImages(updates[i:end]); err != nil {
+			errs = append(errs, fmt.Errorf("batch %d-%d: %w", i, end, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // runContentBackfill extracts full article content for articles that are

@@ -32,11 +32,11 @@ export const CacheDurations = {
   SOURCES: "public, max-age=3600", // 1 hour
 
   /**
-   * Articles: Main feed data, updated every 15 minutes by RSS worker.
-   * 5 minute fresh cache with 15 minute stale-while-revalidate allows
-   * CDNs to serve slightly stale content while fetching updates.
+   * Articles: Main feed data, updated every 2 hours by RSS worker.
+   * 15 minute fresh cache with 30 minute stale-while-revalidate — generous
+   * because new articles only land a few times per hour.
    */
-  ARTICLES: "public, max-age=300, stale-while-revalidate=900", // 5 min fresh, 15 min stale
+  ARTICLES: "public, max-age=900, stale-while-revalidate=1800", // 15 min fresh, 30 min stale
 
   /**
    * Search: Query results are user-specific and should not be shared.
