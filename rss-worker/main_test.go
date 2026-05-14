@@ -195,6 +195,13 @@ func TestFlushImageUpdates_PropagatesBatchError(t *testing.T) {
 
 // --- processContentBackfill tests ---
 
+// captureContentQueue returns a queue closure that appends to a shared slice
+// the caller can inspect after the run.
+func captureContentQueue() (func(database.ContentUpdate), *[]database.ContentUpdate) {
+	var queued []database.ContentUpdate
+	return func(u database.ContentUpdate) { queued = append(queued, u) }, &queued
+}
+
 func TestProcessContentBackfill_Success(t *testing.T) {
 	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -202,23 +209,20 @@ func TestProcessContentBackfill_Success(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	contentExtractor := parser.NewContentExtractor()
 	article := database.ArticleForContentBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureContentQueue()
 
-	ctx := context.Background()
-	result := processContentBackfill(ctx, db, contentExtractor, article)
+	result := processContentBackfill(context.Background(), contentExtractor, article, queue)
 
 	if !result {
-		t.Error("expected true (updated), got false")
+		t.Error("expected true (queued), got false")
+	}
+	if len(*queued) != 1 || (*queued)[0].URLHash != "hash-1" || (*queued)[0].Content == "" {
+		t.Errorf("expected one ContentUpdate for hash-1 with non-empty content, got %+v", *queued)
 	}
 }
 
@@ -229,24 +233,20 @@ func TestProcessContentBackfill_EmptyContent(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called when content is empty/short")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	contentExtractor := parser.NewContentExtractor()
 	article := database.ArticleForContentBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureContentQueue()
 
-	ctx := context.Background()
-	result := processContentBackfill(ctx, db, contentExtractor, article)
+	result := processContentBackfill(context.Background(), contentExtractor, article, queue)
 
 	if result {
 		t.Error("expected false (empty content), got true")
+	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued, got %+v", *queued)
 	}
 }
 
@@ -256,52 +256,56 @@ func TestProcessContentBackfill_ExtractError(t *testing.T) {
 	}))
 	defer webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called on extract error")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	contentExtractor := parser.NewContentExtractor()
 	article := database.ArticleForContentBackfill{
 		URLHash: "hash-1",
 		URL:     webServer.URL,
 	}
+	queue, queued := captureContentQueue()
 
-	ctx := context.Background()
-	result := processContentBackfill(ctx, db, contentExtractor, article)
+	result := processContentBackfill(context.Background(), contentExtractor, article, queue)
 
 	if result {
 		t.Error("expected false (extract error), got true")
 	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued on extract error, got %+v", *queued)
+	}
 }
 
-func TestProcessContentBackfill_DBUpdateError(t *testing.T) {
-	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is the full article content that is definitely long enough to be extracted by the readability parser. It needs to be well over one hundred characters to pass the length threshold check.</p></article></body></html>`))
-	}))
-	defer webServer.Close()
+// --- flushContentUpdates tests ---
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "db error"}`))
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
-	contentExtractor := parser.NewContentExtractor()
-	article := database.ArticleForContentBackfill{
-		URLHash: "hash-1",
-		URL:     webServer.URL,
+func TestFlushContentUpdates_BatchesAndCallsRPC(t *testing.T) {
+	db := &mockStore{}
+	// 120 updates → expect 3 batches: 50, 50, 20.
+	updates := make([]database.ContentUpdate, 120)
+	for i := range updates {
+		updates[i] = database.ContentUpdate{URLHash: fmt.Sprintf("h-%d", i), Content: "body"}
 	}
 
-	ctx := context.Background()
-	result := processContentBackfill(ctx, db, contentExtractor, article)
+	if err := flushContentUpdates(db, updates); err != nil {
+		t.Fatalf("flushContentUpdates error: %v", err)
+	}
+	if got := len(db.batchedContent); got != 120 {
+		t.Errorf("batched count = %d, want 120", got)
+	}
+}
 
-	if result {
-		t.Error("expected false (DB update error), got true")
+func TestFlushContentUpdates_EmptyIsNoop(t *testing.T) {
+	db := &mockStore{batchContentErr: errors.New("should not be called")}
+	if err := flushContentUpdates(db, nil); err != nil {
+		t.Errorf("flushContentUpdates(nil) error: %v", err)
+	}
+	if len(db.batchedContent) != 0 {
+		t.Errorf("expected no RPC call on empty input, got %+v", db.batchedContent)
+	}
+}
+
+func TestFlushContentUpdates_PropagatesBatchError(t *testing.T) {
+	db := &mockStore{batchContentErr: errors.New("boom")}
+	err := flushContentUpdates(db, []database.ContentUpdate{{URLHash: "h-1", Content: "body"}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }
 
@@ -491,7 +495,7 @@ type mockStore struct {
 	contentArticles   []database.ArticleForContentBackfill
 	contentErr        error
 	batchImagesErr    error
-	updateContentErr  error
+	batchContentErr   error
 	bumpErr           error
 
 	// bumped captures calls to BumpBackfillAttempts keyed by kind — tests
@@ -503,6 +507,10 @@ type mockStore struct {
 	// across all flush batches so tests can verify the backfill writes hit the
 	// batch RPC instead of per-row PATCHes.
 	batchedImages []database.ImageUpdate
+
+	// batchedContent captures every ContentUpdate seen by
+	// BatchUpdateArticleContent across all flush batches.
+	batchedContent []database.ContentUpdate
 
 	// fetchStateUpdates captures the final BatchUpdateSourceFetchState call
 	// so tests can assert per-source circuit/ETag outcomes.
@@ -554,8 +562,9 @@ func (m *mockStore) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours 
 	return m.contentArticles, m.contentErr
 }
 
-func (m *mockStore) UpdateArticleContent(urlHash string, content string) error {
-	return m.updateContentErr
+func (m *mockStore) BatchUpdateArticleContent(updates []database.ContentUpdate) error {
+	m.batchedContent = append(m.batchedContent, updates...)
+	return m.batchContentErr
 }
 
 func (m *mockStore) BumpBackfillAttempts(urlHashes []string, kind string) error {
@@ -1313,17 +1322,15 @@ func TestProcessContentBackfill_ExtractTransportError(t *testing.T) {
 	unreachableURL := webServer.URL
 	webServer.Close()
 
-	dbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("DB should not be called on extract error")
-	}))
-	defer dbServer.Close()
-
-	db := newTestDBClient(dbServer)
 	contentExtractor := parser.NewContentExtractor()
 	article := database.ArticleForContentBackfill{URLHash: "hash-1", URL: unreachableURL}
+	queue, queued := captureContentQueue()
 
-	if result := processContentBackfill(context.Background(), db, contentExtractor, article); result {
+	if result := processContentBackfill(context.Background(), contentExtractor, article, queue); result {
 		t.Error("expected false (extract error), got true")
+	}
+	if len(*queued) != 0 {
+		t.Errorf("expected no updates queued on extract error, got %+v", *queued)
 	}
 }
 
@@ -1363,6 +1370,31 @@ func TestRunContentBackfill_ProcessesArticles(t *testing.T) {
 
 	if err := runContentBackfill(context.Background(), db); err != nil {
 		t.Fatalf("runContentBackfill returned error: %v", err)
+	}
+	// Successful extraction must flow through the batch RPC.
+	if len(db.batchedContent) != 1 || db.batchedContent[0].URLHash != "hash-1" {
+		t.Errorf("expected one batched update for hash-1, got %+v", db.batchedContent)
+	}
+}
+
+// runContentBackfill still returns nil and logs a warning when the batch
+// flush fails — same partial-progress contract as the image backfill.
+func TestRunContentBackfill_FlushErrorLogged(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is the full article content that is definitely long enough to be extracted by the readability parser. It needs to be well over one hundred characters to pass the length threshold check.</p></article></body></html>`))
+	}))
+	defer webServer.Close()
+
+	db := &mockStore{
+		contentArticles: []database.ArticleForContentBackfill{
+			{URLHash: "hash-1", URL: webServer.URL},
+		},
+		batchContentErr: errors.New("supabase 5xx"),
+	}
+
+	if err := runContentBackfill(context.Background(), db); err != nil {
+		t.Fatalf("runContentBackfill should swallow flush errors, got %v", err)
 	}
 }
 

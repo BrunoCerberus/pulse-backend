@@ -516,26 +516,44 @@ func TestBumpBackfillAttempts_EmptyListIsNoop(t *testing.T) {
 	}
 }
 
-func TestUpdateArticleContent_Success(t *testing.T) {
+func TestBatchUpdateArticleContent_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PATCH" {
-			t.Errorf("method = %s, want PATCH", r.Method)
+		if r.Method != "POST" {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/rpc/batch_update_article_content") {
+			t.Errorf("path = %s, want /rpc/batch_update_article_content", r.URL.Path)
 		}
 
 		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "content") {
-			t.Error("expected content in request body")
+		if !strings.Contains(string(body), `"content"`) {
+			t.Error("expected content key in request body")
+		}
+		if !strings.Contains(string(body), `"url_hash"`) {
+			t.Error("expected url_hash key in request body")
 		}
 
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("1"))
 	}))
 	defer server.Close()
 
 	client := newTestClient(server)
-	err := client.UpdateArticleContent("test-hash", "Article content here")
+	updates := []ContentUpdate{{URLHash: "test-hash", Content: "Article body"}}
+	if err := client.BatchUpdateArticleContent(updates); err != nil {
+		t.Errorf("BatchUpdateArticleContent error: %v", err)
+	}
+}
 
-	if err != nil {
-		t.Errorf("UpdateArticleContent error: %v", err)
+func TestBatchUpdateArticleContent_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("RPC must not be called for empty input")
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if err := client.BatchUpdateArticleContent(nil); err != nil {
+		t.Errorf("BatchUpdateArticleContent(nil) error: %v", err)
 	}
 }
 
@@ -872,7 +890,7 @@ func TestUpdateFetchLog_Error(t *testing.T) {
 	}
 }
 
-func TestUpdateArticleContent_Error(t *testing.T) {
+func TestBatchUpdateArticleContent_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(`{"error": "db error"}`))
@@ -880,7 +898,8 @@ func TestUpdateArticleContent_Error(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	if err := client.UpdateArticleContent("hash-1", "content"); err == nil {
+	updates := []ContentUpdate{{URLHash: "hash-1", Content: "body"}}
+	if err := client.BatchUpdateArticleContent(updates); err == nil {
 		t.Error("expected error for 500 response")
 	}
 }
@@ -1029,9 +1048,9 @@ func newUnreachableClient(t *testing.T) *Client {
 
 // --- http.NewRequest bad-URL branches ---
 
-func TestUpdateArticleContent_BadURL(t *testing.T) {
+func TestBatchUpdateArticleContent_BadURL(t *testing.T) {
 	c := newBadURLClient()
-	if err := c.UpdateArticleContent("h1", "body"); err == nil {
+	if err := c.BatchUpdateArticleContent([]ContentUpdate{{URLHash: "h1", Content: "body"}}); err == nil {
 		t.Error("expected bad-URL error, got nil")
 	}
 }
@@ -1089,9 +1108,9 @@ func TestGetActiveSources_BadURL(t *testing.T) {
 
 // --- httpClient.Do transport-error branches (distinct from 5xx retries) ---
 
-func TestUpdateArticleContent_TransportError(t *testing.T) {
+func TestBatchUpdateArticleContent_TransportError(t *testing.T) {
 	c := newUnreachableClient(t)
-	if err := c.UpdateArticleContent("h1", "body"); err == nil {
+	if err := c.BatchUpdateArticleContent([]ContentUpdate{{URLHash: "h1", Content: "body"}}); err == nil {
 		t.Error("expected transport error, got nil")
 	}
 }
@@ -1293,10 +1312,10 @@ func TestBumpBackfillAttempts_MarshalError(t *testing.T) {
 	})
 }
 
-func TestUpdateArticleContent_MarshalError(t *testing.T) {
+func TestBatchUpdateArticleContent_MarshalError(t *testing.T) {
 	withFailingJSONMarshal(t, func() {
 		c := newBadURLClient()
-		if err := c.UpdateArticleContent("h", "body"); err == nil {
+		if err := c.BatchUpdateArticleContent([]ContentUpdate{{URLHash: "h", Content: "body"}}); err == nil {
 			t.Error("expected marshal error, got nil")
 		}
 	})
