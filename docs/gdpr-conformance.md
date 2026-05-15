@@ -12,6 +12,8 @@ Companion documents:
 - [`docs/privacy.md`](./privacy.md) — overall privacy posture.
 - [`docs/lgpd-conformance.md`](./lgpd-conformance.md) — equivalent for the
   Brazilian Lei Geral de Proteção de Dados.
+- [`docs/ccpa-conformance.md`](./ccpa-conformance.md) — equivalent for the
+  California Consumer Privacy Act / California Privacy Rights Act.
 - [`docs/ropa.md`](./ropa.md) — Record of Processing Activities (Art. 30).
 - [`docs/data-retention.md`](./data-retention.md) — retention policy.
 
