@@ -1,0 +1,57 @@
+# Custom gitleaks rules used by the LGPD and GDPR conformance workflows.
+# Layered on top of gitleaks' built-in ruleset (extend.useDefault = true)
+# so we keep the upstream secret-detection coverage and add three
+# regulator-specific PII patterns.
+
+title = "LGPD / GDPR conformance rules"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# LGPD — Brazilian personal identifiers
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id          = "br-cpf"
+description = "Brazilian CPF (Cadastro de Pessoas Fisicas)"
+regex       = '''\b[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2}\b'''
+tags        = ["pii", "lgpd", "brazil"]
+
+[[rules]]
+id          = "br-cnpj"
+description = "Brazilian CNPJ (Cadastro Nacional da Pessoa Juridica)"
+regex       = '''\b[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2}\b'''
+tags        = ["pii", "lgpd", "brazil"]
+
+# ---------------------------------------------------------------------------
+# GDPR — European personal identifiers
+# ---------------------------------------------------------------------------
+
+[[rules]]
+id          = "iban"
+description = "IBAN (International Bank Account Number)"
+regex       = '''\b[A-Z]{2}[0-9]{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[A-Z0-9]{1,4})?\b'''
+tags        = ["pii", "gdpr", "financial"]
+
+# ---------------------------------------------------------------------------
+# Global allowlist
+#
+# Excludes the docs that intentionally discuss these patterns as
+# illustrative examples, plus the rules + allowlist files themselves
+# (which contain the patterns by definition).
+# ---------------------------------------------------------------------------
+
+[allowlist]
+description = "Documentation and config files that intentionally reference the patterns above."
+paths = [
+  '''docs/privacy\.md''',
+  '''docs/lgpd-conformance\.md''',
+  '''docs/gdpr-conformance\.md''',
+  '''docs/ropa\.md''',
+  '''docs/data-retention\.md''',
+  '''\.github/lgpd-gdpr-rules\.toml''',
+  '''\.github/pii-allowlist\.txt''',
+  '''\.github/workflows/lgpd-conformance\.yml''',
+  '''\.github/workflows/gdpr-conformance\.yml''',
+]
