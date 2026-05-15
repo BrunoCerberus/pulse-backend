@@ -1,0 +1,22 @@
+# Email addresses intentionally present in this repository.
+#
+# Every email matched by the PII-scan regex must appear here or the
+# LGPD/GDPR conformance workflows will fail the build. Keep the list
+# short — if it grows beyond ~20 lines, something has likely gone wrong
+# (a real PII leak, or the regex needs tightening).
+#
+# Format: one address per line. Blank lines and `#` comments ignored.
+
+# Maintainer — appears in commit trailers and may be referenced in docs.
+bruno.guitarpro@gmail.com
+
+# RFC 6761 reserved domain — used in Go test fixtures and example URLs.
+test@example.com
+user@example.com
+admin@example.com
+
+# Anthropic Claude Code co-author trailer used in commit messages.
+noreply@anthropic.com
+
+# Well-known SSH URL for GitHub remotes (not a deliverable mailbox).
+git@github.com
