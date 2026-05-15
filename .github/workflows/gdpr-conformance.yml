@@ -63,6 +63,7 @@ jobs:
               -g '!docs/privacy.md' \
               -g '!docs/lgpd-conformance.md' \
               -g '!docs/gdpr-conformance.md' \
+              -g '!docs/ccpa-conformance.md' \
               -g '!docs/ropa.md' \
               -g '!docs/data-retention.md' \
               -g '!.github/lgpd-gdpr-rules.toml' \
@@ -91,6 +92,7 @@ jobs:
               -g '!docs/privacy.md' \
               -g '!docs/lgpd-conformance.md' \
               -g '!docs/gdpr-conformance.md' \
+              -g '!docs/ccpa-conformance.md' \
               -g '!docs/ropa.md' \
               -g '!docs/data-retention.md' \
               -g '!.github/lgpd-gdpr-rules.toml' \
@@ -103,6 +105,32 @@ jobs:
             exit 1
           fi
           echo "OK: no EU/EEA phone patterns."
+
+      - name: US SSN pattern ban (CCPA / CPRA)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # XXX-XX-XXXX. Same exclusion set as the IBAN scan above so
+          # illustrative examples in conformance docs are permitted.
+          SSN_RE='\b\d{3}-\d{2}-\d{4}\b'
+
+          if rg --pcre2 \
+              -g '!docs/privacy.md' \
+              -g '!docs/lgpd-conformance.md' \
+              -g '!docs/gdpr-conformance.md' \
+              -g '!docs/ccpa-conformance.md' \
+              -g '!docs/ropa.md' \
+              -g '!docs/data-retention.md' \
+              -g '!.github/lgpd-gdpr-rules.toml' \
+              -g '!.github/pii-allowlist.txt' \
+              -g '!.github/workflows/lgpd-conformance.yml' \
+              -g '!.github/workflows/gdpr-conformance.yml' \
+              -e "$SSN_RE" \
+              .; then
+            echo "::error::US SSN pattern found. CCPA / CPRA: no US Social Security Numbers may be stored in this repo. See docs/ccpa-conformance.md."
+            exit 1
+          fi
+          echo "OK: no US SSN patterns."
 
       - name: Email allowlist enforcement
         shell: bash

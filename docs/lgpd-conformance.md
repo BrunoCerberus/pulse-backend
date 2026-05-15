@@ -12,6 +12,8 @@ Companion documents:
 - [`docs/privacy.md`](./privacy.md) — overall privacy posture.
 - [`docs/gdpr-conformance.md`](./gdpr-conformance.md) — equivalent for the
   European General Data Protection Regulation.
+- [`docs/ccpa-conformance.md`](./ccpa-conformance.md) — equivalent for the
+  California Consumer Privacy Act / California Privacy Rights Act.
 - [`docs/ropa.md`](./ropa.md) — Record of Processing Activities.
 - [`docs/data-retention.md`](./data-retention.md) — retention policy.
 
