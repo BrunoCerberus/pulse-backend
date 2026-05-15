@@ -27,6 +27,13 @@ on:
 permissions:
   contents: read
 
+# Cancel stale in-progress runs of this workflow on the same ref. PRs that
+# get rapid pushes drop their older runs; master and the weekly cron always
+# run to completion so we don't lose audit signal.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # ---------------------------------------------------------------------------
   # PII scan: CPF + CNPJ patterns, disallowed emails, IP-handling code paths,
@@ -50,10 +57,19 @@ jobs:
           CPF_RE='\b[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2}\b'
           CNPJ_RE='\b[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2}\b'
 
+          # Exclusion list mirrors the [allowlist] paths in
+          # .github/lgpd-gdpr-rules.toml so the regex pass and the gitleaks
+          # pass agree on where illustrative examples are allowed.
           if rg --pcre2 \
+              -g '!docs/privacy.md' \
               -g '!docs/lgpd-conformance.md' \
+              -g '!docs/gdpr-conformance.md' \
+              -g '!docs/ropa.md' \
+              -g '!docs/data-retention.md' \
               -g '!.github/lgpd-gdpr-rules.toml' \
+              -g '!.github/pii-allowlist.txt' \
               -g '!.github/workflows/lgpd-conformance.yml' \
+              -g '!.github/workflows/gdpr-conformance.yml' \
               -e "$CPF_RE" -e "$CNPJ_RE" \
               .; then
             echo "::error::CPF or CNPJ pattern found. LGPD: no Brazilian personal identifiers may be stored in this repo."
@@ -68,12 +84,20 @@ jobs:
           EMAIL_RE='\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
 
           # All email literals in the repo, excluding the allowlist itself.
+          # Both sides are lowercased before comparison: RFC 5321 specifies
+          # the domain as case-insensitive and the local part is conventionally
+          # treated as case-insensitive, so 'Bruno.Guitarpro@gmail.com' and
+          # 'bruno.guitarpro@gmail.com' must compare equal.
           found=$(rg --pcre2 -o "$EMAIL_RE" \
             -g '!.github/pii-allowlist.txt' \
-            --no-filename . 2>/dev/null | sort -u || true)
+            --no-filename . 2>/dev/null \
+            | tr '[:upper:]' '[:lower:]' \
+            | sort -u || true)
 
-          # Allowed addresses (strip comments + blank lines).
-          allowed=$(grep -vE '^[[:space:]]*(#|$)' .github/pii-allowlist.txt | sort -u)
+          # Allowed addresses (strip comments + blank lines, lowercased).
+          allowed=$(grep -vE '^[[:space:]]*(#|$)' .github/pii-allowlist.txt \
+            | tr '[:upper:]' '[:lower:]' \
+            | sort -u)
 
           # Anything in `found` not in `allowed`.
           bad=$(comm -23 <(printf '%s\n' "$found") <(printf '%s\n' "$allowed") || true)
@@ -241,7 +265,12 @@ jobs:
           # under LGPD before this list is extended.
           allowed=" categories sources articles fetch_logs "
 
-          tables=$(rg --pcre2 -oNI '^[[:space:]]*CREATE TABLE[[:space:]]+(?:IF NOT EXISTS[[:space:]]+)?([A-Za-z0-9_]+)' \
+          # Optional `schema.` prefix is consumed and discarded so a future
+          # `CREATE TABLE public.user_profiles` extracts `user_profiles`,
+          # not `public` (which would either spuriously fail or — if the
+          # schema name collides with an allowlisted table — silently slip
+          # the real table past the check).
+          tables=$(rg --pcre2 -oNI '^[[:space:]]*CREATE TABLE[[:space:]]+(?:IF NOT EXISTS[[:space:]]+)?(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)' \
             -r '$1' \
             supabase/migrations/ 2>/dev/null | sort -u || true)
 
@@ -262,12 +291,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Column-name patterns that imply PII storage. If any of these
-          # appear, conformance posture must be re-evaluated.
+          # Two patterns, both catching PII-implying column declarations:
+          #   1. Block-style:   inside CREATE TABLE, columns start the line.
+          #   2. ALTER TABLE:   `ADD COLUMN <name> <TYPE>` is mid-statement.
+          # Anchored to a type-like token following the column name so we
+          # don't catch column references in WHERE clauses or function args.
           if rg --pcre2 \
               -g 'supabase/migrations/*.sql' \
               -i \
-              '^\s*(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
+              -e '^\s*(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
+              -e 'ADD COLUMN\s+(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
               .; then
             echo "::error::A migration introduces a column name that implies PII storage. Review docs/lgpd-conformance.md before continuing."
             exit 1

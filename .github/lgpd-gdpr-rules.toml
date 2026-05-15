@@ -45,9 +45,11 @@ tags        = ["pii", "gdpr", "financial"]
 [allowlist]
 description = "Documentation and config files that intentionally reference the patterns above."
 paths = [
+  '''docs/privacy\.md''',
   '''docs/lgpd-conformance\.md''',
   '''docs/gdpr-conformance\.md''',
   '''docs/ropa\.md''',
+  '''docs/data-retention\.md''',
   '''\.github/lgpd-gdpr-rules\.toml''',
   '''\.github/pii-allowlist\.txt''',
   '''\.github/workflows/lgpd-conformance\.yml''',
