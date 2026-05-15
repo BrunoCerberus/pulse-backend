@@ -141,9 +141,23 @@ pulse-backend/
 │   │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
 │   │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
 │   │   ├── deploy-functions.yml       # Auto-deploy Edge Functions on push
-│   │   └── watchdog.yml               # Source health check every 6h (fails job on degradation)
+│   │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
+│   │   ├── lgpd-conformance.yml       # LGPD guard rails (PII bans, doc gates, ops + structural)
+│   │   └── gdpr-conformance.yml       # GDPR + CCPA guard rails (same shape, EU/US patterns)
+│   ├── lgpd-gdpr-rules.toml           # Custom gitleaks rules: CPF, CNPJ, IBAN, US SSN
+│   ├── pii-allowlist.txt              # Allowed email literals (maintainer + RFC 6761 reserved)
 │   └── dependabot.yml                 # Weekly dependency updates
-└── docs/ios-integration.md            # iOS app integration guide
+└── docs/
+    ├── api-reference.md               # Edge Function endpoints + request guards
+    ├── database-schema.md             # Schema reference
+    ├── ios-integration.md             # iOS app integration guide
+    ├── operations-runbook.md          # Day-2 ops + on-call notes
+    ├── privacy.md                     # Overall privacy posture (no end-user PII)
+    ├── lgpd-conformance.md            # LGPD (Brazil) — position + guard rails
+    ├── gdpr-conformance.md            # GDPR (EU) — position + guard rails
+    ├── ccpa-conformance.md            # CCPA / CPRA (California) — position + guard rails
+    ├── ropa.md                        # Record of Processing Activities
+    └── data-retention.md              # 7-day retention policy
 ```
 
 ## Key Components
@@ -267,8 +281,19 @@ RLS + grants:
 | `pr-checks.yml` | On PR to master only | PR title conventional-commits, go.mod Sync (`go mod tidy` must be a no-op), Migration Format (NNN_*.sql, no gaps, no duplicate prefixes) |
 | `deploy-functions.yml` | On push to master under `supabase/functions/**` | Build + deploy Edge Functions. Gated by the `production` Environment (required reviewer + master-only branch rule); pauses for human approval in the Actions UI before shipping |
 | `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) when circuit/stale/high-failure counts or `database.quota_pct` exceed thresholds |
+| `lgpd-conformance.yml` | Push/PR + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, email allowlist, IP-handling code ban, gitleaks history sweep, required-docs gates, retention + RLS + no-PII-redaction invariant, structural integrity on migrations. `cancel-in-progress` concurrency on PRs |
+| `gdpr-conformance.yml` | Push/PR + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU/EEA phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |
 
-Branch protection on `master` requires all 11 checks across `test.yml`, `security.yml`, and `pr-checks.yml` to pass before merge. Direct pushes to `master` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
+Branch protection on `master` requires all 19 checks across `test.yml`, `security.yml`, `pr-checks.yml`, `lgpd-conformance.yml`, and `gdpr-conformance.yml` to pass before merge. Direct pushes to `master` are blocked (including for admins); every change goes through a PR. Merge strategy is squash-only with `delete_branch_on_merge` enabled.
+
+## Data Protection Conformance
+
+The backend asserts and enforces a no-end-user-PII posture: public RSS news only, no personal data of identified or identifiable natural persons. The `author` byline on articles is treated under the journalism exemption (GDPR Art. 85 / LGPD Art. 4 § II / CCPA §1798.145(k)).
+
+- **Position docs** live under `docs/`: `privacy.md` (overall posture), `lgpd-conformance.md` (Brazil), `gdpr-conformance.md` (EU), `ccpa-conformance.md` (California), `ropa.md` (Art. 30 / LGPD Art. 37 ROPA), `data-retention.md` (7-day window + cleanup mechanism). Each carries a `last_reviewed:` header.
+- **Guard rails** are enforced by `lgpd-conformance.yml` and `gdpr-conformance.yml`. Each runs four parallel jobs: `pii-scan`, `docs-presence`, `operational-controls`, `structural-integrity`. CCPA's only distinctive identifier (US SSN) is enforced by an extra step in each existing `pii-scan` job rather than a third parallel workflow — chosen to limit drift between near-identical workflow files.
+- **Shared inputs**: `.github/lgpd-gdpr-rules.toml` (gitleaks custom rules: CPF, CNPJ, IBAN, US SSN; path allowlist mirrors the regex exclusion lists in the workflows) and `.github/pii-allowlist.txt` (allowed email literals; comparison is case-insensitive).
+- **When adding personal-data processing**: update (1) the relevant conformance doc, (2) the regex exclusion / allowlist if the addition is intentional, (3) `docs/ropa.md` if a new subprocessor is involved, and (4) the structural-integrity table allowlist or PII-column regex if a new table / column is added.
 
 Secrets — split by scope so deploy credentials sit behind the Environment approval:
 
