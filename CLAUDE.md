@@ -143,15 +143,31 @@ pulse-backend/
 │       ├── api-search/index.ts        # Search endpoint (1min private)
 │       ├── api-health/index.ts        # Health check endpoint (no-store)
 │       └── api-source-health/index.ts # Per-source fetch health + summary + DB size (60s cache)
-├── .github/workflows/
-│   ├── fetch-rss.yml                  # Runs every 2 hours
-│   ├── cleanup.yml                    # Runs daily at 3 AM UTC
-│   ├── backfill.yml                   # og:image + content backfill daily at 04:30 UTC
-│   ├── test.yml                       # Unit tests + lint + govulncheck on push/PR
-│   ├── security.yml                   # Secret scan, SAST, deps, SBOM (push/PR + weekly)
-│   ├── deploy-functions.yml           # Auto-deploy Edge Functions on push
-│   └── watchdog.yml                   # Source health check every 6h (fails job on degradation)
-└── docs/ios-integration.md            # iOS app integration guide
+├── .github/
+│   ├── workflows/
+│   │   ├── fetch-rss.yml              # Runs every 2 hours
+│   │   ├── cleanup.yml                # Runs daily at 3 AM UTC
+│   │   ├── backfill.yml               # og:image + content backfill daily at 04:30 UTC
+│   │   ├── test.yml                   # Unit tests + lint + govulncheck on push/PR
+│   │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
+│   │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
+│   │   ├── deploy-functions.yml       # Auto-deploy Edge Functions on push
+│   │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
+│   │   ├── lgpd-conformance.yml       # LGPD guard rails (PII bans, doc gates, ops + structural)
+│   │   └── gdpr-conformance.yml       # GDPR + CCPA guard rails (same shape, EU/US patterns)
+│   ├── lgpd-gdpr-rules.toml           # Custom gitleaks rules: CPF, CNPJ, IBAN, US SSN
+│   └── pii-allowlist.txt              # Allowed email literals (maintainer + RFC 6761 reserved)
+└── docs/
+    ├── api-reference.md               # Edge Function endpoints + request guards
+    ├── database-schema.md             # Schema reference
+    ├── ios-integration.md             # iOS app integration guide
+    ├── operations-runbook.md          # Day-2 ops + on-call notes
+    ├── privacy.md                     # Overall privacy posture (no end-user PII)
+    ├── lgpd-conformance.md            # LGPD (Brazil) — position + guard rails
+    ├── gdpr-conformance.md            # GDPR (EU) — position + guard rails
+    ├── ccpa-conformance.md            # CCPA / CPRA (California) — position + guard rails
+    ├── ropa.md                        # Record of Processing Activities
+    └── data-retention.md              # 7-day retention policy
 ```
 
 ## Key Components
@@ -333,8 +349,17 @@ make test-deno      # Deno Edge Function tests
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy-functions.yml**: Builds + deploys Edge Functions on push to master under `supabase/functions/**`. Gated by the `production` GitHub Environment — pauses for required-reviewer approval in the Actions UI before shipping. `SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF` live on that Environment, not at repo scope, so they aren't exposed to other workflows.
 - **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, `high_failure_count`, or `database.quota_pct` (trips at 60% — tightened from 70% after the May 2026 cleanup brought the DB to 21%) exceed thresholds set inline in the workflow. The DB quota check tolerates `database == null` (RPC failure) without alerting so transient size-fetch errors don't false-page.
+- **lgpd-conformance.yml** + **gdpr-conformance.yml**: Push/PR to master + weekly Mon 07:00 UTC. Four parallel jobs each (`pii-scan`, `docs-presence`, `operational-controls`, `structural-integrity`). Enforce regulator-specific PII bans (CPF/CNPJ for LGPD; IBAN + EU/EEA phone for GDPR; SSN for CCPA in both), a case-insensitive email allowlist via `.github/pii-allowlist.txt`, no `RemoteAddr` / `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` in `rss-worker/`, presence + non-emptiness of every doc under `docs/{privacy,lgpd-conformance,gdpr-conformance,ccpa-conformance,ropa,data-retention}.md`, `ArticleRetentionDays = 7`, no plaintext `http://` in migrations, the literal `No PII redaction layer required` in both regulator docs, RLS still on, schema-qualifier-aware CREATE TABLE allowlist, ALTER TABLE ADD COLUMN PII bans, and `| GitHub ` / `| Supabase ` rows in `docs/ropa.md`. Run with a `cancel-in-progress` concurrency block for PRs.
 
-All 11 job names from `test.yml`, `security.yml`, and `pr-checks.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
+All 19 job names from `test.yml`, `security.yml`, `pr-checks.yml`, `lgpd-conformance.yml`, and `gdpr-conformance.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges.
+
+## Data Protection Conformance
+
+The backend asserts and enforces a no-end-user-PII posture: it processes public RSS news only, no personal data of identified or identifiable natural persons. The `author` byline on articles is treated under the journalism exemption (GDPR Art. 85 / LGPD Art. 4 § II / CCPA §1798.145(k)).
+
+Position docs (`docs/privacy.md`, `docs/lgpd-conformance.md`, `docs/gdpr-conformance.md`, `docs/ccpa-conformance.md`, `docs/ropa.md`, `docs/data-retention.md`) describe the posture; the conformance workflows above keep it true over time. CCPA's only distinctive identifier (US SSN) is enforced by an extra step in each existing pii-scan job rather than a third parallel workflow.
+
+Adding personal-data processing requires updating: (1) the relevant conformance doc, (2) the `pii-scan` exclusion or allowlist if the new data is intentional, (3) `docs/ropa.md` if a new subprocessor is involved, and (4) any allowlist (`structural-integrity` table allowlist, PII-column regex, email allowlist).
 
 Secrets:
 - **Repo scope** — `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (used by `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`; the watchdog only needs `SUPABASE_URL`).
