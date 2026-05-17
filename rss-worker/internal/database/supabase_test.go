@@ -443,8 +443,8 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 func TestGetArticlesNeedingContent_Success(t *testing.T) {
 	cap := 5000
 	expectedArticles := []ArticleForContentBackfill{
-		{URLHash: "hash1", URL: "https://example.com/1", SourceID: "src-1", Source: &EmbeddedSourceCap{MaxContentLength: &cap}},
-		{URLHash: "hash2", URL: "https://example.com/2", SourceID: "src-2"}, // no cap → Source.MaxContentLength nil
+		{URLHash: "hash1", URL: "https://example.com/1", Source: &EmbeddedSourceCap{MaxContentLength: &cap}},
+		{URLHash: "hash2", URL: "https://example.com/2"}, // no cap → Source.MaxContentLength nil
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

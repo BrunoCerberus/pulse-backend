@@ -500,16 +500,17 @@ type ArticleForBackfill struct {
 // ArticleForContentBackfill represents minimal article data needed for content extraction.
 // Only the fields required for fetching article content are included.
 type ArticleForContentBackfill struct {
-	URLHash  string  `json:"url_hash"`  // SHA256 hash of URL, used as unique identifier
-	URL      string  `json:"url"`       // Original article URL to extract content from
-	Content  *string `json:"content"`   // Current content (nil or empty for backfill candidates)
-	SourceID string  `json:"source_id"` // FK to sources; carries the per-source content cap below
+	URLHash string  `json:"url_hash"` // SHA256 hash of URL, used as unique identifier
+	URL     string  `json:"url"`      // Original article URL to extract content from
+	Content *string `json:"content"`  // Current content (nil or empty for backfill candidates)
 
 	// Source is the PostgREST-embedded sub-object returned by
 	// ?select=...,sources(max_content_length). Surfaces only the cap so the
 	// backfill clamp can apply the same MIN(source-cap, global-cap) rule the
 	// initial-parse path uses. nil if PostgREST omits the embed (e.g. when
 	// the row's source_id resolves to a deleted source — defensive).
+	// PostgREST resolves the embed via the articles→sources FK; the outer
+	// select does not need to project source_id for the join to work.
 	Source *EmbeddedSourceCap `json:"sources,omitempty"`
 }
 
@@ -565,7 +566,7 @@ func (c *Client) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int
 		"and=(or(content.is.null,content.eq.),content_backfill_attempts.lt.%d,or(content_backfill_last_attempt_at.is.null,content_backfill_last_attempt_at.lt.%s))",
 		maxAttempts, cutoff,
 	)
-	url := fmt.Sprintf("%s/articles?select=url_hash,url,content,source_id,sources(max_content_length)&%s&limit=%d", c.baseURL, filter, limit)
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,content,sources(max_content_length)&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

@@ -847,7 +847,7 @@ func TestItemToArticle(t *testing.T) {
 	_ = now // used indirectly
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			article := p.itemToArticle(tt.item, source)
+			article := p.itemToArticle(tt.item, source, maxContentLen)
 			tt.check(t, article)
 		})
 	}
@@ -867,7 +867,7 @@ func TestItemToArticle_LanguagePropagation(t *testing.T) {
 		Link:  "https://example.com/noticia",
 	}
 
-	article := p.itemToArticle(item, source)
+	article := p.itemToArticle(item, source, maxContentLen)
 	if article == nil {
 		t.Fatal("expected article, got nil")
 	}
@@ -1420,7 +1420,7 @@ func TestItemToArticle_EmbeddedCategory(t *testing.T) {
 		Link:  "https://example.com/1",
 	}
 
-	article := p.itemToArticle(item, source)
+	article := p.itemToArticle(item, source, maxContentLen)
 	if article == nil {
 		t.Fatal("expected article, got nil")
 	}
@@ -1807,7 +1807,7 @@ func TestItemToArticle_DropsUnsafeURL(t *testing.T) {
 		Language:   "en",
 	}
 	item := &gofeed.Item{Title: "T", Link: "javascript:alert(1)"}
-	if got := p.itemToArticle(item, source); got != nil {
+	if got := p.itemToArticle(item, source, maxContentLen); got != nil {
 		t.Error("expected nil for javascript: link")
 	}
 }
@@ -1817,7 +1817,7 @@ func TestItemToArticle_DropsOversizedURL(t *testing.T) {
 	source := models.Source{ID: "src-1", Name: "Test", CategoryID: strPtr("cat-1"), Language: "en"}
 	huge := "https://example.com/" + strings.Repeat("x", maxURLLen+1)
 	item := &gofeed.Item{Title: "T", Link: huge}
-	if got := p.itemToArticle(item, source); got != nil {
+	if got := p.itemToArticle(item, source, maxContentLen); got != nil {
 		t.Error("expected nil for oversized URL")
 	}
 }
@@ -1830,7 +1830,7 @@ func TestItemToArticle_DropsUnsafeThumbnail(t *testing.T) {
 		Link:  "https://example.com/a",
 		Image: &gofeed.Image{URL: "javascript:alert(1)"},
 	}
-	article := p.itemToArticle(item, source)
+	article := p.itemToArticle(item, source, maxContentLen)
 	if article == nil {
 		t.Fatal("article should not be nil")
 	}

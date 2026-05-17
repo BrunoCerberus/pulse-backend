@@ -301,10 +301,9 @@ func TestProcessContentBackfill_AppliesPerSourceCap(t *testing.T) {
 	cap := 200
 	contentExtractor := parser.NewContentExtractor()
 	article := database.ArticleForContentBackfill{
-		URLHash:  "hash-capped",
-		URL:      webServer.URL,
-		SourceID: "src-1",
-		Source:   &database.EmbeddedSourceCap{MaxContentLength: &cap},
+		URLHash: "hash-capped",
+		URL:     webServer.URL,
+		Source:  &database.EmbeddedSourceCap{MaxContentLength: &cap},
 	}
 	queue, queued := captureContentQueue()
 
