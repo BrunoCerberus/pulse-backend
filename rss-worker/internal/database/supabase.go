@@ -442,6 +442,46 @@ func (c *Client) doWithRetry(method, url string, body []byte, extraHeaders ...ma
 	return nil, fmt.Errorf("request failed after %d retries: %w", maxRetries, lastErr)
 }
 
+// CleanupOldImageURLs nulls image_url + thumbnail_url on articles older than
+// daysToKeep via the prune_old_image_urls RPC (migration 031). Returns the
+// total row count touched across all batches.
+//
+// Storage win is gradual: PostgreSQL UPDATE creates dead tuples reclaimed
+// only at the next VACUUM / row deletion. The full benefit shows up over
+// the 7-day cleanup_old_articles cycle, not on this RPC call.
+func (c *Client) CleanupOldImageURLs(daysToKeep int) (int, error) {
+	url := fmt.Sprintf("%s/rpc/prune_old_image_urls", c.baseURL)
+
+	data := map[string]int{"days_to_keep": daysToKeep}
+	body, err := jsonMarshal(data)
+	if err != nil {
+		return 0, err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return 0, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to prune image URLs: %s - %s", resp.Status, readErrorBody(resp))
+	}
+
+	var count int
+	if err := json.NewDecoder(resp.Body).Decode(&count); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 // CleanupOldFetchLogs removes fetch log entries older than the specified days.
 // Uses Supabase REST API DELETE with date filter.
 func (c *Client) CleanupOldFetchLogs(daysToKeep int) (int, error) {
@@ -525,12 +565,23 @@ type EmbeddedSourceCap struct {
 // Excludes articles whose attempt counter is at maxAttempts or whose last attempt
 // was within cooldownHours — this prevents the worker from re-fetching dead URLs
 // on every cron tick (see migration 018).
-func (c *Client) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]ArticleForBackfill, error) {
+//
+// maxAgeDays additionally excludes articles whose created_at is older than the
+// prune cutoff (migration 031). Must match cfg.ImagePruneDays so the backfill
+// candidate set and the prune cutoff stay in lockstep — otherwise the worker
+// would re-fetch og:images for articles whose URLs were just nulled by prune.
+// maxAgeDays <= 0 disables the age filter (used by tests that don't care).
+func (c *Client) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]ArticleForBackfill, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(cooldownHours) * time.Hour).Format(time.RFC3339)
-	filter := fmt.Sprintf(
-		"and=(or(image_url.is.null,image_url.eq.thumbnail_url,image_url.like.*width=140*),image_backfill_attempts.lt.%d,or(image_backfill_last_attempt_at.is.null,image_backfill_last_attempt_at.lt.%s))",
+	andClauses := fmt.Sprintf(
+		"or(image_url.is.null,image_url.eq.thumbnail_url,image_url.like.*width=140*),image_backfill_attempts.lt.%d,or(image_backfill_last_attempt_at.is.null,image_backfill_last_attempt_at.lt.%s)",
 		maxAttempts, cutoff,
 	)
+	if maxAgeDays > 0 {
+		ageCutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays).Format(time.RFC3339)
+		andClauses += ",created_at.gte." + ageCutoff
+	}
+	filter := "and=(" + andClauses + ")"
 	url := fmt.Sprintf("%s/articles?select=url_hash,url,image_url,thumbnail_url&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
