@@ -482,6 +482,47 @@ func (c *Client) CleanupOldImageURLs(daysToKeep int) (int, error) {
 	return count, nil
 }
 
+// CleanupOldContent nulls articles.content on rows older than daysToKeep via
+// the prune_old_content RPC (migration 032). Returns total rows touched.
+//
+// DESTRUCTIVE to the iOS article-detail view for the affected age band —
+// iOS reads articles_with_source directly and gets NULL content back for
+// pruned rows. Must be paired with iOS-side fallback (placeholder / "View
+// on source" link / summary-only render) before the daily cleanup invokes
+// it in production.
+func (c *Client) CleanupOldContent(daysToKeep int) (int, error) {
+	url := fmt.Sprintf("%s/rpc/prune_old_content", c.baseURL)
+
+	data := map[string]int{"days_to_keep": daysToKeep}
+	body, err := jsonMarshal(data)
+	if err != nil {
+		return 0, err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return 0, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to prune content: %s - %s", resp.Status, readErrorBody(resp))
+	}
+
+	var count int
+	if err := json.NewDecoder(resp.Body).Decode(&count); err != nil {
+		return 0, err
+	}
+
+	return count, nil
+}
+
 // CleanupOldFetchLogs removes fetch log entries older than the specified days.
 // Uses Supabase REST API DELETE with date filter.
 func (c *Client) CleanupOldFetchLogs(daysToKeep int) (int, error) {
@@ -611,12 +652,25 @@ func (c *Client) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, ma
 // GetArticlesNeedingContent retrieves articles that need content backfill
 // (where content is null or empty). Excludes articles that exhausted maxAttempts
 // or had an attempt within cooldownHours (see migration 018).
-func (c *Client) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]ArticleForContentBackfill, error) {
+//
+// maxAgeDays additionally excludes articles older than the prune cutoff
+// (migration 032). Must match cfg.ContentPruneDays so the backfill candidate
+// set and the prune cutoff stay in lockstep — without this, backfill would
+// re-extract content from publishers for hundreds of articles per day whose
+// content was just nulled by prune, silently undoing the prune AND burning
+// the per-host rate-limit budget. maxAgeDays <= 0 disables the filter
+// (used by tests).
+func (c *Client) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]ArticleForContentBackfill, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(cooldownHours) * time.Hour).Format(time.RFC3339)
-	filter := fmt.Sprintf(
-		"and=(or(content.is.null,content.eq.),content_backfill_attempts.lt.%d,or(content_backfill_last_attempt_at.is.null,content_backfill_last_attempt_at.lt.%s))",
+	andClauses := fmt.Sprintf(
+		"or(content.is.null,content.eq.),content_backfill_attempts.lt.%d,or(content_backfill_last_attempt_at.is.null,content_backfill_last_attempt_at.lt.%s)",
 		maxAttempts, cutoff,
 	)
+	if maxAgeDays > 0 {
+		ageCutoff := time.Now().UTC().AddDate(0, 0, -maxAgeDays).Format(time.RFC3339)
+		andClauses += ",created_at.gte." + ageCutoff
+	}
+	filter := "and=(" + andClauses + ")"
 	url := fmt.Sprintf("%s/articles?select=url_hash,url,content,sources(max_content_length)&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
