@@ -76,6 +76,36 @@ func SetHostRateLimit(rps float64, burst int) {
 	hostBurst = burst
 }
 
+// EffectiveContentCap returns the effective per-article content cap (in runes)
+// given an optional per-source override. A nil or non-positive perSource value
+// falls through to the global maxContentLen ceiling. A positive perSource is
+// clamped to MIN(perSource, maxContentLen) so a misconfigured large value
+// (e.g. a typo'd UPDATE setting a source to 50_000_000) cannot escape the
+// global ceiling that defends against memory exhaustion from a hostile feed.
+//
+// Exported so the backfill path (main.processContentBackfill) can apply the
+// same clamp the initial-parse path applies; sharing this function keeps the
+// two cutoffs from drifting.
+func EffectiveContentCap(perSource *int) int {
+	if perSource == nil || *perSource <= 0 {
+		return maxContentLen
+	}
+	if *perSource < maxContentLen {
+		return *perSource
+	}
+	return maxContentLen
+}
+
+// SanitizeContent is the exported entry point used by callers outside the
+// parser package (notably main.processContentBackfill) so backfill writes
+// receive the same control-char / bidi-codepoint stripping + rune-count
+// truncation as the initial-parse writes. Pass maxRunes = 0 to skip
+// truncation. Param name matches sanitizeText's `max` convention and avoids
+// shadowing the Go builtin cap().
+func SanitizeContent(s string, maxRunes int) string {
+	return sanitizeText(s, maxRunes)
+}
+
 // New creates a new Parser. Uses the current package rate-limit settings;
 // call SetHostRateLimit first to override defaults.
 func New() *Parser {
@@ -174,10 +204,14 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 		return nil, err
 	}
 
+	// Cap is invariant per ParseFeed call — computed once and threaded into
+	// both the per-item path (itemToArticle) and the enrichment workers.
+	contentCap := EffectiveContentCap(source.MaxContentLength)
+
 	articles := make([]*models.Article, 0, len(feed.Items))
 
 	for _, item := range feed.Items {
-		article := p.itemToArticle(item, source)
+		article := p.itemToArticle(item, source, contentCap)
 		if article != nil {
 			articles = append(articles, article)
 		}
@@ -186,8 +220,8 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 	// Fetch og:images in parallel for high-resolution header images
 	p.enrichWithOGImages(ctx, articles)
 
-	// Extract content for articles that don't have it from RSS
-	p.enrichWithContent(ctx, articles)
+	// Extract content for articles that don't have it from RSS.
+	p.enrichWithContent(ctx, articles, contentCap)
 
 	return &ParseResult{
 		Articles:     articles,
@@ -276,7 +310,9 @@ func (p *Parser) fetchOGImageForArticle(ctx context.Context, article *models.Art
 }
 
 // enrichWithContent extracts full article content for articles that don't have it.
-func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Article) enrichStats {
+// contentCap is the effective per-source content length cap (runes) applied
+// after extraction; passed in from ParseFeed so all workers use the same value.
+func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Article, contentCap int) enrichStats {
 	var needsContent []*models.Article
 	for _, article := range articles {
 		if article.Content == nil || *article.Content == "" {
@@ -308,7 +344,7 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 					return
 				default:
 					before := article.Content
-					p.fetchContentForArticle(ctx, article)
+					p.fetchContentForArticle(ctx, article, contentCap)
 					if article.Content != before {
 						success.Add(1)
 					} else {
@@ -333,8 +369,10 @@ func (p *Parser) enrichWithContent(ctx context.Context, articles []*models.Artic
 	return stats
 }
 
-// fetchContentForArticle extracts content for a single article
-func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Article) {
+// fetchContentForArticle extracts content for a single article. contentCap is
+// the per-source-aware rune cap (already clamped to the global ceiling by
+// EffectiveContentCap upstream).
+func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Article, contentCap int) {
 	content, err := p.contentExtractor.ExtractTextContent(ctx, article.URL)
 	if err != nil {
 		logger.Debugf("[CONTENT] ERROR fetching %s: %v", article.URL, err)
@@ -342,7 +380,7 @@ func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Art
 	}
 
 	if content != "" {
-		content = sanitizeText(content, maxContentLen)
+		content = sanitizeText(content, contentCap)
 		article.Content = &content
 		logger.Debugf("[CONTENT] SUCCESS %s (%d chars)", article.URL, len(content))
 	} else {
@@ -352,7 +390,9 @@ func (p *Parser) fetchContentForArticle(ctx context.Context, article *models.Art
 
 // itemToArticle converts a gofeed.Item to our Article model.
 // Returns nil if the item is missing a required field or has an unsafe URL.
-func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.Article {
+// contentCap is the per-source-aware content rune ceiling, hoisted out of
+// the per-item loop in ParseFeed since it's invariant across items.
+func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentCap int) *models.Article {
 	if item.Title == "" {
 		return nil
 	}
@@ -392,10 +432,10 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source) *models.
 		article.Summary = &desc
 	}
 
-	// Content (if available)
+	// Content (if available) — clamped via the hoisted contentCap.
 	if item.Content != "" {
 		content := cleanHTML(item.Content)
-		content = sanitizeText(content, maxContentLen)
+		content = sanitizeText(content, contentCap)
 		article.Content = &content
 	}
 

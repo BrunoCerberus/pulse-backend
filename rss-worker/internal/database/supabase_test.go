@@ -441,9 +441,10 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 }
 
 func TestGetArticlesNeedingContent_Success(t *testing.T) {
+	cap := 5000
 	expectedArticles := []ArticleForContentBackfill{
-		{URLHash: "hash1", URL: "https://example.com/1"},
-		{URLHash: "hash2", URL: "https://example.com/2"},
+		{URLHash: "hash1", URL: "https://example.com/1", Source: &EmbeddedSourceCap{MaxContentLength: &cap}},
+		{URLHash: "hash2", URL: "https://example.com/2"}, // no cap → Source.MaxContentLength nil
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -452,6 +453,11 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 		}
 		if !strings.Contains(r.URL.String(), "content_backfill_attempts.lt.5") {
 			t.Errorf("expected content_backfill_attempts.lt.5 filter, got %s", r.URL.String())
+		}
+		// PR 4: the select must embed source max_content_length so the
+		// backfill clamp matches the parser-side cap.
+		if !strings.Contains(r.URL.String(), "sources(max_content_length)") {
+			t.Errorf("expected sources(max_content_length) embed in select, got %s", r.URL.String())
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -468,6 +474,12 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 
 	if len(articles) != 2 {
 		t.Errorf("got %d articles, want 2", len(articles))
+	}
+	if articles[0].Source == nil || articles[0].Source.MaxContentLength == nil || *articles[0].Source.MaxContentLength != 5000 {
+		t.Errorf("articles[0].Source.MaxContentLength = %v, want 5000", articles[0].Source)
+	}
+	if articles[1].Source != nil && articles[1].Source.MaxContentLength != nil {
+		t.Errorf("articles[1].Source.MaxContentLength = %v, want nil (no per-source override)", articles[1].Source.MaxContentLength)
 	}
 }
 

@@ -127,7 +127,8 @@ pulse-backend/
 │   │   ├── 026_add_batch_content_update_rpc.sql # Batch content updates RPC for backfill
 │   │   ├── 027_security_hardening.sql         # Audit-driven hardening: explicit search_articles projection + 200-char cap + 3s timeout; SECURITY DEFINER funcs rebuilt with `search_path = ''` + in-function role check; column-level GRANT on articles; articles_with_source recreated; source_health + get_db_size_bytes revoked from anon
 │   │   ├── 028_search_articles_explicit_casts.sql # Hotfix consolidation: replace pg_catalog.least with bare LEAST + add ::TEXT casts on VARCHAR(N) cols in search_articles RETURNS TABLE
-│   │   └── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression from pglz to LZ4 (PG14+ build option); new writes only — existing rows rewrite via 7d cleanup cycle, no VACUUM FULL
+│   │   ├── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression from pglz to LZ4 (PG14+ build option); new writes only — existing rows rewrite via 7d cleanup cycle, no VACUUM FULL
+│   │   └── 030_add_source_max_content_length.sql # Optional per-source content cap (sources.max_content_length INT). Worker clamps to MIN(this, global maxContentLen) at both parse and backfill sites
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers

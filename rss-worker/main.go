@@ -720,6 +720,11 @@ func runContentBackfill(ctx context.Context, db Store) error {
 // from a single article's webpage. If valid content is extracted, enqueues
 // a ContentUpdate for the caller to batch-write later. Returns true if an
 // update was queued.
+//
+// Applies parser.SanitizeContent with the per-source-aware effective cap so
+// backfilled content matches what initial-parse writes would have stored —
+// without this clamp the backfill path could silently insert arbitrarily
+// large content from go-readability, bypassing the parser's defences.
 func processContentBackfill(ctx context.Context, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill, queue func(database.ContentUpdate)) bool {
 	articleLog := logger.With("kind", "content", "url_hash", article.URLHash, "url", article.URL)
 
@@ -733,6 +738,12 @@ func processContentBackfill(ctx context.Context, contentExtractor *parser.Conten
 		articleLog.Debug("backfill_not_found")
 		return false
 	}
+
+	var perSourceCap *int
+	if article.Source != nil {
+		perSourceCap = article.Source.MaxContentLength
+	}
+	content = parser.SanitizeContent(content, parser.EffectiveContentCap(perSourceCap))
 
 	queue(database.ContentUpdate{
 		URLHash: article.URLHash,

@@ -92,6 +92,7 @@ Self-hosted news aggregation backend for the Pulse iOS app. Uses **Go** for RSS 
    - `supabase/migrations/027_security_hardening.sql` - Multi-finding hardening: `search_articles` explicit projection + 200-char input cap + 3s statement_timeout; SECURITY DEFINER funcs rebuilt with `search_path = ''` and in-function role check; column-level GRANT on `articles` (anon loses `url_hash` + backfill state); `articles_with_source` recreated with explicit projection; `source_health` + `get_db_size_bytes` revoked from anon (Edge Function uses service role internally); defence-in-depth REVOKE on `fetch_logs`
    - `supabase/migrations/028_search_articles_explicit_casts.sql` - Hotfix consolidation: replace `pg_catalog.least` with bare `LEAST` + add `::TEXT` casts on the VARCHAR(N) columns in `search_articles` RETURNS TABLE
    - `supabase/migrations/029_compress_articles_content_lz4.sql` - Switch `articles.content` TOAST compression from `pglz` to `lz4` (Supabase PG build supports `--with-lz4`); affects new writes only — existing rows rewrite naturally over the 7-day cleanup cycle, no `VACUUM FULL` (free-tier has no maintenance window)
+   - `supabase/migrations/030_add_source_max_content_length.sql` - Optional per-source content length cap (`sources.max_content_length INT`, default NULL = use global). Worker clamps to `MIN(this, global maxContentLen)` at both the initial-parse site and the content backfill site — a misconfigured large value can't escape the global ceiling.
 
 This creates:
 - `categories` table with 10 categories (including Podcasts & Videos)
@@ -235,7 +236,8 @@ pulse-backend/
 │   │   ├── 026_add_batch_content_update_rpc.sql  # Batch content-update RPC
 │   │   ├── 027_security_hardening.sql            # Audit-driven hardening (search_articles, RLS column grants, view projection, REVOKE source_health/get_db_size_bytes from anon)
 │   │   ├── 028_search_articles_explicit_casts.sql # Hotfix: bare LEAST + ::TEXT casts on VARCHAR(N) cols in search_articles
-│   │   └── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression pglz → lz4 (new writes; existing rows rewrite via 7d cleanup)
+│   │   ├── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression pglz → lz4 (new writes; existing rows rewrite via 7d cleanup)
+│   │   └── 030_add_source_max_content_length.sql # Optional per-source content cap (sources.max_content_length INT); worker clamps to MIN(this, global) at parse + backfill
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities, memory cache + tests
 │       ├── api-categories/            # Categories endpoint (24h cache)

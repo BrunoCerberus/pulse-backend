@@ -281,6 +281,43 @@ func TestProcessContentBackfill_ExtractError(t *testing.T) {
 	}
 }
 
+// TestProcessContentBackfill_AppliesPerSourceCap exercises the article.Source
+// branch added by PR 4: when PostgREST embedded a small max_content_length
+// override for the article's source, backfilled content gets clamped to that
+// cap before being queued — mirroring the initial-parse path's behaviour so
+// the two writers can't diverge on what's stored.
+func TestProcessContentBackfill_AppliesPerSourceCap(t *testing.T) {
+	// Build an article body whose extracted text comfortably exceeds the
+	// per-source cap so we can observe truncation.
+	body := `<html><head><title>Article</title></head><body><article><p>` +
+		strings.Repeat("alpha ", 500) +
+		`</p></article></body></html>`
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(body))
+	}))
+	defer webServer.Close()
+
+	cap := 200
+	contentExtractor := parser.NewContentExtractor()
+	article := database.ArticleForContentBackfill{
+		URLHash: "hash-capped",
+		URL:     webServer.URL,
+		Source:  &database.EmbeddedSourceCap{MaxContentLength: &cap},
+	}
+	queue, queued := captureContentQueue()
+
+	if !processContentBackfill(context.Background(), contentExtractor, article, queue) {
+		t.Fatal("expected processContentBackfill to return true")
+	}
+	if len(*queued) != 1 {
+		t.Fatalf("expected 1 queued update, got %d", len(*queued))
+	}
+	if got := len([]rune((*queued)[0].Content)); got != cap {
+		t.Errorf("content rune length = %d, want %d (clamped to per-source cap)", got, cap)
+	}
+}
+
 // --- flushContentUpdates tests ---
 
 func TestFlushContentUpdates_BatchesAndCallsRPC(t *testing.T) {
