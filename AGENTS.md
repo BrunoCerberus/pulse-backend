@@ -121,7 +121,8 @@ pulse-backend/
 │   │   ├── 027_security_hardening.sql             # Audit-driven hardening: explicit search_articles projection, search_path='' on SECURITY DEFINER funcs, column-level GRANT on articles, view re-projection, source_health/get_db_size_bytes revoked from anon
 │   │   ├── 028_search_articles_explicit_casts.sql # Hotfix: bare LEAST + ::TEXT casts on VARCHAR(N) cols in search_articles
 │   │   ├── 029_compress_articles_content_lz4.sql  # Switch articles.content TOAST compression pglz → lz4 (new writes only; existing rows rewrite via 7d cleanup cycle, no VACUUM FULL)
-│   │   └── 030_add_source_max_content_length.sql  # Optional per-source content cap (sources.max_content_length INT); worker clamps to MIN(this, global) at parse + backfill
+│   │   ├── 030_add_source_max_content_length.sql  # Optional per-source content cap (sources.max_content_length INT); worker clamps to MIN(this, global) at parse + backfill
+│   │   └── 031_prune_old_image_urls_rpc.sql       # prune_old_image_urls(days_to_keep) RPC — batched NULL of image_url + thumbnail_url on stale rows; runCleanup step + age filter on backfill query
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts

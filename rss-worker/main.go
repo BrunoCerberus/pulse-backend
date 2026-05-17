@@ -89,7 +89,8 @@ type Store interface {
 	UpdateFetchLog(log *models.FetchLog) error
 	CleanupOldArticles(daysToKeep int) (int, error)
 	CleanupOldFetchLogs(daysToKeep int) (int, error)
-	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error)
+	CleanupOldImageURLs(daysToKeep int) (int, error)
+	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForBackfill, error)
 	BatchUpdateArticleImages(updates []database.ImageUpdate) error
 	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
 	BatchUpdateArticleContent(updates []database.ContentUpdate) error
@@ -330,10 +331,10 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "cleanup":
-			runCleanup(baseCtx, db, cfg.ArticleRetentionDays)
+			runCleanup(baseCtx, db, cfg)
 			return
 		case "backfill-images":
-			if err := runOGImageBackfill(baseCtx, db); err != nil && !errors.Is(err, context.Canceled) {
+			if err := runOGImageBackfill(baseCtx, db, cfg.ImagePruneDays); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Fatalf("Image backfill failed: %v", err)
 			}
 			return
@@ -531,19 +532,31 @@ func processSource(ctx context.Context, db Store, rssParser *parser.Parser, sour
 	return result
 }
 
-// runCleanup removes articles older than the specified retention period.
-// It calls the database's cleanup_old_articles function and logs the count
-// of deleted articles. Exits fatally if the cleanup operation fails.
+// runCleanup removes articles older than the specified retention period and
+// prunes image URLs on stale-but-not-yet-deleted rows. It is called from
+// `rss-worker cleanup` (cron daily).
+//
+// Steps, in order:
+//  1. CleanupOldArticles — DELETE rows older than cfg.ArticleRetentionDays.
+//     Fatal on error: if articles can't be deleted, the table grows
+//     unbounded and the watchdog will alert.
+//  2. CleanupOldFetchLogs — DELETE fetch_logs rows older than the same window.
+//     Non-fatal: monitoring data, not load-bearing.
+//  3. CleanupOldImageURLs — NULL out image_url + thumbnail_url on articles
+//     older than cfg.ImagePruneDays. Non-fatal: storage reduction is best-
+//     effort; failing here is a slope-of-growth concern, not a correctness
+//     concern.
+//
 // If ctx is already cancelled (signal received before we start), skip cleanly.
-func runCleanup(ctx context.Context, db Store, daysToKeep int) {
+func runCleanup(ctx context.Context, db Store, cfg *config.Config) {
 	if err := ctx.Err(); err != nil {
 		logger.Infof("Cleanup skipped: %v", err)
 		return
 	}
 
-	logger.Infof("🧹 Running cleanup (keeping %d days of articles)", daysToKeep)
+	logger.Infof("🧹 Running cleanup (keeping %d days of articles)", cfg.ArticleRetentionDays)
 
-	deleted, err := db.CleanupOldArticles(daysToKeep)
+	deleted, err := db.CleanupOldArticles(cfg.ArticleRetentionDays)
 	if err != nil {
 		logger.Fatalf("Cleanup failed: %v", err)
 	}
@@ -551,11 +564,21 @@ func runCleanup(ctx context.Context, db Store, daysToKeep int) {
 	logger.Infof("✅ Cleanup complete: deleted %d old articles", deleted)
 
 	// Clean up old fetch logs (non-fatal on error)
-	logsDeleted, err := db.CleanupOldFetchLogs(daysToKeep)
+	logsDeleted, err := db.CleanupOldFetchLogs(cfg.ArticleRetentionDays)
 	if err != nil {
 		logger.Warnf("Failed to cleanup old fetch logs: %v", err)
 	} else {
 		logger.Infof("🧹 Cleaned up %d old fetch logs", logsDeleted)
+	}
+
+	// Prune image URLs on articles older than ImagePruneDays (non-fatal).
+	// The backfill candidate query uses the same cutoff so the worker won't
+	// re-fetch og:images for articles whose URLs were just nulled here.
+	imgPruned, err := db.CleanupOldImageURLs(cfg.ImagePruneDays)
+	if err != nil {
+		logger.Warnf("Failed to prune old image URLs: %v", err)
+	} else {
+		logger.Infof("🧹 Pruned image URLs on %d stale articles (>%dd)", imgPruned, cfg.ImagePruneDays)
 	}
 }
 
@@ -572,7 +595,13 @@ const imageFlushBatchSize = 50
 // rather than issuing a per-row PATCH. The slice is flushed in chunks of
 // imageFlushBatchSize after the worker pool drains — turning ~500
 // single-row UPDATEs per run into ~10 RPC calls.
-func runOGImageBackfill(ctx context.Context, db Store) error {
+//
+// imagePruneDays caps how old a candidate article can be. It must match
+// cfg.ImagePruneDays (the same value runCleanup feeds into prune_old_image_
+// urls) so the backfill candidate set and the prune cutoff stay in lockstep
+// — otherwise the worker would re-fetch og:images for articles whose URLs
+// were nulled by the daily prune.
+func runOGImageBackfill(ctx context.Context, db Store, imagePruneDays int) error {
 	ogExtractor := parser.NewOGImageExtractor()
 
 	var (
@@ -593,7 +622,9 @@ func runOGImageBackfill(ctx context.Context, db Store) error {
 		maxAttempts:   backfillMaxAttempts,
 		cooldownHours: backfillCooldownHours,
 		maxWorkers:    ogImageBackfillWorkers,
-		fetch:         db.GetArticlesNeedingOGImage,
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error) {
+			return db.GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, imagePruneDays)
+		},
 		process: func(ctx context.Context, article database.ArticleForBackfill) bool {
 			return processOGImageBackfill(ctx, ogExtractor, article, queue)
 		},

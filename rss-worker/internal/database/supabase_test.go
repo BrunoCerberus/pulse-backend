@@ -402,6 +402,81 @@ func TestCleanupOldArticles_Error(t *testing.T) {
 	}
 }
 
+// --- CleanupOldImageURLs tests (PR 5: prune_old_image_urls RPC) ---
+
+func TestCleanupOldImageURLs_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/rpc/prune_old_image_urls") {
+			t.Errorf("path = %s, want to contain /rpc/prune_old_image_urls", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "days_to_keep") {
+			t.Error("expected days_to_keep in request body")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("123"))
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	pruned, err := client.CleanupOldImageURLs(3)
+	if err != nil {
+		t.Fatalf("CleanupOldImageURLs error: %v", err)
+	}
+	if pruned != 123 {
+		t.Errorf("pruned = %d, want 123", pruned)
+	}
+}
+
+func TestCleanupOldImageURLs_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	if _, err := newTestClient(server).CleanupOldImageURLs(3); err == nil {
+		t.Error("expected error for 500 response, got nil")
+	}
+}
+
+func TestCleanupOldImageURLs_DecodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not-a-number`))
+	}))
+	defer server.Close()
+
+	if _, err := newTestClient(server).CleanupOldImageURLs(3); err == nil {
+		t.Error("expected decode error, got nil")
+	}
+}
+
+func TestCleanupOldImageURLs_BadURL(t *testing.T) {
+	c := newBadURLClient()
+	if _, err := c.CleanupOldImageURLs(3); err == nil {
+		t.Error("expected bad-URL error, got nil")
+	}
+}
+
+func TestCleanupOldImageURLs_TransportError(t *testing.T) {
+	c := newUnreachableClient(t)
+	if _, err := c.CleanupOldImageURLs(3); err == nil {
+		t.Error("expected transport error, got nil")
+	}
+}
+
+func TestCleanupOldImageURLs_MarshalError(t *testing.T) {
+	withFailingJSONMarshal(t, func() {
+		c := newBadURLClient()
+		if _, err := c.CleanupOldImageURLs(3); err == nil {
+			t.Error("expected marshal error, got nil")
+		}
+	})
+}
+
 func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 	expectedArticles := []ArticleForBackfill{
 		{URLHash: "hash1", URL: "https://example.com/1"},
@@ -422,6 +497,11 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 		if !strings.Contains(r.URL.String(), "image_backfill_last_attempt_at") {
 			t.Errorf("expected image_backfill_last_attempt_at in filter, got %s", r.URL.String())
 		}
+		// maxAgeDays=0 path: created_at filter MUST NOT appear (otherwise the
+		// no-age-filter caller contract is broken).
+		if strings.Contains(r.URL.String(), "created_at.gte") {
+			t.Errorf("created_at.gte filter should be absent when maxAgeDays=0, got %s", r.URL.String())
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(expectedArticles)
@@ -429,7 +509,7 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	articles, err := client.GetArticlesNeedingOGImage(500, 3, 24)
+	articles, err := client.GetArticlesNeedingOGImage(500, 3, 24, 0)
 
 	if err != nil {
 		t.Fatalf("GetArticlesNeedingOGImage error: %v", err)
@@ -437,6 +517,26 @@ func TestGetArticlesNeedingOGImage_Success(t *testing.T) {
 
 	if len(articles) != 2 {
 		t.Errorf("got %d articles, want 2", len(articles))
+	}
+}
+
+// TestGetArticlesNeedingOGImage_AppliesAgeFilter covers the maxAgeDays > 0
+// path added by PR 5: the candidate set must exclude rows whose created_at
+// is older than (now - maxAgeDays), matching the cutoff prune_old_image_urls
+// uses so backfill doesn't re-fetch what cleanup just nulled.
+func TestGetArticlesNeedingOGImage_AppliesAgeFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.String(), "created_at.gte.") {
+			t.Errorf("expected created_at.gte filter when maxAgeDays>0, got %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]ArticleForBackfill{})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server)
+	if _, err := client.GetArticlesNeedingOGImage(100, 3, 24, 3); err != nil {
+		t.Fatalf("GetArticlesNeedingOGImage error: %v", err)
 	}
 }
 
@@ -924,7 +1024,7 @@ func TestGetArticlesNeedingOGImage_Error(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24); err == nil {
+	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24, 0); err == nil {
 		t.Error("expected error for 500 response")
 	}
 }
@@ -937,7 +1037,7 @@ func TestGetArticlesNeedingOGImage_DecodeError(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(server)
-	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24); err == nil {
+	if _, err := client.GetArticlesNeedingOGImage(500, 3, 24, 0); err == nil {
 		t.Error("expected decode error, got nil")
 	}
 }
@@ -1097,7 +1197,7 @@ func TestCleanupOldFetchLogs_BadURL(t *testing.T) {
 
 func TestGetArticlesNeedingOGImage_BadURL(t *testing.T) {
 	c := newBadURLClient()
-	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24); err == nil {
+	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24, 0); err == nil {
 		t.Error("expected bad-URL error, got nil")
 	}
 }
@@ -1157,7 +1257,7 @@ func TestCleanupOldFetchLogs_TransportError(t *testing.T) {
 
 func TestGetArticlesNeedingOGImage_TransportError(t *testing.T) {
 	c := newUnreachableClient(t)
-	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24); err == nil {
+	if _, err := c.GetArticlesNeedingOGImage(10, 3, 24, 0); err == nil {
 		t.Error("expected transport error, got nil")
 	}
 }

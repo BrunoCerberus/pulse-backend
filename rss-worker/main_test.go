@@ -47,7 +47,7 @@ func TestMain(m *testing.M) {
 		return // unreached if main Fatalf's
 	case "runCleanup":
 		// Run runCleanup with a failing store so Fatalf's os.Exit(1) fires.
-		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, 30)
+		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
 		return
 	}
 	defer httputil.SetAllowLoopback(false)
@@ -535,6 +535,8 @@ type mockStore struct {
 	cleanupErr        error
 	cleanupLogsResult int
 	cleanupLogsErr    error
+	pruneImgResult    int
+	pruneImgErr       error
 	ogArticles        []database.ArticleForBackfill
 	ogArticlesErr     error
 	contentArticles   []database.ArticleForContentBackfill
@@ -594,7 +596,11 @@ func (m *mockStore) CleanupOldFetchLogs(daysToKeep int) (int, error) {
 	return m.cleanupLogsResult, m.cleanupLogsErr
 }
 
-func (m *mockStore) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours int) ([]database.ArticleForBackfill, error) {
+func (m *mockStore) CleanupOldImageURLs(daysToKeep int) (int, error) {
+	return m.pruneImgResult, m.pruneImgErr
+}
+
+func (m *mockStore) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForBackfill, error) {
 	return m.ogArticles, m.ogArticlesErr
 }
 
@@ -625,9 +631,9 @@ func (m *mockStore) BumpBackfillAttempts(urlHashes []string, kind string) error 
 // --- runCleanup tests ---
 
 func TestRunCleanup_Success(t *testing.T) {
-	db := &mockStore{cleanupResult: 42}
+	db := &mockStore{cleanupResult: 42, pruneImgResult: 7}
 	// runCleanup calls log.Fatalf on error, so we only test the success path
-	runCleanup(context.Background(), db, 30)
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
 	// If we reach here without panicking, the test passes
 }
 
@@ -1099,7 +1105,7 @@ func TestRunOGImageBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		ogArticles: []database.ArticleForBackfill{},
 	}
-	if err := runOGImageBackfill(context.Background(), db); err != nil {
+	if err := runOGImageBackfill(context.Background(), db, 3); err != nil {
 		t.Fatalf("runOGImageBackfill returned error: %v", err)
 	}
 }
@@ -1108,7 +1114,7 @@ func TestRunOGImageBackfill_FetchError(t *testing.T) {
 	db := &mockStore{
 		ogArticlesErr: errors.New("db error"),
 	}
-	if err := runOGImageBackfill(context.Background(), db); err == nil {
+	if err := runOGImageBackfill(context.Background(), db, 3); err == nil {
 		t.Fatal("expected error from runOGImageBackfill, got nil")
 	}
 }
@@ -1157,7 +1163,7 @@ func TestRunCleanup_CtxAlreadyCancelled(t *testing.T) {
 	cancel()
 	// Must return cleanly without invoking CleanupOldArticles; otherwise
 	// the mock's error would trigger log.Fatalf and blow up the test.
-	runCleanup(ctx, db, 30)
+	runCleanup(ctx, db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
 }
 
 func TestRunCleanup_CleanupFetchLogsError(t *testing.T) {
@@ -1166,7 +1172,18 @@ func TestRunCleanup_CleanupFetchLogsError(t *testing.T) {
 		cleanupLogsErr: errors.New("fetch log cleanup failed"),
 	}
 	// CleanupOldFetchLogs error is non-fatal (warn-only). Should complete.
-	runCleanup(context.Background(), db, 30)
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+}
+
+// TestRunCleanup_PruneImageURLsError covers the image-prune non-fatal warn
+// branch added in PR 5: a failure from CleanupOldImageURLs must not abort
+// runCleanup (storage reduction is best-effort).
+func TestRunCleanup_PruneImageURLsError(t *testing.T) {
+	db := &mockStore{
+		cleanupResult: 10,
+		pruneImgErr:   errors.New("prune failed"),
+	}
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
 }
 
 // --- processSource NotModified branch ---
@@ -1344,7 +1361,7 @@ func TestRunOGImageBackfill_ProcessesArticles(t *testing.T) {
 		},
 	}
 
-	if err := runOGImageBackfill(context.Background(), db); err != nil {
+	if err := runOGImageBackfill(context.Background(), db, 3); err != nil {
 		t.Fatalf("runOGImageBackfill returned error: %v", err)
 	}
 	// Successful extraction must flow through the batch RPC, not per-row PATCH.
@@ -1368,7 +1385,7 @@ func TestRunOGImageBackfill_FlushErrorLogged(t *testing.T) {
 		batchImagesErr: errors.New("supabase 5xx"),
 	}
 
-	if err := runOGImageBackfill(context.Background(), db); err != nil {
+	if err := runOGImageBackfill(context.Background(), db, 3); err != nil {
 		t.Fatalf("runOGImageBackfill should swallow flush errors, got %v", err)
 	}
 }
