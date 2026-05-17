@@ -125,7 +125,9 @@ pulse-backend/
 │   │   ├── 024_strip_content_from_search_vector.sql # Drop content from search_vector to shrink GIN index
 │   │   ├── 025_drop_unused_indexes.sql        # Drop indexes with idx_scan=0 to cut write amplification
 │   │   ├── 026_add_batch_content_update_rpc.sql # Batch content updates RPC for backfill
-│   │   └── 027_security_hardening.sql         # Audit-driven hardening: explicit search_articles projection + 200-char cap + 3s timeout; SECURITY DEFINER funcs rebuilt with `search_path = ''` + in-function role check; column-level GRANT on articles; articles_with_source recreated; source_health + get_db_size_bytes revoked from anon
+│   │   ├── 027_security_hardening.sql         # Audit-driven hardening: explicit search_articles projection + 200-char cap + 3s timeout; SECURITY DEFINER funcs rebuilt with `search_path = ''` + in-function role check; column-level GRANT on articles; articles_with_source recreated; source_health + get_db_size_bytes revoked from anon
+│   │   ├── 028_search_articles_explicit_casts.sql # Hotfix consolidation: replace pg_catalog.least with bare LEAST + add ::TEXT casts on VARCHAR(N) cols in search_articles RETURNS TABLE
+│   │   └── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression from pglz to LZ4 (PG14+ build option); new writes only — existing rows rewrite via 7d cleanup cycle, no VACUUM FULL
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers

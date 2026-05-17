@@ -1,0 +1,31 @@
+-- Migration 029: switch articles.content compression to LZ4
+--
+-- The articles table is the dominant share of DB size on the Supabase free
+-- plan (500 MB quota). The `content` column is the heaviest column — full
+-- article text extracted via go-readability, capped at 200K runes in the
+-- parser. PostgreSQL's default TOAST compression is `pglz`; LZ4 (PG 14+,
+-- requires the server to be built --with-lz4) typically achieves 1.5–2×
+-- better ratios on prose at comparable decompression cost.
+--
+-- Pre-flight (verified before this migration was committed):
+--   BEGIN;
+--   ALTER TABLE public.articles ALTER COLUMN content SET COMPRESSION lz4;
+--   ROLLBACK;
+-- ran cleanly on the production database, confirming Supabase's PG build
+-- has LZ4 support. `pg_available_extensions` is not a valid check — LZ4
+-- column compression is a build option, not an extension.
+--
+-- Important: `SET COMPRESSION` only affects NEW writes/UPDATEs. Existing
+-- rows keep their pglz TOAST headers until rewritten. We deliberately do
+-- NOT run `VACUUM FULL` here:
+--   * It takes an AccessExclusiveLock on the table for the duration —
+--     PostgREST (every Edge Function) returns 500s while held.
+--   * Supabase free tier has no maintenance-window mechanism.
+--   * On a 100+ MB articles table the lock window is minutes.
+-- Instead, existing rows turn over naturally via the daily cleanup_old_
+-- articles run (7-day retention window), so the full benefit accrues
+-- gradually over one retention cycle.
+--
+-- Fully reversible: `ALTER COLUMN content SET COMPRESSION pglz`.
+
+ALTER TABLE public.articles ALTER COLUMN content SET COMPRESSION lz4;
