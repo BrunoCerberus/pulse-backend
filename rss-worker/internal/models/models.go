@@ -37,6 +37,11 @@ type Source struct {
 	// source is skipped by GetActiveSources().
 	ConsecutiveFailures int        `json:"consecutive_failures"`
 	CircuitOpenUntil    *time.Time `json:"circuit_open_until"`
+	// Optional per-source content length cap (runes), migration 030. nil
+	// means "use global maxContentLen only". The parser clamps the effective
+	// cap to MIN(this, global) so a misconfigured large value can't escape
+	// the global ceiling.
+	MaxContentLength *int `json:"max_content_length"`
 	// Embedded category info from PostgREST ?select=*,categories(name,slug)
 	Categories *EmbeddedCategory `json:"categories,omitempty"`
 }

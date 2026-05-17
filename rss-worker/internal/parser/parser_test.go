@@ -1201,7 +1201,7 @@ func TestEnrichWithContent_SetsContent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	p.enrichWithContent(ctx, articles)
+	p.enrichWithContent(ctx, articles, maxContentLen)
 
 	if articles[0].Content == nil || *articles[0].Content == "" {
 		t.Error("expected content to be set")
@@ -1223,7 +1223,7 @@ func TestEnrichWithContent_SkipsArticlesWithContent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	p.enrichWithContent(ctx, articles)
+	p.enrichWithContent(ctx, articles, maxContentLen)
 
 	if *articles[0].Content != "Existing content" {
 		t.Errorf("Content = %q, want unchanged 'Existing content'", *articles[0].Content)
@@ -1280,7 +1280,7 @@ func TestFetchContentForArticle_Success(t *testing.T) {
 	article := &models.Article{URL: server.URL, Title: "Test"}
 
 	ctx := context.Background()
-	p.fetchContentForArticle(ctx, article)
+	p.fetchContentForArticle(ctx, article, maxContentLen)
 
 	if article.Content == nil || *article.Content == "" {
 		t.Error("expected Content to be set")
@@ -1297,7 +1297,7 @@ func TestFetchContentForArticle_Error(t *testing.T) {
 	article := &models.Article{URL: server.URL, Title: "Test"}
 
 	ctx := context.Background()
-	p.fetchContentForArticle(ctx, article)
+	p.fetchContentForArticle(ctx, article, maxContentLen)
 
 	if article.Content != nil {
 		t.Errorf("Content = %v, want nil for error response", article.Content)
@@ -1392,7 +1392,7 @@ func TestFetchContentForArticle_TransportError(t *testing.T) {
 
 	p := New()
 	article := &models.Article{URL: unreachable, Title: "Test"}
-	p.fetchContentForArticle(context.Background(), article)
+	p.fetchContentForArticle(context.Background(), article, maxContentLen)
 
 	if article.Content != nil {
 		t.Errorf("Content = %v, want nil on transport error", article.Content)
@@ -1503,7 +1503,7 @@ func TestEnrichWithContent_FeedLoopCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	p.enrichWithContent(ctx, articles)
+	p.enrichWithContent(ctx, articles, maxContentLen)
 }
 
 // --- Security hardening tests ---
@@ -1658,6 +1658,48 @@ func TestSanitizeText_TruncatesToMaxRunes(t *testing.T) {
 		t.Errorf("len = %d, want 10", len([]rune(out)))
 	}
 }
+
+func TestEffectiveContentCap(t *testing.T) {
+	small := 5000
+	zero := 0
+	negative := -1
+	huge := maxContentLen + 1_000_000
+
+	cases := []struct {
+		name      string
+		perSource *int
+		want      int
+	}{
+		{"nil falls through to global", nil, maxContentLen},
+		{"zero treated as unset", &zero, maxContentLen},
+		{"negative treated as unset", &negative, maxContentLen},
+		{"positive below global wins", &small, small},
+		{"positive above global is clamped", &huge, maxContentLen},
+		{"equal to global returns global", intPtr(maxContentLen), maxContentLen},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EffectiveContentCap(tc.perSource); got != tc.want {
+				t.Errorf("EffectiveContentCap(%v) = %d, want %d", tc.perSource, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeContent_ExportedWrapper(t *testing.T) {
+	// Same control-char + truncation contract as sanitizeText. Spot-check
+	// the export bridges correctly so the backfill path gets the parser's
+	// guarantees.
+	in := "Hi\x01" + strings.Repeat("a", 50)
+	out := SanitizeContent(in, 5)
+	if out != "Hiaaa" {
+		t.Errorf("SanitizeContent = %q, want %q", out, "Hiaaa")
+	}
+}
+
+// intPtr returns a pointer to v. Test-only helper.
+func intPtr(v int) *int { return &v }
 
 func TestIsControlOrBidi(t *testing.T) {
 	cases := []struct {
