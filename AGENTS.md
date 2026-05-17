@@ -123,7 +123,8 @@ pulse-backend/
 │   │   ├── 029_compress_articles_content_lz4.sql  # Switch articles.content TOAST compression pglz → lz4 (new writes only; existing rows rewrite via 7d cleanup cycle, no VACUUM FULL)
 │   │   ├── 030_add_source_max_content_length.sql  # Optional per-source content cap (sources.max_content_length INT); worker clamps to MIN(this, global) at parse + backfill
 │   │   ├── 031_prune_old_image_urls_rpc.sql       # prune_old_image_urls(days_to_keep) RPC — batched NULL of image_url + thumbnail_url on stale rows; runCleanup step + age filter on backfill query
-│   │   └── 032_prune_old_content_rpc.sql          # prune_old_content(days_to_keep) RPC — same shape as 031, nulls articles.content past CONTENT_PRUNE_DAYS; iOS article-detail must handle NULL content
+│   │   ├── 032_prune_old_content_rpc.sql          # prune_old_content(days_to_keep) RPC — same shape as 031, nulls articles.content past CONTENT_PRUNE_DAYS
+│   │   └── 033_fix_security_definer_caller_gate.sql # Replace dead CURRENT_USER check in 5 migration-027 functions with the working JWT-claim pattern from 031/032
 │   └── functions/                     # Edge Functions (Deno/TypeScript)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts / cors_test.ts
