@@ -37,6 +37,19 @@ type Config struct {
 	// CircuitMaxBackoffHours caps the exponential backoff so a permanently dead
 	// source still gets retried daily rather than every fortnight.
 	CircuitMaxBackoffHours int
+
+	// ImagePruneDays is the age (in days) past which image_url and
+	// thumbnail_url are nulled by the daily cleanup. Must be > 0 and
+	// <= ArticleRetentionDays — nulling URLs on rows already past full
+	// row-level deletion is a no-op and a sign of misconfiguration.
+	// Shared between the prune RPC and the og:image backfill candidate
+	// filter to prevent the two cutoffs from drifting.
+	ImagePruneDays int
+	// ContentPruneDays is the age (in days) past which articles.content is
+	// nulled by the daily cleanup. Same bounds as ImagePruneDays. Shared
+	// between the prune RPC and the content backfill candidate filter so
+	// the worker doesn't re-extract what cleanup just nulled.
+	ContentPruneDays int
 }
 
 // Load reads configuration from environment variables
@@ -58,19 +71,45 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SUPABASE_SERVICE_ROLE_KEY environment variable is required")
 	}
 
-	return &Config{
-		SupabaseURL:           supabaseURL,
-		SupabaseKey:           supabaseKey,
-		MaxConcurrent:         5,
-		ArticleRetentionDays:  7,
-		HostRateLimitRPS:      envFloat("HOST_RATE_LIMIT_RPS", 2.0),
-		HostRateLimitBurst:    envInt("HOST_RATE_LIMIT_BURST", 5),
+	cfg := &Config{
+		SupabaseURL:             supabaseURL,
+		SupabaseKey:             supabaseKey,
+		MaxConcurrent:           5,
+		ArticleRetentionDays:    7,
+		HostRateLimitRPS:        envFloat("HOST_RATE_LIMIT_RPS", 2.0),
+		HostRateLimitBurst:      envInt("HOST_RATE_LIMIT_BURST", 5),
 		BackfillMaxAttempts:     envInt("BACKFILL_MAX_ATTEMPTS", 3),
 		BackfillCooldownHours:   envInt("BACKFILL_COOLDOWN_HOURS", 24),
 		CircuitFailureThreshold: envInt("CIRCUIT_FAILURE_THRESHOLD", 5),
 		CircuitBaseBackoffHours: envInt("CIRCUIT_BASE_BACKOFF_HOURS", 1),
 		CircuitMaxBackoffHours:  envInt("CIRCUIT_MAX_BACKOFF_HOURS", 24),
-	}, nil
+		ImagePruneDays:          envInt("IMAGE_PRUNE_DAYS", 3),
+		ContentPruneDays:        envInt("CONTENT_PRUNE_DAYS", 2),
+	}
+
+	if err := validatePruneDays("IMAGE_PRUNE_DAYS", cfg.ImagePruneDays, cfg.ArticleRetentionDays); err != nil {
+		return nil, err
+	}
+	if err := validatePruneDays("CONTENT_PRUNE_DAYS", cfg.ContentPruneDays, cfg.ArticleRetentionDays); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
+// validatePruneDays fails fast on values that would either no-op the prune
+// (>= retention, since the row gets fully deleted at retention) or invert it
+// (<= 0, which would null every row). Catching these at startup is the
+// cheapest place — by the time the cleanup RPC runs against production data,
+// a typo is already destroying the wrong rows.
+func validatePruneDays(name string, value, retentionDays int) error {
+	if value <= 0 {
+		return fmt.Errorf("%s must be > 0, got %d", name, value)
+	}
+	if value > retentionDays {
+		return fmt.Errorf("%s (%d) must be <= ArticleRetentionDays (%d): nulling rows already past full deletion is a no-op", name, value, retentionDays)
+	}
+	return nil
 }
 
 // envFloat returns the env var as float64, falling back to def on unset/invalid.

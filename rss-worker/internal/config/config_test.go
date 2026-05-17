@@ -323,6 +323,148 @@ func TestLoad_AllowsLoopbackHTTP(t *testing.T) {
 	}
 }
 
+func TestLoad_PruneDaysDefaults(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origImg := os.Getenv("IMAGE_PRUNE_DAYS")
+	origCnt := os.Getenv("CONTENT_PRUNE_DAYS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("IMAGE_PRUNE_DAYS", origImg)
+		os.Setenv("CONTENT_PRUNE_DAYS", origCnt)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+	os.Unsetenv("IMAGE_PRUNE_DAYS")
+	os.Unsetenv("CONTENT_PRUNE_DAYS")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ImagePruneDays != 3 {
+		t.Errorf("ImagePruneDays = %d, want 3", cfg.ImagePruneDays)
+	}
+	if cfg.ContentPruneDays != 2 {
+		t.Errorf("ContentPruneDays = %d, want 2", cfg.ContentPruneDays)
+	}
+}
+
+func TestLoad_PruneDaysOverride(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origImg := os.Getenv("IMAGE_PRUNE_DAYS")
+	origCnt := os.Getenv("CONTENT_PRUNE_DAYS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("IMAGE_PRUNE_DAYS", origImg)
+		os.Setenv("CONTENT_PRUNE_DAYS", origCnt)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+	os.Setenv("IMAGE_PRUNE_DAYS", "5")
+	os.Setenv("CONTENT_PRUNE_DAYS", "4")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ImagePruneDays != 5 {
+		t.Errorf("ImagePruneDays = %d, want 5", cfg.ImagePruneDays)
+	}
+	if cfg.ContentPruneDays != 4 {
+		t.Errorf("ContentPruneDays = %d, want 4", cfg.ContentPruneDays)
+	}
+}
+
+func TestLoad_PruneDaysInvalidStringFallsBack(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origImg := os.Getenv("IMAGE_PRUNE_DAYS")
+	origCnt := os.Getenv("CONTENT_PRUNE_DAYS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("IMAGE_PRUNE_DAYS", origImg)
+		os.Setenv("CONTENT_PRUNE_DAYS", origCnt)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+	os.Setenv("IMAGE_PRUNE_DAYS", "not-a-number")
+	os.Setenv("CONTENT_PRUNE_DAYS", "also-bad")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ImagePruneDays != 3 {
+		t.Errorf("ImagePruneDays = %d, want 3 (default)", cfg.ImagePruneDays)
+	}
+	if cfg.ContentPruneDays != 2 {
+		t.Errorf("ContentPruneDays = %d, want 2 (default)", cfg.ContentPruneDays)
+	}
+}
+
+func TestLoad_ImagePruneDaysOutOfBounds(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origImg := os.Getenv("IMAGE_PRUNE_DAYS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("IMAGE_PRUNE_DAYS", origImg)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+
+	for _, badValue := range []string{"-1", "0", "8", "365"} {
+		os.Setenv("IMAGE_PRUNE_DAYS", badValue)
+		cfg, err := Load()
+		if err == nil {
+			t.Errorf("Load() with IMAGE_PRUNE_DAYS=%q should error, got nil", badValue)
+		}
+		if cfg != nil {
+			t.Errorf("Load() with IMAGE_PRUNE_DAYS=%q should return nil cfg on error", badValue)
+		}
+	}
+}
+
+func TestLoad_ContentPruneDaysOutOfBounds(t *testing.T) {
+	origURL := os.Getenv("SUPABASE_URL")
+	origKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	origImg := os.Getenv("IMAGE_PRUNE_DAYS")
+	origCnt := os.Getenv("CONTENT_PRUNE_DAYS")
+	defer func() {
+		os.Setenv("SUPABASE_URL", origURL)
+		os.Setenv("SUPABASE_SERVICE_ROLE_KEY", origKey)
+		os.Setenv("IMAGE_PRUNE_DAYS", origImg)
+		os.Setenv("CONTENT_PRUNE_DAYS", origCnt)
+	}()
+
+	os.Setenv("SUPABASE_URL", "https://test.supabase.co")
+	os.Setenv("SUPABASE_SERVICE_ROLE_KEY", "test-key")
+	// Keep IMAGE valid so we reach the CONTENT check (covers the second
+	// validatePruneDays branch in Load).
+	os.Setenv("IMAGE_PRUNE_DAYS", "3")
+
+	for _, badValue := range []string{"-1", "0", "8"} {
+		os.Setenv("CONTENT_PRUNE_DAYS", badValue)
+		cfg, err := Load()
+		if err == nil {
+			t.Errorf("Load() with CONTENT_PRUNE_DAYS=%q should error, got nil", badValue)
+		}
+		if cfg != nil {
+			t.Errorf("Load() with CONTENT_PRUNE_DAYS=%q should return nil cfg on error", badValue)
+		}
+	}
+}
+
 func TestIsLoopbackHTTP(t *testing.T) {
 	allowed := []string{
 		"http://localhost:8000",

@@ -309,6 +309,8 @@ Environment variables:
 - `CIRCUIT_FAILURE_THRESHOLD` - Optional: consecutive fetch failures before the circuit trips (default `5`)
 - `CIRCUIT_BASE_BACKOFF_HOURS` - Optional: initial cool-off window on trip; doubles per additional failure (default `1`)
 - `CIRCUIT_MAX_BACKOFF_HOURS` - Optional: cap on the exponential circuit backoff so dead feeds still get retried daily (default `24`)
+- `IMAGE_PRUNE_DAYS` - Optional: age (days) past which `image_url`/`thumbnail_url` are nulled by the daily cleanup (default `3`). Validated at startup: must be `> 0` and `<= ArticleRetentionDays`. Shared between the prune RPC and the og:image backfill candidate filter to prevent cutoff drift.
+- `CONTENT_PRUNE_DAYS` - Optional: age (days) past which `articles.content` is nulled by the daily cleanup (default `2`). Same bounds as `IMAGE_PRUNE_DAYS`. Shared between the prune RPC and the content backfill candidate filter so the worker doesn't re-extract what cleanup just nulled.
 
 Defaults in `internal/config/config.go`:
 - `MaxConcurrent`: 5 sources processed simultaneously
