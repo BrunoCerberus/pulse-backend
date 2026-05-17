@@ -129,7 +129,8 @@ pulse-backend/
 │   │   ├── 028_search_articles_explicit_casts.sql # Hotfix consolidation: replace pg_catalog.least with bare LEAST + add ::TEXT casts on VARCHAR(N) cols in search_articles RETURNS TABLE
 │   │   ├── 029_compress_articles_content_lz4.sql # Switch articles.content TOAST compression from pglz to LZ4 (PG14+ build option); new writes only — existing rows rewrite via 7d cleanup cycle, no VACUUM FULL
 │   │   ├── 030_add_source_max_content_length.sql # Optional per-source content cap (sources.max_content_length INT). Worker clamps to MIN(this, global maxContentLen) at both parse and backfill sites
-│   │   └── 031_prune_old_image_urls_rpc.sql       # SECURITY DEFINER prune_old_image_urls(days_to_keep) — batched NULL-out of image_url + thumbnail_url on stale rows; non-fatal step in runCleanup; backfill candidate query gets matching age filter to prevent re-fetch
+│   │   ├── 031_prune_old_image_urls_rpc.sql       # SECURITY DEFINER prune_old_image_urls(days_to_keep) — batched NULL-out of image_url + thumbnail_url on stale rows; non-fatal step in runCleanup; backfill candidate query gets matching age filter to prevent re-fetch. Uses JWT-claim caller gate (request.jwt.claims->>'role') since CURRENT_USER resolves to the definer inside SECURITY DEFINER and SESSION_USER is always 'authenticator' for PostgREST calls
+│   │   └── 032_prune_old_content_rpc.sql          # SECURITY DEFINER prune_old_content(days_to_keep) — same shape as 031, nulls articles.content past CONTENT_PRUNE_DAYS (default 2). DESTRUCTIVE to iOS article-detail for 2-7d articles; iOS must handle NULL content (placeholder / view-on-source fallback)
 │   └── functions/                     # Edge Functions (caching proxy)
 │       ├── _shared/                   # Shared utilities
 │       │   ├── cors.ts                # CORS headers

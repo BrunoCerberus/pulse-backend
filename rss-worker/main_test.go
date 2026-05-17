@@ -47,7 +47,7 @@ func TestMain(m *testing.M) {
 		return // unreached if main Fatalf's
 	case "runCleanup":
 		// Run runCleanup with a failing store so Fatalf's os.Exit(1) fires.
-		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+		runCleanup(context.Background(), &mockStore{cleanupErr: errors.New("forced")}, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
 		return
 	}
 	defer httputil.SetAllowLoopback(false)
@@ -531,12 +531,14 @@ type mockStore struct {
 	fetchLogErr       error
 	updateLogErr      error
 	updateSourcesErr  error
-	cleanupResult     int
-	cleanupErr        error
-	cleanupLogsResult int
-	cleanupLogsErr    error
-	pruneImgResult    int
-	pruneImgErr       error
+	cleanupResult       int
+	cleanupErr          error
+	cleanupLogsResult   int
+	cleanupLogsErr      error
+	pruneImgResult      int
+	pruneImgErr         error
+	pruneContentResult  int
+	pruneContentErr     error
 	ogArticles        []database.ArticleForBackfill
 	ogArticlesErr     error
 	contentArticles   []database.ArticleForContentBackfill
@@ -600,6 +602,10 @@ func (m *mockStore) CleanupOldImageURLs(daysToKeep int) (int, error) {
 	return m.pruneImgResult, m.pruneImgErr
 }
 
+func (m *mockStore) CleanupOldContent(daysToKeep int) (int, error) {
+	return m.pruneContentResult, m.pruneContentErr
+}
+
 func (m *mockStore) GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForBackfill, error) {
 	return m.ogArticles, m.ogArticlesErr
 }
@@ -609,7 +615,7 @@ func (m *mockStore) BatchUpdateArticleImages(updates []database.ImageUpdate) err
 	return m.batchImagesErr
 }
 
-func (m *mockStore) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error) {
+func (m *mockStore) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForContentBackfill, error) {
 	return m.contentArticles, m.contentErr
 }
 
@@ -633,7 +639,7 @@ func (m *mockStore) BumpBackfillAttempts(urlHashes []string, kind string) error 
 func TestRunCleanup_Success(t *testing.T) {
 	db := &mockStore{cleanupResult: 42, pruneImgResult: 7}
 	// runCleanup calls log.Fatalf on error, so we only test the success path
-	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
 	// If we reach here without panicking, the test passes
 }
 
@@ -1125,7 +1131,7 @@ func TestRunContentBackfill_EmptyList(t *testing.T) {
 	db := &mockStore{
 		contentArticles: []database.ArticleForContentBackfill{},
 	}
-	if err := runContentBackfill(context.Background(), db); err != nil {
+	if err := runContentBackfill(context.Background(), db, 2); err != nil {
 		t.Fatalf("runContentBackfill returned error: %v", err)
 	}
 }
@@ -1134,7 +1140,7 @@ func TestRunContentBackfill_FetchError(t *testing.T) {
 	db := &mockStore{
 		contentErr: errors.New("db error"),
 	}
-	if err := runContentBackfill(context.Background(), db); err == nil {
+	if err := runContentBackfill(context.Background(), db, 2); err == nil {
 		t.Fatal("expected error from runContentBackfill, got nil")
 	}
 }
@@ -1163,7 +1169,7 @@ func TestRunCleanup_CtxAlreadyCancelled(t *testing.T) {
 	cancel()
 	// Must return cleanly without invoking CleanupOldArticles; otherwise
 	// the mock's error would trigger log.Fatalf and blow up the test.
-	runCleanup(ctx, db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+	runCleanup(ctx, db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
 }
 
 func TestRunCleanup_CleanupFetchLogsError(t *testing.T) {
@@ -1172,7 +1178,7 @@ func TestRunCleanup_CleanupFetchLogsError(t *testing.T) {
 		cleanupLogsErr: errors.New("fetch log cleanup failed"),
 	}
 	// CleanupOldFetchLogs error is non-fatal (warn-only). Should complete.
-	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
 }
 
 // TestRunCleanup_PruneImageURLsError covers the image-prune non-fatal warn
@@ -1183,7 +1189,20 @@ func TestRunCleanup_PruneImageURLsError(t *testing.T) {
 		cleanupResult: 10,
 		pruneImgErr:   errors.New("prune failed"),
 	}
-	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3})
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
+}
+
+// TestRunCleanup_PruneContentError covers the content-prune non-fatal warn
+// branch added in PR 6: a failure from CleanupOldContent must not abort
+// runCleanup (storage reduction is best-effort, same rationale as image
+// prune; the iOS impact of the failure is "users keep seeing content for
+// one extra day", not data loss).
+func TestRunCleanup_PruneContentError(t *testing.T) {
+	db := &mockStore{
+		cleanupResult:   10,
+		pruneContentErr: errors.New("content prune failed"),
+	}
+	runCleanup(context.Background(), db, &config.Config{ArticleRetentionDays: 30, ImagePruneDays: 3, ContentPruneDays: 2})
 }
 
 // --- processSource NotModified branch ---
@@ -1488,7 +1507,7 @@ func TestRunContentBackfill_ProcessesArticles(t *testing.T) {
 		},
 	}
 
-	if err := runContentBackfill(context.Background(), db); err != nil {
+	if err := runContentBackfill(context.Background(), db, 2); err != nil {
 		t.Fatalf("runContentBackfill returned error: %v", err)
 	}
 	// Successful extraction must flow through the batch RPC.
@@ -1513,7 +1532,7 @@ func TestRunContentBackfill_FlushErrorLogged(t *testing.T) {
 		batchContentErr: errors.New("supabase 5xx"),
 	}
 
-	if err := runContentBackfill(context.Background(), db); err != nil {
+	if err := runContentBackfill(context.Background(), db, 2); err != nil {
 		t.Fatalf("runContentBackfill should swallow flush errors, got %v", err)
 	}
 }

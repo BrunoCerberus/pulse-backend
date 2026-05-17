@@ -90,9 +90,10 @@ type Store interface {
 	CleanupOldArticles(daysToKeep int) (int, error)
 	CleanupOldFetchLogs(daysToKeep int) (int, error)
 	CleanupOldImageURLs(daysToKeep int) (int, error)
+	CleanupOldContent(daysToKeep int) (int, error)
 	GetArticlesNeedingOGImage(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForBackfill, error)
 	BatchUpdateArticleImages(updates []database.ImageUpdate) error
-	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error)
+	GetArticlesNeedingContent(limit, maxAttempts, cooldownHours, maxAgeDays int) ([]database.ArticleForContentBackfill, error)
 	BatchUpdateArticleContent(updates []database.ContentUpdate) error
 	BumpBackfillAttempts(urlHashes []string, kind string) error
 }
@@ -339,7 +340,7 @@ func main() {
 			}
 			return
 		case "backfill-content":
-			if err := runContentBackfill(baseCtx, db); err != nil && !errors.Is(err, context.Canceled) {
+			if err := runContentBackfill(baseCtx, db, cfg.ContentPruneDays); err != nil && !errors.Is(err, context.Canceled) {
 				logger.Fatalf("Content backfill failed: %v", err)
 			}
 			return
@@ -580,6 +581,18 @@ func runCleanup(ctx context.Context, db Store, cfg *config.Config) {
 	} else {
 		logger.Infof("🧹 Pruned image URLs on %d stale articles (>%dd)", imgPruned, cfg.ImagePruneDays)
 	}
+
+	// Prune article.content on articles older than ContentPruneDays (non-fatal).
+	// DESTRUCTIVE to the iOS article-detail view for the affected age band —
+	// iOS must handle NULL content gracefully (placeholder / "view on source" /
+	// summary fallback). The backfill candidate query uses the same cutoff so
+	// the worker doesn't re-extract content that was just nulled here.
+	contentPruned, err := db.CleanupOldContent(cfg.ContentPruneDays)
+	if err != nil {
+		logger.Warnf("Failed to prune old content: %v", err)
+	} else {
+		logger.Infof("🧹 Pruned content on %d stale articles (>%dd)", contentPruned, cfg.ContentPruneDays)
+	}
 }
 
 // imageFlushBatchSize is the chunk size used when flushing queued image
@@ -706,7 +719,15 @@ const contentFlushBatchSize = 50
 // missing the content field and writes the results via the batch RPC at
 // the end of the run. Same queue/flush pattern as runOGImageBackfill —
 // turns per-row PATCHes into one RPC per chunk.
-func runContentBackfill(ctx context.Context, db Store) error {
+//
+// contentPruneDays caps how old a candidate article can be. It must match
+// cfg.ContentPruneDays (the same value runCleanup feeds into prune_old_
+// content) so the backfill candidate set and the prune cutoff stay in
+// lockstep. Without this match, the worker would re-extract content from
+// publishers for hundreds of articles per day whose content was just
+// nulled by the daily prune — silently undoing the prune AND draining
+// the per-host rate-limit budget.
+func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) error {
 	contentExtractor := parser.NewContentExtractor()
 
 	var (
@@ -727,7 +748,9 @@ func runContentBackfill(ctx context.Context, db Store) error {
 		maxAttempts:   backfillMaxAttempts,
 		cooldownHours: backfillCooldownHours,
 		maxWorkers:    contentBackfillWorkers,
-		fetch:         db.GetArticlesNeedingContent,
+		fetch: func(limit, maxAttempts, cooldownHours int) ([]database.ArticleForContentBackfill, error) {
+			return db.GetArticlesNeedingContent(limit, maxAttempts, cooldownHours, contentPruneDays)
+		},
 		process: func(ctx context.Context, article database.ArticleForContentBackfill) bool {
 			return processContentBackfill(ctx, contentExtractor, article, queue)
 		},
