@@ -65,20 +65,3 @@ jobs:
             If significant issues, run `gh pr review --request-changes`.
             Never leave review verdicts only as prose.
           claude_args: '--model claude-opus-4-7 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"'
-
-      # The action's substantive output is the review verdict + inline comments
-      # it posts; this is just a run-completion marker. always() so a failed
-      # review run is visible too.
-      - name: Annotate review run
-        if: always()
-        shell: bash
-        env:
-          REVIEW_OUTCOME: ${{ steps.claude-review.outcome }}
-        run: |
-          echo "::notice title=Claude Code Review::review ${REVIEW_OUTCOME} — verdict posted on the PR"
-          {
-            echo "## Claude Code Review"
-            echo ""
-            echo "- Run outcome: **${REVIEW_OUTCOME}**"
-            echo "- Verdict + inline comments posted on the PR by the action"
-          } >> "$GITHUB_STEP_SUMMARY"
