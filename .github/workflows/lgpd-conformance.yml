@@ -170,6 +170,24 @@ jobs:
       - name: Gitleaks (LGPD/GDPR custom rules)
         run: gitleaks detect --source . --verbose --redact --no-banner --config .github/lgpd-gdpr-rules.toml
 
+      # One per-job notice + a Job Summary checklist. if:success() means a
+      # failing guard rail (which emits its own ::error::) skips this, so the
+      # green tick is honest.
+      - name: Annotate PII scan
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=LGPD — PII Scan::all PII guard rails passed"
+          {
+            echo "## LGPD — PII Scan ✅"
+            echo ""
+            echo "- CPF / CNPJ pattern ban"
+            echo "- US SSN pattern ban (CCPA / CPRA)"
+            echo "- Email allowlist enforcement"
+            echo "- IP-handling code path ban (rss-worker)"
+            echo "- gitleaks custom-rules history sweep"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ---------------------------------------------------------------------------
   # Docs presence: every privacy / LGPD doc must exist and be non-empty.
   # ---------------------------------------------------------------------------
@@ -200,6 +218,17 @@ jobs:
           done
           [ "$fail" -eq 0 ] || exit 1
           echo "OK: all required LGPD docs present."
+
+      - name: Annotate docs presence
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=LGPD — Docs Presence::all required privacy/LGPD docs present"
+          {
+            echo "## LGPD — Docs Presence ✅"
+            echo ""
+            echo "- docs/privacy.md, docs/lgpd-conformance.md, docs/ropa.md, docs/data-retention.md — present and non-empty"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Operational controls: cleanup workflow + retention literal + no plaintext
@@ -270,6 +299,21 @@ jobs:
             exit 1
           fi
           echo "OK: RLS remains enabled everywhere it matters."
+
+      - name: Annotate operational controls
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=LGPD — Operational Controls::retention + RLS + no-PII invariants hold"
+          {
+            echo "## LGPD — Operational Controls ✅"
+            echo ""
+            echo "- cleanup.yml wired to \`rss-worker cleanup\`"
+            echo "- ArticleRetentionDays = 7"
+            echo "- no plaintext http:// in migrations"
+            echo "- 'No PII redaction layer required' still asserted"
+            echo "- RLS enabled on user-facing tables"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Structural integrity: catches the realistic failure mode where a future
@@ -357,3 +401,17 @@ jobs:
             exit 1
           fi
           echo "OK: retention doc matches config."
+
+      - name: Annotate structural integrity
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=LGPD — Structural Integrity::schema + ROPA invariants hold"
+          {
+            echo "## LGPD — Structural Integrity ✅"
+            echo ""
+            echo "- only allowlisted tables (categories, sources, articles, fetch_logs)"
+            echo "- no PII-implying column names in migrations"
+            echo "- ROPA lists GitHub + Supabase subprocessors"
+            echo "- retention doc declares '7 days'"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -49,7 +49,23 @@ jobs:
             go tool cover -func=coverage.out | awk '$NF != "100.0%" && !/^total:/'
             exit 1
           fi
-          echo "Total coverage: $total ✓"
+          # Populate the Annotations box + Job Summary on the green path. The
+          # race-detector step ran (and passed) earlier in this job.
+          echo "::notice title=Go Tests::race detector passed · total coverage ${total}"
+          {
+            echo "## Go Tests ✅"
+            echo ""
+            echo "- Race detector: passed"
+            echo "- Total coverage: **${total}**"
+            echo ""
+            echo "<details><summary>Per-function coverage</summary>"
+            echo ""
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
@@ -81,6 +97,19 @@ jobs:
           version: v2.4.0
           working-directory: ./rss-worker
 
+      # golangci-lint annotates its own findings on failure; this records the
+      # clean pass. if:success() means it's skipped (not run) when lint fails.
+      - name: Annotate lint result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Go Lint::golangci-lint v2.4.0 passed — no findings"
+          {
+            echo "## Go Lint ✅"
+            echo ""
+            echo "- golangci-lint **v2.4.0**: no findings"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deno-tests:
     name: Deno Tests
     runs-on: ubuntu-latest
@@ -99,8 +128,39 @@ jobs:
           deno-version: v2.7.14
 
       - name: Run Edge Function tests
+        id: deno
         working-directory: ./supabase/functions
         # `--frozen` makes the build fail if any imported URL drifts from the
         # committed `deno.lock`, blocking a hijacked deno.land/std module
         # from slipping into CI silently.
-        run: deno test --frozen --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/
+        run: |
+          set -o pipefail
+          deno test --frozen --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/ 2>&1 | tee /tmp/deno-test.log
+
+      # deno prints a final tally ("ok | N passed | M failed (…)") on both
+      # success and failure. Branch on the run step's outcome so the annotation
+      # is honest about which one happened.
+      - name: Annotate Deno test result
+        if: always()
+        shell: bash
+        env:
+          DENO_OUTCOME: ${{ steps.deno.outcome }}
+        run: |
+          log=/tmp/deno-test.log
+          summary=""
+          [ -f "$log" ] && summary=$(grep -oE '(ok|FAILED) \| [0-9]+ passed.*' "$log" | tail -1 || true)
+          if [ "$DENO_OUTCOME" = "success" ]; then
+            echo "::notice title=Deno Tests::${summary:-all tests passed}"
+            {
+              echo "## Deno Tests ✅"
+              echo ""
+              echo "- ${summary:-all tests passed}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=Deno Tests::${summary:-tests failed — see logs}"
+            {
+              echo "## Deno Tests ❌"
+              echo ""
+              echo "- ${summary:-tests failed — see logs}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

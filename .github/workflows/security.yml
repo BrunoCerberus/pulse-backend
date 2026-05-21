@@ -57,6 +57,18 @@ jobs:
           # causes "flag 'fail' cannot be repeated".
           extra_args: --results=verified,unknown
 
+      - name: Annotate secret scan
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Secret Scan::no leaked secrets (gitleaks history sweep + TruffleHog verified)"
+          {
+            echo "## Secret Scan ✅"
+            echo ""
+            echo "- gitleaks: full git-history sweep — no findings"
+            echo "- TruffleHog: verified scan — no findings"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ---------------------------------------------------------------------------
   # Go SAST (gosec)
   # Static analysis for Go source — flags SQL injection, hardcoded
@@ -94,6 +106,17 @@ jobs:
         working-directory: ./rss-worker
         run: gosec -severity medium -confidence medium ./...
 
+      - name: Annotate gosec result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Go SAST (gosec)::no findings at severity≥medium, confidence≥medium"
+          {
+            echo "## Go SAST (gosec) ✅"
+            echo ""
+            echo "- gosec: no findings (severity ≥ medium, confidence ≥ medium)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ---------------------------------------------------------------------------
   # Go dependency vulnerabilities (govulncheck)
   # Scans go.mod against the official Go vulnerability database. Runs on
@@ -121,6 +144,17 @@ jobs:
           work-dir: ./rss-worker
           repo-checkout: false
 
+      - name: Annotate govulncheck result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Go Vulnerabilities::govulncheck found no known vulnerabilities"
+          {
+            echo "## Go Vulnerabilities (govulncheck) ✅"
+            echo ""
+            echo "- govulncheck: no known vulnerabilities in the import graph"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ---------------------------------------------------------------------------
   # Trivy filesystem scan
   # Single tool, three scanners: vuln (dependency CVEs across ecosystems),
@@ -147,6 +181,18 @@ jobs:
           exit-code: "1"
           # Ignore CVEs that have no fix available — keeps the report actionable.
           ignore-unfixed: true
+
+      - name: Annotate Trivy result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Trivy::no CRITICAL/HIGH vuln, secret, or misconfig findings"
+          {
+            echo "## Trivy Filesystem Scan ✅"
+            echo ""
+            echo "- Scanners: vuln, secret, misconfig"
+            echo "- Gate: CRITICAL, HIGH (unfixed ignored) — no findings"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
   # Software Bill of Materials (SBOM)
@@ -176,3 +222,15 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cdx.json
           retention-days: 90
+
+      - name: Annotate SBOM result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=SBOM::CycloneDX SBOM generated and uploaded (sbom-cyclonedx, 90d retention)"
+          {
+            echo "## SBOM ✅"
+            echo ""
+            echo "- Format: CycloneDX (\`sbom.cdx.json\`)"
+            echo "- Artifact: \`sbom-cyclonedx\` (90-day retention)"
+          } >> "$GITHUB_STEP_SUMMARY"

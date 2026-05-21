@@ -52,6 +52,20 @@ jobs:
             The subject of the PR title must start with a lowercase letter and
             contain at least two characters. Example: `feat: add rate limiter`.
 
+      # The action annotates its own error on a bad title; this records the
+      # clean pass. if:success() also covers the dependabot-skipped case (a
+      # skipped step does not fail success()).
+      - name: Annotate PR title result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=PR Title::title follows conventional commits (or skipped for dependabot)"
+          {
+            echo "## PR Title Conventional Commits ✅"
+            echo ""
+            echo "- Title follows conventional commits (or skipped for dependabot)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   gomod-sync:
     name: go.mod Sync
     runs-on: ubuntu-latest
@@ -74,6 +88,12 @@ jobs:
             echo "::error::go.mod or go.sum is out of sync. Run 'go mod tidy' in rss-worker/ and commit the result."
             exit 1
           fi
+          echo "::notice title=go.mod Sync::go.mod / go.sum are tidy"
+          {
+            echo "## go.mod Sync ✅"
+            echo ""
+            echo "- \`go mod tidy\` produced no diff"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   migration-format:
     name: Migration Format
@@ -130,6 +150,17 @@ jobs:
           if [ -n "$dup" ]; then
             echo "::error::Duplicate migration prefixes: $dup"
             bad=1
+          fi
+
+          if [ "$bad" -eq 0 ]; then
+            count=${#files[@]}
+            echo "::notice title=Migration Format::${count} migrations — naming + sequence valid"
+            {
+              echo "## Migration Format ✅"
+              echo ""
+              echo "- ${count} migration files"
+              echo "- \`NNN_*.sql\` naming, contiguous sequence, no duplicate prefixes"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
           exit $bad

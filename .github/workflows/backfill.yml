@@ -63,7 +63,29 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: ./rss-worker backfill-images
+        run: |
+          # pipefail so a non-zero worker exit isn't masked by tee. Worker logs
+          # to stderr; 2>&1 captures the summary line for the next step.
+          set -o pipefail
+          ./rss-worker backfill-images 2>&1 | tee /tmp/worker.log
+
+      - name: Annotate run summary
+        if: always()
+        shell: bash
+        run: |
+          log=/tmp/worker.log
+          [ -f "$log" ] || { echo "::warning title=Backfill og:images::worker produced no log to summarize"; exit 0; }
+          summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
+          if [ -n "$summary" ]; then
+            echo "::notice title=Backfill og:images::${summary}"
+            {
+              echo "## Backfill og:images ✅"
+              echo ""
+              echo "- ${summary}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Backfill og:images::no backfill summary found — worker may have exited early"
+          fi
 
   backfill-content:
     name: Backfill article content
@@ -92,4 +114,26 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: ./rss-worker backfill-content
+        run: |
+          # pipefail so a non-zero worker exit isn't masked by tee. Worker logs
+          # to stderr; 2>&1 captures the summary line for the next step.
+          set -o pipefail
+          ./rss-worker backfill-content 2>&1 | tee /tmp/worker.log
+
+      - name: Annotate run summary
+        if: always()
+        shell: bash
+        run: |
+          log=/tmp/worker.log
+          [ -f "$log" ] || { echo "::warning title=Backfill article content::worker produced no log to summarize"; exit 0; }
+          summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
+          if [ -n "$summary" ]; then
+            echo "::notice title=Backfill article content::${summary}"
+            {
+              echo "## Backfill article content ✅"
+              echo ""
+              echo "- ${summary}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Backfill article content::no backfill summary found — worker may have exited early"
+          fi

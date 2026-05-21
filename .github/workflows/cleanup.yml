@@ -39,4 +39,34 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: ./rss-worker cleanup
+        run: |
+          # pipefail so a non-zero worker exit isn't swallowed by tee. Worker
+          # logs to stderr; 2>&1 captures its summary lines for the next step.
+          set -o pipefail
+          ./rss-worker cleanup 2>&1 | tee /tmp/worker.log
+
+      # always() so even a failed cleanup annotates the run instead of leaving
+      # the Annotations box empty. Collects every cleanup/prune line the worker
+      # emits (some are conditional on there being rows to act on).
+      - name: Annotate run summary
+        if: always()
+        shell: bash
+        run: |
+          log=/tmp/worker.log
+          [ -f "$log" ] || { echo "::warning title=Daily Cleanup::worker produced no log to summarize"; exit 0; }
+
+          lines=()
+          while IFS= read -r l; do lines+=("$l"); done < <(grep -oE \
+            'Cleanup complete: deleted [0-9]+ old articles|Cleaned up [0-9]+ old fetch logs|Pruned image URLs on [0-9]+ stale articles \(>[0-9]+d\)|Pruned content on [0-9]+ stale articles \(>[0-9]+d\)' \
+            "$log" || true)
+
+          if [ "${#lines[@]}" -gt 0 ]; then
+            echo "::notice title=Daily Cleanup::${lines[0]}"
+            {
+              echo "## Daily Cleanup ✅"
+              echo ""
+              for l in "${lines[@]}"; do echo "- ${l}"; done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Daily Cleanup::no cleanup summary found — worker may have exited early"
+          fi

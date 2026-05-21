@@ -50,10 +50,49 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DO_CLEANUP: ${{ github.event.inputs.cleanup }}
         run: |
+          # pipefail so a non-zero worker exit isn't masked by tee's success.
+          # The worker logs to stderr, so 2>&1 routes its summary line into the
+          # tee'd file for the "Annotate run summary" step below to parse.
+          set -o pipefail
           if [ "$DO_CLEANUP" = "true" ]; then
-            ./rss-worker cleanup
+            ./rss-worker cleanup 2>&1 | tee /tmp/worker.log
           else
-            ./rss-worker
+            ./rss-worker 2>&1 | tee /tmp/worker.log
+          fi
+
+      # Surface what the run did in the Annotations box + the run's Job Summary.
+      # always() so a failed run still annotates (with a warning) instead of
+      # leaving the section blank. The grep matches the human-readable core of
+      # the worker's stable summary line, so it works for both the text and
+      # json log formats and survives the emoji prefix.
+      - name: Annotate run summary
+        if: always()
+        shell: bash
+        run: |
+          log=/tmp/worker.log
+          [ -f "$log" ] || { echo "::warning title=Fetch RSS Feeds::worker produced no log to summarize"; exit 0; }
+
+          fetch=$(grep -oE 'Summary: sources=[0-9]+, fetched=[0-9]+, inserted=[0-9]+, skipped=[0-9]+, errors=[0-9]+' "$log" | tail -1 || true)
+          cleanup=$(grep -oE 'Cleanup complete: deleted [0-9]+ old articles' "$log" | tail -1 || true)
+
+          if [ -n "$fetch" ]; then
+            echo "::notice title=Fetch RSS Feeds::${fetch}"
+            {
+              echo "## Fetch RSS Feeds ✅"
+              echo ""
+              echo '```'
+              echo "$fetch"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$cleanup" ]; then
+            echo "::notice title=Fetch RSS Feeds::${cleanup}"
+            {
+              echo "## Fetch RSS Feeds — cleanup ✅"
+              echo ""
+              echo "- ${cleanup}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Fetch RSS Feeds::no summary line found — worker may have exited before completing"
           fi
 
   # Cleanup is handled exclusively by `cleanup.yml` (separate workflow). The
