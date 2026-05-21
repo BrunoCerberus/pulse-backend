@@ -77,9 +77,17 @@ jobs:
         env:
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
         run: |
-          echo "::notice title=Claude Code::run ${CLAUDE_OUTCOME} — see the posted comment for details"
+          # Match annotation severity to the outcome so a red/cancelled run
+          # doesn't surface a green-looking ::notice:: in the Annotations box.
+          if [ "$CLAUDE_OUTCOME" = "success" ]; then
+            echo "::notice title=Claude Code::run succeeded — see the posted comment for details"
+            icon="✅"
+          else
+            echo "::warning title=Claude Code::run ${CLAUDE_OUTCOME} — see logs / the posted comment"
+            icon="⚠️"
+          fi
           {
-            echo "## Claude Code"
+            echo "## Claude Code ${icon}"
             echo ""
             echo "- Run outcome: **${CLAUDE_OUTCOME}**"
             echo "- Output posted as an issue/PR comment by the action"

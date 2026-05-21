@@ -131,7 +131,14 @@ jobs:
           fi
 
           # Success: populate the Annotations box (notice) + the Job Summary.
-          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, db_quota=${db_disp}/${MAX_DB_QUOTA_PCT}%"
+          # Render the db part cleanly when the size RPC was unavailable (n/a)
+          # rather than the awkward "n/a/60%".
+          if [ "$db_disp" = "n/a" ]; then
+            db_part="db_quota=n/a"
+          else
+            db_part="db_quota=${db_disp}/${MAX_DB_QUOTA_PCT}%"
+          fi
+          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, ${db_part}"
           {
             echo "## Source Health Watchdog ✅"
             echo ""

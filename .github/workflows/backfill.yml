@@ -59,6 +59,7 @@ jobs:
           go build -o rss-worker .
 
       - name: Run image backfill
+        id: run
         working-directory: rss-worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -69,22 +70,31 @@ jobs:
           set -o pipefail
           ./rss-worker backfill-images 2>&1 | tee /tmp/worker.log
 
+      # Branch on the Run step's outcome so a red run never shows a green ✅.
       - name: Annotate run summary
         if: always()
         shell: bash
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
         run: |
           log=/tmp/worker.log
-          [ -f "$log" ] || { echo "::warning title=Backfill og:images::worker produced no log to summarize"; exit 0; }
-          summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
-          if [ -n "$summary" ]; then
-            echo "::notice title=Backfill og:images::${summary}"
+          summary=""
+          [ -f "$log" ] && summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
+          if [ "$RUN_OUTCOME" = "success" ]; then
+            echo "::notice title=Backfill og:images::${summary:-backfill completed}"
             {
               echo "## Backfill og:images ✅"
               echo ""
-              echo "- ${summary}"
+              echo "- ${summary:-backfill completed (no summary line captured)}"
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning title=Backfill og:images::no backfill summary found — worker may have exited early"
+            echo "::error title=Backfill og:images::run ${RUN_OUTCOME}${summary:+ — last summary: ${summary}}"
+            {
+              echo "## Backfill og:images ❌"
+              echo ""
+              echo "- Run outcome: **${RUN_OUTCOME}**"
+              echo "- Last summary line: ${summary:-none captured}"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   backfill-content:
@@ -110,6 +120,7 @@ jobs:
           go build -o rss-worker .
 
       - name: Run content backfill
+        id: run
         working-directory: rss-worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -120,20 +131,29 @@ jobs:
           set -o pipefail
           ./rss-worker backfill-content 2>&1 | tee /tmp/worker.log
 
+      # Branch on the Run step's outcome so a red run never shows a green ✅.
       - name: Annotate run summary
         if: always()
         shell: bash
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
         run: |
           log=/tmp/worker.log
-          [ -f "$log" ] || { echo "::warning title=Backfill article content::worker produced no log to summarize"; exit 0; }
-          summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
-          if [ -n "$summary" ]; then
-            echo "::notice title=Backfill article content::${summary}"
+          summary=""
+          [ -f "$log" ] && summary=$(grep -oE '[a-z:]+ backfill complete: updated=[0-9]+, skipped=[0-9]+|No items need [a-z:]+ backfill' "$log" | tail -1 || true)
+          if [ "$RUN_OUTCOME" = "success" ]; then
+            echo "::notice title=Backfill article content::${summary:-backfill completed}"
             {
               echo "## Backfill article content ✅"
               echo ""
-              echo "- ${summary}"
+              echo "- ${summary:-backfill completed (no summary line captured)}"
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning title=Backfill article content::no backfill summary found — worker may have exited early"
+            echo "::error title=Backfill article content::run ${RUN_OUTCOME}${summary:+ — last summary: ${summary}}"
+            {
+              echo "## Backfill article content ❌"
+              echo ""
+              echo "- Run outcome: **${RUN_OUTCOME}**"
+              echo "- Last summary line: ${summary:-none captured}"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi

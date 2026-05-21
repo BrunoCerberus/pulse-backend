@@ -35,6 +35,7 @@ jobs:
           go build -o rss-worker .
 
       - name: Run Cleanup
+        id: run
         working-directory: rss-worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -45,28 +46,40 @@ jobs:
           set -o pipefail
           ./rss-worker cleanup 2>&1 | tee /tmp/worker.log
 
-      # always() so even a failed cleanup annotates the run instead of leaving
-      # the Annotations box empty. Collects every cleanup/prune line the worker
-      # emits (some are conditional on there being rows to act on).
+      # always() so even a failed cleanup annotates the run, but branch on the
+      # Run step's outcome so a red run never shows a green ✅. Collects every
+      # cleanup/prune line the worker emits (some are conditional on rows).
       - name: Annotate run summary
         if: always()
         shell: bash
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
         run: |
           log=/tmp/worker.log
-          [ -f "$log" ] || { echo "::warning title=Daily Cleanup::worker produced no log to summarize"; exit 0; }
-
           lines=()
-          while IFS= read -r l; do lines+=("$l"); done < <(grep -oE \
-            'Cleanup complete: deleted [0-9]+ old articles|Cleaned up [0-9]+ old fetch logs|Pruned image URLs on [0-9]+ stale articles \(>[0-9]+d\)|Pruned content on [0-9]+ stale articles \(>[0-9]+d\)' \
-            "$log" || true)
+          if [ -f "$log" ]; then
+            while IFS= read -r l; do lines+=("$l"); done < <(grep -oE \
+              'Cleanup complete: deleted [0-9]+ old articles|Cleaned up [0-9]+ old fetch logs|Pruned image URLs on [0-9]+ stale articles \(>[0-9]+d\)|Pruned content on [0-9]+ stale articles \(>[0-9]+d\)' \
+              "$log" || true)
+          fi
 
-          if [ "${#lines[@]}" -gt 0 ]; then
-            echo "::notice title=Daily Cleanup::${lines[0]}"
+          if [ "$RUN_OUTCOME" = "success" ]; then
+            echo "::notice title=Daily Cleanup::${lines[0]:-cleanup completed}"
             {
               echo "## Daily Cleanup ✅"
               echo ""
-              for l in "${lines[@]}"; do echo "- ${l}"; done
+              if [ "${#lines[@]}" -gt 0 ]; then
+                for l in "${lines[@]}"; do echo "- ${l}"; done
+              else
+                echo "- cleanup completed (no summary lines captured)"
+              fi
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning title=Daily Cleanup::no cleanup summary found — worker may have exited early"
+            echo "::error title=Daily Cleanup::run ${RUN_OUTCOME} — see logs"
+            {
+              echo "## Daily Cleanup ❌"
+              echo ""
+              echo "- Run outcome: **${RUN_OUTCOME}**"
+              for l in "${lines[@]}"; do echo "- ${l}"; done
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
