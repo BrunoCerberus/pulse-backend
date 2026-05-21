@@ -44,16 +44,56 @@ jobs:
           go build -o rss-worker .
 
       - name: Run RSS Worker
+        id: run
         working-directory: rss-worker
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           DO_CLEANUP: ${{ github.event.inputs.cleanup }}
         run: |
+          # pipefail so a non-zero worker exit isn't masked by tee's success.
+          # The worker logs to stderr, so 2>&1 routes its summary line into the
+          # tee'd file for the "Annotate run summary" step below to parse.
+          set -o pipefail
           if [ "$DO_CLEANUP" = "true" ]; then
-            ./rss-worker cleanup
+            ./rss-worker cleanup 2>&1 | tee /tmp/worker.log
           else
-            ./rss-worker
+            ./rss-worker 2>&1 | tee /tmp/worker.log
+          fi
+
+      # Surface what the run did in the Annotations box + the run's Job Summary.
+      # always() so a failed run still annotates, but branch on the Run step's
+      # outcome: the worker can exit non-zero *after* printing its summary line
+      # (late panic / partial failure), so a red run must never show a green ✅.
+      # The grep matches the human-readable core of the worker's stable summary
+      # line, so it works for both the text and json log formats.
+      - name: Annotate run summary
+        if: always()
+        shell: bash
+        env:
+          RUN_OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          log=/tmp/worker.log
+          summary=""
+          if [ -f "$log" ]; then
+            summary=$(grep -oE 'Summary: sources=[0-9]+, fetched=[0-9]+, inserted=[0-9]+, skipped=[0-9]+, errors=[0-9]+' "$log" | tail -1 || true)
+            [ -n "$summary" ] || summary=$(grep -oE 'Cleanup complete: deleted [0-9]+ old articles' "$log" | tail -1 || true)
+          fi
+          if [ "$RUN_OUTCOME" = "success" ]; then
+            echo "::notice title=Fetch RSS Feeds::${summary:-run completed}"
+            {
+              echo "## Fetch RSS Feeds ✅"
+              echo ""
+              echo "- ${summary:-run completed (no summary line captured)}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=Fetch RSS Feeds::run ${RUN_OUTCOME}${summary:+ — last summary: ${summary}}"
+            {
+              echo "## Fetch RSS Feeds ❌"
+              echo ""
+              echo "- Run outcome: **${RUN_OUTCOME}**"
+              echo "- Last summary line: ${summary:-none captured}"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # Cleanup is handled exclusively by `cleanup.yml` (separate workflow). The

@@ -100,7 +100,26 @@ jobs:
             fail=1
           fi
 
+          # Shared metrics table for the Job Summary (rendered on both paths).
+          db_disp="${db_quota_pct:-n/a}"
+          [ "$db_disp" != "n/a" ] && db_disp="${db_disp}%"
+          metrics_table() {
+            echo "| Metric | Value | Threshold |"
+            echo "|--------|-------|-----------|"
+            echo "| circuit_open | ${circuit_open} | ${MAX_CIRCUIT_OPEN} |"
+            echo "| stale | ${stale} | ${MAX_STALE} |"
+            echo "| high_failure | ${high_failure} | ${MAX_HIGH_FAILURE} |"
+            echo "| db_quota_pct | ${db_disp} | ${MAX_DB_QUOTA_PCT}% |"
+          }
+
           if (( fail == 1 )); then
+            {
+              echo "## Source Health Watchdog ❌"
+              echo ""
+              echo "One or more thresholds exceeded — see the annotations above."
+              echo ""
+              metrics_table
+            } >> "$GITHUB_STEP_SUMMARY"
             echo ""
             echo "Sources triggering the alert:"
             echo "$response" | jq '.sources | map(select(
@@ -111,4 +130,17 @@ jobs:
             exit 1
           fi
 
-          echo "OK: circuit_open=${circuit_open} stale=${stale} high_failure=${high_failure} db_quota_pct=${db_quota_pct:-n/a}"
+          # Success: populate the Annotations box (notice) + the Job Summary.
+          # Render the db part cleanly when the size RPC was unavailable (n/a)
+          # rather than the awkward "n/a/60%".
+          if [ "$db_disp" = "n/a" ]; then
+            db_part="db_quota=n/a"
+          else
+            db_part="db_quota=${db_disp}/${MAX_DB_QUOTA_PCT}%"
+          fi
+          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, ${db_part}"
+          {
+            echo "## Source Health Watchdog ✅"
+            echo ""
+            metrics_table
+          } >> "$GITHUB_STEP_SUMMARY"

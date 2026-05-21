@@ -68,3 +68,27 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: '--model claude-opus-4-7'
+
+      # The action's substantive output is the comment/review it posts; this is
+      # just a run-completion marker. always() so a failed run is visible too.
+      - name: Annotate Claude run
+        if: always()
+        shell: bash
+        env:
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          # Match annotation severity to the outcome so a red/cancelled run
+          # doesn't surface a green-looking ::notice:: in the Annotations box.
+          if [ "$CLAUDE_OUTCOME" = "success" ]; then
+            echo "::notice title=Claude Code::run succeeded — see the posted comment for details"
+            icon="✅"
+          else
+            echo "::warning title=Claude Code::run ${CLAUDE_OUTCOME} — see logs / the posted comment"
+            icon="⚠️"
+          fi
+          {
+            echo "## Claude Code ${icon}"
+            echo ""
+            echo "- Run outcome: **${CLAUDE_OUTCOME}**"
+            echo "- Output posted as an issue/PR comment by the action"
+          } >> "$GITHUB_STEP_SUMMARY"
