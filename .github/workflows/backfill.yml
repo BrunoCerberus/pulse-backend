@@ -35,6 +35,13 @@ on:
 permissions:
   contents: read
 
+# Serialize backfill runs so a manual dispatch can't overlap the daily cron and
+# double-spend the per-article attempt budget. cancel-in-progress: false lets an
+# in-flight backfill drain rather than being killed mid-batch.
+concurrency:
+  group: backfill
+  cancel-in-progress: false
+
 jobs:
   backfill-images:
     name: Backfill og:images

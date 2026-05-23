@@ -62,7 +62,7 @@ export const CacheDurations = {
  * ```
  */
 export function cacheHeaders(
-  cacheControl: string
+  cacheControl: string,
 ): Record<string, string> {
   return {
     "Cache-Control": cacheControl,

@@ -10,10 +10,17 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded PR runs to save CI minutes; never cancel a push-to-master
+# run (those gate the required checks).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   go-tests:
     name: Go Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -76,6 +83,7 @@ jobs:
   lint:
     name: Go Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -113,6 +121,7 @@ jobs:
   deno-tests:
     name: Deno Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -126,6 +135,22 @@ jobs:
           # Must be a 2.x release because deno.lock is on lockfile version 5
           # (Deno 1.x only handles v3/4).
           deno-version: v2.7.14
+
+      - name: Lint + format-check Edge Functions
+        working-directory: ./supabase/functions
+        # deno fmt --check enforces formatting; deno lint catches unused vars,
+        # no-explicit-any, etc. across the Edge Functions and their tests.
+        run: |
+          set -euo pipefail
+          deno fmt --check
+          deno lint
+          echo "::notice title=Deno Lint::deno fmt --check + deno lint passed — no findings"
+          {
+            echo "## Deno Lint + Format ✅"
+            echo ""
+            echo "- deno fmt --check: all files formatted"
+            echo "- deno lint: no findings"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run Edge Function tests
         id: deno

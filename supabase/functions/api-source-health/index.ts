@@ -35,8 +35,8 @@ import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import {
   buildCacheKey,
   buildProxyUrl,
-  tooLong,
   type ProxyConfig,
+  tooLong,
 } from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
@@ -152,9 +152,7 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
       highFailureCount++;
     }
     if (r.is_active && !r.circuit_open) {
-      const recent = r.most_recent_article_at
-        ? new Date(r.most_recent_article_at).getTime()
-        : 0;
+      const recent = r.most_recent_article_at ? new Date(r.most_recent_article_at).getTime() : 0;
       if (recent < staleCutoff) staleCount++;
     }
   }

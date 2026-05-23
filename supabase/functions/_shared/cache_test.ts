@@ -12,7 +12,7 @@ Deno.test("CacheDurations.SOURCES is 1 hour", () => {
 Deno.test("CacheDurations.ARTICLES has stale-while-revalidate", () => {
   assertEquals(
     CacheDurations.ARTICLES,
-    "public, max-age=900, stale-while-revalidate=1800"
+    "public, max-age=900, stale-while-revalidate=1800",
   );
 });
 
@@ -34,7 +34,7 @@ Deno.test("cacheHeaders with CacheDurations constant", () => {
   const headers = cacheHeaders(CacheDurations.ARTICLES);
   assertEquals(
     headers["Cache-Control"],
-    "public, max-age=900, stale-while-revalidate=1800"
+    "public, max-age=900, stale-while-revalidate=1800",
   );
 });
 

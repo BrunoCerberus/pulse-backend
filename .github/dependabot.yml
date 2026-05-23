@@ -4,8 +4,18 @@ updates:
     directory: "/rss-worker"
     schedule:
       interval: "weekly"
+    # Batch minor/patch bumps into a single PR to cut review noise; major
+    # bumps still open their own PR so they get individual scrutiny.
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

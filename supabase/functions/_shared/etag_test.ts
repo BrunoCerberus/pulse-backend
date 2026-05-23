@@ -1,8 +1,5 @@
-import {
-  assertEquals,
-  assertNotEquals,
-} from "https://deno.land/std@0.208.0/assert/mod.ts";
-import { generateETag, checkConditionalRequest } from "./etag.ts";
+import { assertEquals, assertNotEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { checkConditionalRequest, generateETag } from "./etag.ts";
 
 Deno.test("generateETag produces quoted string", async () => {
   const etag = await generateETag("test data");

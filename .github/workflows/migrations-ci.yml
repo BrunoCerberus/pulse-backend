@@ -1,0 +1,118 @@
+name: Migrations CI
+
+# Applies every Supabase migration from scratch in the Supabase local stack and
+# asserts security invariants against the resulting schema. The migrations
+# reference Supabase-managed roles (anon, authenticated, service_role,
+# authenticator) and the `request.jwt.claims` request GUC, so they can only be
+# applied via the local stack — a bare Postgres lacks those roles.
+#
+# Runs on changes to the migrations, the Supabase config, the invariants test,
+# or this workflow itself.
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/config.toml'
+      - 'supabase/tests/**'
+      - '.github/workflows/migrations-ci.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/config.toml'
+      - 'supabase/tests/**'
+      - '.github/workflows/migrations-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded PR runs; let push/dispatch runs on master finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Apply migrations + invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
+
+      - name: Start local Postgres
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Docker is preinstalled on ubuntu-latest; this boots the Supabase
+          # local Postgres (and supporting containers) in Docker.
+          supabase db start
+
+      - name: Apply migrations from scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          # CORE CHECK: drops and re-applies every migration (001..033) from
+          # scratch. Exits non-zero on ANY SQL error, so a broken or
+          # out-of-order migration fails the build here.
+          supabase db reset --no-seed
+
+      - name: Lint plpgsql
+        shell: bash
+        run: |
+          set -euo pipefail
+          # plpgsql type/lint pass over the applied schema. Fails the step on
+          # any error-level finding (warnings are reported but non-fatal).
+          supabase db lint --level warning --fail-on error
+
+      - name: Run security invariants
+        id: invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          # pipefail so a failed psql assertion isn't masked by tee's success.
+          # ON_ERROR_STOP=1 makes any RAISE EXCEPTION in the script abort psql
+          # with a non-zero exit.
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres" \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/tests/security_invariants.sql 2>&1 | tee /tmp/invariants.log
+
+      # Surface the outcome in the Annotations box + Job Summary. always() so a
+      # failed run still annotates, but branch on the invariants step's outcome
+      # (psql can print partial output before aborting) so a red run never shows
+      # a green check. Matches the always()+outcome pattern in
+      # fetch-rss.yml / test.yml.
+      - name: Annotate migrations CI result
+        if: always()
+        shell: bash
+        env:
+          INVARIANTS_OUTCOME: ${{ steps.invariants.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$INVARIANTS_OUTCOME" = "success" ]; then
+            echo "::notice title=Migrations CI::33 migrations applied from scratch · db lint clean · 6 security invariants passed"
+            {
+              echo "## Migrations CI ✅"
+              echo ""
+              echo "- Apply-from-scratch: all migrations (\`supabase db reset --no-seed\`) applied with no SQL error"
+              echo "- plpgsql lint: no error-level findings (\`supabase db lint --fail-on error\`)"
+              echo "- Security invariants (6): RLS on articles + fetch_logs · SECURITY DEFINER funcs pin empty search_path · 5 write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap · articles_with_source hides url_hash"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            tail=""
+            [ -f /tmp/invariants.log ] && tail=$(grep -E 'INVARIANT|caller-gate|ERROR|FAILED' /tmp/invariants.log | tail -1 || true)
+            echo "::error title=Migrations CI::invariants outcome ${INVARIANTS_OUTCOME}${tail:+ — ${tail}}"
+            {
+              echo "## Migrations CI ❌"
+              echo ""
+              echo "- Invariants step outcome: **${INVARIANTS_OUTCOME}**"
+              echo "- Last failure line: ${tail:-none captured (failure may be in an earlier step — see logs)}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,0 +1,19 @@
+# CODEOWNERS
+#
+# Single-maintainer project. The catch-all below already covers every path;
+# the explicit entries simply make review auto-request visible for the most
+# sensitive areas (DB schema, CI/CD, and published docs).
+#
+# Docs: https://docs.github.com/articles/about-code-owners
+
+# Catch-all — everything is owned by the maintainer.
+* @BrunoCerberus
+
+# Database migrations — schema and security-definer functions.
+/supabase/migrations/ @BrunoCerberus
+
+# CI/CD, workflows, governance, and repo metadata.
+/.github/ @BrunoCerberus
+
+# Published documentation (privacy posture, conformance, runbooks).
+/docs/ @BrunoCerberus
