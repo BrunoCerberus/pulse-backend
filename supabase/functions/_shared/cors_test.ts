@@ -1,7 +1,4 @@
-import {
-  assertEquals,
-  assertExists,
-} from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assertEquals, assertExists } from "https://deno.land/std@0.208.0/assert/mod.ts";
 import { corsHeaders, handleCors } from "./cors.ts";
 
 Deno.test("corsHeaders has Access-Control-Allow-Origin", () => {
@@ -52,7 +49,7 @@ Deno.test("handleCors OPTIONS response has CORS headers", () => {
   assertEquals(response.headers.get("Access-Control-Allow-Origin"), "*");
   assertEquals(
     response.headers.get("Access-Control-Allow-Methods"),
-    "GET, OPTIONS"
+    "GET, OPTIONS",
   );
 });
 

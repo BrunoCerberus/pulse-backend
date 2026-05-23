@@ -17,10 +17,15 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   pr-title:
     name: PR Title Conventional Commits
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Validate PR title
         # Dependabot's auto-generated titles use "Bump …" (capitalized) and
@@ -69,6 +74,7 @@ jobs:
   gomod-sync:
     name: go.mod Sync
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -98,6 +104,7 @@ jobs:
   migration-format:
     name: Migration Format
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -132,7 +139,7 @@ jobs:
           done
 
           # Check for gaps in the sequence (001, 002, ...).
-          IFS=$'\n' sorted=($(printf '%s\n' "${nums[@]}" | sort -n)); unset IFS
+          mapfile -t sorted < <(printf '%s\n' "${nums[@]}" | sort -n)
           expected=1
           for n in "${sorted[@]}"; do
             decimal=$((10#$n))

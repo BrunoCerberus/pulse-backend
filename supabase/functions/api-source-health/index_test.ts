@@ -296,8 +296,7 @@ Deno.test("fetchDatabaseSize: null on non-numeric body", async () => {
   const origFetch = globalThis.fetch;
   try {
     setupEnv();
-    globalThis.fetch = () =>
-      Promise.resolve(new Response('"not-a-number"', { status: 200 }));
+    globalThis.fetch = () => Promise.resolve(new Response('"not-a-number"', { status: 200 }));
     assertEquals(await fetchDatabaseSize(), null);
   } finally {
     globalThis.fetch = origFetch;
@@ -311,8 +310,7 @@ Deno.test("fetchDatabaseSize: null on negative bytes", async () => {
   const origFetch = globalThis.fetch;
   try {
     setupEnv();
-    globalThis.fetch = () =>
-      Promise.resolve(new Response("-1", { status: 200 }));
+    globalThis.fetch = () => Promise.resolve(new Response("-1", { status: 200 }));
     assertEquals(await fetchDatabaseSize(), null);
   } finally {
     globalThis.fetch = origFetch;
@@ -328,8 +326,7 @@ Deno.test("fetchDatabaseSize: respects SUPABASE_DB_QUOTA_BYTES override", async 
   try {
     setupEnv();
     Deno.env.set("SUPABASE_DB_QUOTA_BYTES", "200000000");
-    globalThis.fetch = () =>
-      Promise.resolve(new Response("100000000", { status: 200 }));
+    globalThis.fetch = () => Promise.resolve(new Response("100000000", { status: 200 }));
     const result = await fetchDatabaseSize();
     assertEquals(result?.size_bytes, 100_000_000);
     assertEquals(result?.quota_pct, 50);
@@ -348,8 +345,7 @@ Deno.test("fetchDatabaseSize: invalid quota env falls back to default", async ()
   const origFetch = globalThis.fetch;
   try {
     setupEnv();
-    globalThis.fetch = () =>
-      Promise.resolve(new Response("104857600", { status: 200 }));
+    globalThis.fetch = () => Promise.resolve(new Response("104857600", { status: 200 }));
     for (const bad of ["", "0", "-1", "500MB", "not-a-number"]) {
       Deno.env.set("SUPABASE_DB_QUOTA_BYTES", bad);
       const result = await fetchDatabaseSize();
@@ -377,8 +373,7 @@ Deno.test("fetchDatabaseSize: formats sizes across unit boundaries", async () =>
       [2_147_483_648, "2.00 GB"],
     ];
     for (const [bytes, expected] of cases) {
-      globalThis.fetch = () =>
-        Promise.resolve(new Response(String(bytes), { status: 200 }));
+      globalThis.fetch = () => Promise.resolve(new Response(String(bytes), { status: 200 }));
       const result = await fetchDatabaseSize();
       assertEquals(result?.size_pretty, expected);
     }

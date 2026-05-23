@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# One health check at a time; a manual dispatch shouldn't double up with the
+# 6-hourly cron.
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
 jobs:
   watchdog:
     name: Check source health

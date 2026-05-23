@@ -1,0 +1,67 @@
+name: Meta Lint
+
+# Lints the repo's own GitHub Actions workflows (and the shell embedded in
+# their `run:` blocks) so CI definitions can't silently rot. No path filter —
+# workflow/shell mistakes can hide anywhere a `run:` block lives, and the job
+# is fast — so it runs on every push/PR against master.
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # actionlint
+  # Static analysis for GitHub Actions workflows: catches invalid syntax, bad
+  # `uses:` refs, expression typos, and shell bugs. actionlint auto-invokes
+  # shellcheck on every `run:` block, so embedded shell is linted too.
+  # ---------------------------------------------------------------------------
+  actionlint:
+    name: Lint workflows + shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install actionlint
+        env:
+          # Pinned — bump periodically (see https://github.com/rhysd/actionlint/releases).
+          ACTIONLINT_VERSION: "1.7.7"
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin actionlint
+          actionlint --version
+
+      - name: Run actionlint
+        # shellcheck is pre-installed on ubuntu-latest runners; actionlint
+        # auto-invokes it on every `run:` block, so no separate install needed.
+        run: |
+          set -euo pipefail
+          actionlint -color
+
+      - name: Annotate meta lint result
+        if: success()
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: "1.7.7"
+        run: |
+          set -euo pipefail
+          echo "::notice title=Meta Lint::actionlint + shellcheck passed — no findings across all workflows"
+          {
+            echo "## Meta Lint ✅"
+            echo ""
+            echo "- actionlint v${ACTIONLINT_VERSION}: no findings across all workflows"
+            echo "- shellcheck: ran on embedded \`run:\` blocks — no findings"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a defect in the RSS worker, Edge Functions, migrations, CI, or docs.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Do not report security vulnerabilities here.** Use private
+        vulnerability reporting via the repository's Security tab instead
+        (see `SECURITY.md`).
+
+        Please search existing issues first to avoid duplicates, and fill in
+        as much detail as you can.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the backend is affected?
+      options:
+        - rss-worker
+        - Edge Functions
+        - database-migrations
+        - CI-workflows
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the bug and its impact.
+      placeholder: Describe the observed behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can the bug be reproduced?
+      placeholder: |
+        1. Run `make ...`
+        2. Trigger the `...` workflow
+        3. Observe `...`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / fetch_logs status
+      description: >
+        Relevant worker logs, GitHub Actions output, or the `fetch_logs` row
+        status (running / completed / partial_failure / failed). Redact any
+        secrets before pasting.
+      render: text
+    validations:
+      required: false

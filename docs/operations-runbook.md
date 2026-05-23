@@ -40,9 +40,13 @@ View workflow runs:
 4. Check `watchdog.yml` for source-health alerts (every 6 hours, fails the
    job + sends GitHub email when `circuit_open` / `stale` /
    `high_failure` / `database.quota_pct` cross thresholds defined inline)
-5. Check `deploy-functions.yml` for Edge Function deploys — gated by the
+5. Check `deploy.yml` for production deploys — gated by the
    `production` GitHub Environment (required reviewer + master-only
-   branch rule). Deploys pause for human approval in the Actions UI.
+   branch rule); deploys pause for human approval in the Actions UI.
+   It runs ordered steps: apply migrations (`supabase db push`, gated —
+   no-ops with a notice if `SUPABASE_DB_PASSWORD` is unset, so functions
+   still ship), deploy Edge Functions, then a post-deploy api-health
+   smoke test against `${SUPABASE_URL}/functions/v1/api-health`.
 
 ### Key Metrics to Monitor
 

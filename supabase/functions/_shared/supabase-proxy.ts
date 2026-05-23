@@ -58,8 +58,7 @@ export interface ProxyResult {
 
 const MAX_QUERY_STRING_LENGTH = 4096;
 const DEFAULT_MAX_VALUE_LENGTH = 256;
-const ORDER_PATTERN =
-  /^([a-z_][a-z0-9_]*)\.(asc|desc)(?:\.(nullsfirst|nullslast))?$/i;
+const ORDER_PATTERN = /^([a-z_][a-z0-9_]*)\.(asc|desc)(?:\.(nullsfirst|nullslast))?$/i;
 
 /**
  * Rejects oversized request URIs before any DB work happens. Call this at
