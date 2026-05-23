@@ -1,0 +1,141 @@
+name: Deploy
+
+# Single gated production deploy: apply DB migrations FIRST, then deploy Edge
+# Functions, then smoke-test api-health. Steps run sequentially under `set -e`,
+# so a failed `supabase db push` aborts the job before any function ships —
+# that ordering is the whole point.
+#
+# Gated on the `production` GitHub Environment (Settings → Environments →
+# production: required reviewers + branch restriction to master). One approval
+# covers the entire DB-and-functions deploy. The Environment also scopes the
+# Supabase secrets so they aren't exposed to other workflows.
+#
+# Required secrets on the `production` Environment:
+#   SUPABASE_ACCESS_TOKEN  - Personal access token from https://supabase.com/dashboard/account/tokens
+#   SUPABASE_PROJECT_REF   - Project reference ID from Supabase project settings
+#   SUPABASE_DB_PASSWORD   - (NEW — must be added) DB password from Project Settings → Database;
+#                            required by `supabase db push`. If absent, the migrate step safely
+#                            no-ops (functions still deploy) — see the "Apply migrations" step.
+#   SUPABASE_URL           - (repo scope, reused) used by the post-deploy smoke test.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel an in-flight deploy — a half-applied migration set is worse
+  # than waiting. Queue subsequent runs instead.
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Single gate for the whole deploy: one required-reviewer approval covers
+    # migrations + functions. All environment-scoped secrets are available to
+    # the job once approved.
+    environment: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@df56b21da46c98abb12a9804e4fb1f657773e333 # v2.0.0
+
+      - name: Apply migrations
+        id: migrate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # SUPABASE_DB_PASSWORD is the NEW secret. Until it's added on the
+          # production environment, no-op (exit 0) so functions still deploy.
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
+            echo "::notice title=Deploy::SUPABASE_DB_PASSWORD not set on the production environment — skipping 'supabase db push'. Migrations must be applied manually until this secret is added. Functions will still deploy."
+            exit 0
+          fi
+
+          # The CLI reads SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD from env.
+          # `db push` applies pending migrations to the linked project. A failure
+          # here aborts the job (set -e) before functions deploy.
+          supabase link --project-ref "$SUPABASE_PROJECT_REF"
+          supabase db push
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      - name: Deploy Edge Functions
+        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+
+      - name: Smoke test (api-health)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # api-health is verify_jwt = false and returns exactly {"status":"ok"}.
+          # Functions need a few seconds to go live, so retry with backoff.
+          url="${SUPABASE_URL}/functions/v1/api-health"
+          attempts=5
+          for i in $(seq 1 "$attempts"); do
+            body=""
+            if body=$(curl -fsS --max-time 15 "$url"); then
+              if printf '%s' "$body" | grep -q '"ok"'; then
+                echo "api-health healthy on attempt ${i}: ${body}"
+                exit 0
+              fi
+              echo "Attempt ${i}/${attempts}: HTTP 200 but body not healthy yet: ${body}"
+            else
+              echo "Attempt ${i}/${attempts}: api-health not reachable yet"
+            fi
+            if [ "$i" -lt "$attempts" ]; then
+              sleep 3
+            fi
+          done
+
+          echo "::error title=Deploy::api-health did not return healthy after deploy"
+          exit 1
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+
+      # if: always() so we annotate on both paths. Branch on job.status: green
+      # when every prior step passed, red otherwise. No secrets in the output.
+      - name: Annotate deploy
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "::notice title=Deploy::migrations applied (or skipped if unconfigured) + functions deployed + api-health OK"
+            {
+              echo "## Deploy ✅"
+              echo ""
+              echo "- Migrations applied via \`supabase db push\` (or skipped if \`SUPABASE_DB_PASSWORD\` is unconfigured)"
+              echo "- Edge Functions deployed to the production project"
+              echo "- \`api-health\` smoke test returned healthy"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=Deploy::deploy failed — see the step annotations above"
+            {
+              echo "## Deploy ❌"
+              echo ""
+              echo "Deploy failed — see the step annotations above."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,11 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.208.0/assert/assert_equals.ts";
-import {
-  cacheSize,
-  clearCache,
-  getCached,
-  MAX_CACHE_ENTRIES,
-  setCached,
-} from "./memory-cache.ts";
+import { cacheSize, clearCache, getCached, MAX_CACHE_ENTRIES, setCached } from "./memory-cache.ts";
 
 Deno.test("getCached returns null for missing key", () => {
   clearCache();

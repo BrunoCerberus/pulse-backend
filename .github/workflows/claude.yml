@@ -10,6 +10,12 @@ on:
   pull_request_review:
     types: [submitted]
 
+# One Claude run at a time per issue/PR; don't cancel an in-flight run — it may
+# be mid-way through posting its comment/review.
+concurrency:
+  group: claude-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   claude:
     # Restrict to repo owner/members/collaborators so a drive-by commenter
@@ -37,6 +43,7 @@ jobs:
            github.event.issue.author_association == 'COLLABORATOR'))
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write

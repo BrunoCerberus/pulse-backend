@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# Serialize cleanup runs (scheduled + manual) so two batch-delete loops can't
+# race on the same rows. cancel-in-progress: false lets an in-flight run finish.
+concurrency:
+  group: cleanup
+  cancel-in-progress: false
+
 jobs:
   cleanup:
     name: Cleanup Old Articles

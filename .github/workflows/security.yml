@@ -11,11 +11,17 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
 
-# Default to least privilege. Individual jobs widen this when they need to
-# (e.g. to write SARIF results to the Security tab — currently unused because
-# this repo is private and does not have GitHub Advanced Security enabled).
+# Default to least privilege. Individual jobs widen this when they need to —
+# the go-sast and trivy jobs add `security-events: write` to upload their SARIF
+# to the Security tab (alongside CodeQL from codeql.yml). This repo is public,
+# so code scanning is available without GitHub Advanced Security.
 permissions:
   contents: read
+
+# Cancel superseded PR runs; let scheduled and push-to-master runs complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -79,6 +85,9 @@ jobs:
     name: Go SAST (gosec)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write  # upload gosec SARIF to the Security tab
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -104,7 +113,19 @@ jobs:
 
       - name: Run gosec
         working-directory: ./rss-worker
-        run: gosec -severity medium -confidence medium ./...
+        # Write SARIF for the Security tab. gosec still exits non-zero on a
+        # finding, so this step remains the gate; the upload runs via
+        # if: always() so results surface even when the gate trips.
+        run: gosec -fmt sarif -out results.sarif -severity medium -confidence medium ./...
+
+      - name: Upload gosec SARIF
+        # Skip on fork PRs (read-only token can't write security-events); the
+        # gosec gate above still runs there. Same-repo PRs + push + schedule upload.
+        if: ${{ always() && hashFiles('rss-worker/results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
+        with:
+          sarif_file: rss-worker/results.sarif
+          category: gosec
 
       - name: Annotate gosec result
         if: success()
@@ -166,6 +187,9 @@ jobs:
     name: Trivy Filesystem Scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write  # upload Trivy SARIF to the Security tab
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -177,10 +201,22 @@ jobs:
           scan-ref: .
           scanners: vuln,secret,misconfig
           severity: CRITICAL,HIGH
-          format: table
+          # SARIF for the Security tab; trivy writes the report before applying
+          # exit-code, so the gate (exit-code 1 on a CRITICAL/HIGH finding) and
+          # the upload below (if: always()) coexist.
+          format: sarif
+          output: trivy-results.sarif
           exit-code: "1"
           # Ignore CVEs that have no fix available — keeps the report actionable.
           ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        # Skip on fork PRs (read-only token); the trivy gate above still runs there.
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs
 
       - name: Annotate Trivy result
         if: success()

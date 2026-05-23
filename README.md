@@ -143,10 +143,11 @@ Two scopes:
 
 | Secret Name | Used by |
 |-------------|---------|
-| `SUPABASE_ACCESS_TOKEN` | `deploy-functions.yml` |
-| `SUPABASE_PROJECT_REF` | `deploy-functions.yml` |
+| `SUPABASE_ACCESS_TOKEN` | `deploy.yml` |
+| `SUPABASE_PROJECT_REF` | `deploy.yml` |
+| `SUPABASE_DB_PASSWORD` | `deploy.yml` (`supabase db push`; from Supabase dashboard → Project Settings → Database). If absent, the migration step no-ops with a notice and functions still deploy. |
 
-Configure the `production` Environment with **required reviewers** (yourself) and **deployment branches: master only**. This gates every Edge Function deploy on a human approval click in the Actions UI and scopes the deploy secrets so they can't be exfiltrated from unrelated workflows.
+Configure the `production` Environment with **required reviewers** (yourself) and **deployment branches: master only**. This gates every deploy on a human approval click in the Actions UI and scopes the deploy secrets so they can't be exfiltrated from unrelated workflows. `deploy.yml` also reads the repo-scope `SUPABASE_URL` for its post-deploy api-health smoke test.
 
 ### 6. Enable GitHub Actions
 
@@ -155,6 +156,8 @@ The workflows are already configured:
 - `cleanup.yml` - Runs daily at 3 AM UTC
 - `backfill.yml` - og:image + content backfill daily at 04:30 UTC (manual `workflow_dispatch` accepts `kind: both|images|content`)
 - `watchdog.yml` - Source-health check every 6 hours (fails the job + emails when circuit/stale/high-failure/DB-quota thresholds breach)
+- `migrations-ci.yml` - On PR/push touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**`: boots the local Supabase stack, applies all migrations from scratch, `supabase db lint`, then runs the SQL security-invariant assertions
+- `lint-meta.yml` - `actionlint` (+ shellcheck on run-blocks) over all workflows on PR/push
 
 Go to **Actions** tab and enable workflows if prompted.
 
@@ -176,7 +179,7 @@ supabase link --project-ref YOUR_PROJECT_REF
 supabase functions deploy
 ```
 
-**Automated (after the `production` Environment is set up):** any merge to `master` touching `supabase/functions/**` queues a deploy in `deploy-functions.yml`. The job pauses on the "Waiting" step until a maintainer clicks **Approve and deploy** in the Actions UI, then ships the bundle.
+**Automated (after the `production` Environment is set up):** any merge to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` queues a deploy in `deploy.yml`. The job pauses on the "Waiting" step until a maintainer clicks **Approve and deploy** in the Actions UI, then runs three ordered steps under `set -e`: (1) **apply migrations** via `supabase db push` (no-ops with a notice if `SUPABASE_DB_PASSWORD` is unset, so functions still ship); (2) **deploy Edge Functions** via `supabase functions deploy`; (3) **api-health smoke test** that curls `${SUPABASE_URL}/functions/v1/api-health` with retries and expects `{"status":"ok"}`. A failed migration aborts before functions deploy.
 
 The Edge Functions provide a caching layer for the iOS app with Cache-Control headers. They also enforce request guards (column whitelist, `limit` clamp, `q` length cap, URL length cap, oversized-value drop) documented in `docs/api-reference.md`.
 
@@ -196,6 +199,7 @@ Go to **Table Editor** → **articles** to see the fetched articles.
 ```
 pulse-backend/
 ├── README.md                          # This file
+├── SECURITY.md                        # Vulnerability disclosure policy
 ├── Makefile                           # Common commands (make help)
 ├── docs/
 │   ├── api-reference.md               # Edge Function endpoints + request guards
@@ -244,14 +248,15 @@ pulse-backend/
 │   │   ├── 031_prune_old_image_urls_rpc.sql      # Batched NULL of image_url + thumbnail_url on stale articles (>IMAGE_PRUNE_DAYS); runCleanup step + matching age filter on backfill query
 │   │   ├── 032_prune_old_content_rpc.sql         # Batched NULL of articles.content past CONTENT_PRUNE_DAYS; iOS detail view falls back to summary
 │   │   └── 033_fix_security_definer_caller_gate.sql # Replace dead CURRENT_USER check in 5 migration-027 SECURITY DEFINER functions with the working JWT-claim pattern
-│   └── functions/                     # Edge Functions (caching proxy)
-│       ├── _shared/                   # Shared utilities, memory cache + tests
-│       ├── api-categories/            # Categories endpoint (24h cache)
-│       ├── api-sources/               # Sources endpoint (1h cache)
-│       ├── api-articles/              # Articles endpoint (5min + ETag)
-│       ├── api-search/                # Search endpoint (1min private)
-│       ├── api-health/                # Health check endpoint (no-store)
-│       └── api-source-health/         # Per-source fetch health + summary + DB size (60s cache)
+│   ├── functions/                     # Edge Functions (caching proxy)
+│   │   ├── _shared/                   # Shared utilities, memory cache + tests
+│   │   ├── api-categories/            # Categories endpoint (24h cache)
+│   │   ├── api-sources/               # Sources endpoint (1h cache)
+│   │   ├── api-articles/              # Articles endpoint (5min + ETag)
+│   │   ├── api-search/                # Search endpoint (1min private)
+│   │   ├── api-health/                # Health check endpoint (no-store)
+│   │   └── api-source-health/         # Per-source fetch health + summary + DB size (60s cache)
+│   └── tests/                         # SQL security-invariant assertions (run by migrations-ci.yml)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
 │   ├── main.go                        # Entry point
@@ -269,13 +274,17 @@ pulse-backend/
     │   ├── test.yml                   # Unit tests + lint + govulncheck (on push/PR)
     │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title conventional-commits, go.mod sync, migration format
-    │   ├── deploy-functions.yml       # Auto-deploy Edge Functions on push
+    │   ├── deploy.yml                 # Gated deploy: apply migrations → deploy Edge Functions → api-health smoke test
+    │   ├── migrations-ci.yml          # PR/push: db reset from scratch + db lint + SQL security-invariant assertions
+    │   ├── lint-meta.yml              # actionlint (+ shellcheck on run-blocks) over all workflows
     │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
     │   ├── lgpd-conformance.yml       # LGPD guard rails (PII bans, doc gates, ops + structural)
     │   └── gdpr-conformance.yml       # GDPR + CCPA guard rails (same shape, EU/US patterns)
+    ├── ISSUE_TEMPLATE/                # Bug + feature issue forms + config
+    ├── CODEOWNERS                     # Review ownership
     ├── lgpd-gdpr-rules.toml           # Custom gitleaks rules: CPF, CNPJ, IBAN, US SSN
     ├── pii-allowlist.txt              # Allowed email literals (maintainer + reserved domains)
-    └── dependabot.yml                 # Weekly dependency updates
+    └── dependabot.yml                 # Dependency updates (minor/patch grouped per ecosystem)
 ```
 
 ## Content Sources
@@ -571,7 +580,9 @@ All jobs run in parallel and fail the build on any finding. The weekly schedule 
 | `test.yml` | Push/PR to `master` | Go tests (race + coverage), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, govulncheck, Deno tests |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
-| `deploy-functions.yml` | Push to `master` touching `supabase/functions/**` | Build + deploy Edge Functions. Gated by the `production` Environment — pauses for required-reviewer approval before shipping. |
+| `migrations-ci.yml` | Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` | Boots the local Supabase stack, applies all migrations from scratch (`supabase db reset --no-seed`), `supabase db lint --fail-on error`, then runs `supabase/tests/security_invariants.sql` |
+| `lint-meta.yml` | Push/PR | `actionlint` (+ shellcheck on run-blocks) over all workflows |
+| `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | Gated by the `production` Environment (required-reviewer approval). Ordered steps under `set -e`: apply migrations (`supabase db push`; no-ops if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → api-health smoke test. Concurrency group `deploy-production`, no cancel-in-progress. |
 | `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure/DB-quota threshold breach |
 | `lgpd-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, required privacy docs, retention + RLS + no-PII-redaction invariant, structural integrity on migrations |
 | `gdpr-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU-phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |

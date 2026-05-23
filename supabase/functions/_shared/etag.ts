@@ -54,7 +54,7 @@ export async function generateETag(data: string): Promise<string> {
  */
 export function checkConditionalRequest(
   req: Request,
-  etag: string
+  etag: string,
 ): Response | null {
   const ifNoneMatch = req.headers.get("if-none-match");
   if (ifNoneMatch && ifNoneMatch === etag) {

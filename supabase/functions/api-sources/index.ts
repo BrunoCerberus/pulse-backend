@@ -27,8 +27,8 @@ import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import {
   buildCacheKey,
   fetchFromSupabase,
-  tooLong,
   type ProxyConfig,
+  tooLong,
 } from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 

@@ -28,12 +28,8 @@
  */
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
-import { generateETag, checkConditionalRequest } from "../_shared/etag.ts";
-import {
-  fetchFromSupabase,
-  tooLong,
-  type ProxyConfig,
-} from "../_shared/supabase-proxy.ts";
+import { checkConditionalRequest, generateETag } from "../_shared/etag.ts";
+import { fetchFromSupabase, type ProxyConfig, tooLong } from "../_shared/supabase-proxy.ts";
 
 const config: ProxyConfig = {
   table: "articles_with_source",

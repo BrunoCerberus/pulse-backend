@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Never let a manual dispatch overlap a scheduled run (or vice versa) — two
+# workers writing to the same DB concurrently would duplicate fetch work.
+# cancel-in-progress: false so an in-flight batch is allowed to finish.
+concurrency:
+  group: fetch-rss
+  cancel-in-progress: false
+
 jobs:
   fetch:
     name: Fetch RSS Feeds
