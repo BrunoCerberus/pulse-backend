@@ -96,7 +96,10 @@ jobs:
           for i in $(seq 1 "$attempts"); do
             body=""
             if body=$(curl -fsS --max-time 15 "$url"); then
-              if printf '%s' "$body" | grep -q '"ok"'; then
+              # Parse the JSON and require status == "ok" exactly. A substring
+              # match (grep '"ok"') would also pass bodies like
+              # {"status":"error","ok_count":0}; jq -e fails on non-ok / non-JSON.
+              if printf '%s' "$body" | jq -e '.status == "ok"' >/dev/null 2>&1; then
                 echo "api-health healthy on attempt ${i}: ${body}"
                 exit 0
               fi
