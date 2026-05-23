@@ -140,64 +140,71 @@ END $$;
 
 
 -- -----------------------------------------------------------------------------
--- INVARIANT 4: The SECURITY DEFINER caller gate rejects non-service-role
---              callers.
+-- INVARIANT 4: Every write function carries migration 033's caller gate, and
+--              the GRANT boundary holds (anon/authenticated cannot EXECUTE;
+--              service_role can).
 -- -----------------------------------------------------------------------------
--- Guards migration 033 (the entire purpose of the migration). The gate, present
--- in every migration-027/033 write function, is:
---
+-- Guards migration 033. The gate in each migration-027/033 write function is:
 --     jwt_role := NULLIF(current_setting('request.jwt.claims', true), '');
---     IF NOT (
---         (jwt_role IS NOT NULL AND (jwt_role::jsonb ->> 'role') = 'service_role')
---         OR SESSION_USER = 'postgres'
---     ) THEN
---         RAISE EXCEPTION 'access denied for session_user=%, jwt_role=%', ...;
---     END IF;
+--     IF NOT ((jwt_role::jsonb ->> 'role') = 'service_role'
+--             OR SESSION_USER = 'postgres') THEN RAISE EXCEPTION ...; END IF;
 --
--- WHY THE TEST IS SHAPED THE WAY IT IS (this is the subtle part):
---   * The CI connection authenticates as `postgres`, so SESSION_USER is
---     'postgres' by default. Under that identity the `OR SESSION_USER =
---     'postgres'` branch is TRUE and the gate ALWAYS passes — so merely setting
---     request.jwt.claims to a non-service role would NOT trigger a rejection.
---   * `SET ROLE` does NOT change SESSION_USER (it only changes CURRENT_USER), so
---     it cannot defeat that branch either.
---   * `SET SESSION AUTHORIZATION` DOES change SESSION_USER. We authorize as
---     `service_role` so that (a) SESSION_USER becomes 'service_role' (≠
---     'postgres', defeating the second branch) and (b) the function's GRANT
---     EXECUTE-to-service_role is satisfied, so execution reaches the in-function
---     gate instead of being blocked earlier by a 42501 grant error. This makes
---     the test exercise migration 033's GATE specifically, not the GRANT.
---   * We set request.jwt.claims to {"role":"anon"} to mirror a PostgREST anon
---     caller: the jwt_role branch is then 'anon' ≠ 'service_role' (FALSE), and
---     with SESSION_USER ≠ 'postgres' the gate RAISEs. This is exactly the
---     production "anon JWT" path migration 033 hardens.
---
--- The GUC is set first (as postgres, where setting a custom dotted GUC is
--- unprivileged), then we switch session authorization, run the call inside a
--- sub-block that EXPECTS the rejection, then restore both. cleanup_old_articles
--- evaluates the gate as its first statement, so no rows are touched when it
--- (correctly) rejects.
-SET "request.jwt.claims" = '{"role":"anon"}';
-SET SESSION AUTHORIZATION service_role;
-
+-- WHY THIS IS A CATALOG CHECK, NOT A BEHAVIORAL ONE:
+--   To trip the gate you need SESSION_USER != 'postgres'. The only way to do
+--   that in a single psql session is `SET SESSION AUTHORIZATION <role>`, which
+--   requires the *initial* session user to be a superuser. The Supabase local
+--   stack's `postgres` role is NOT a superuser, so that statement is denied
+--   ("permission denied to set session authorization"). `SET ROLE` doesn't help
+--   either — it changes CURRENT_USER, not SESSION_USER. So a behavioral
+--   rejection test isn't possible from CI; we assert the two things that matter
+--   via the catalog instead, both privilege-free:
+--     (a) every write function's body contains the request.jwt.claims gate —
+--         i.e. migration 033's fix, NOT the dead CURRENT_USER check from 027;
+--     (b) the GRANT boundary, which migration 033 itself calls the actual
+--         load-bearing security: anon + authenticated have no EXECUTE,
+--         service_role does. has_function_privilege() reads the catalog.
 DO $$
+DECLARE
+    fn       TEXT;
+    fn_oid   OID;
+    expected TEXT[] := ARRAY[
+        'cleanup_old_articles',
+        'batch_update_article_images',
+        'batch_update_article_content',
+        'bump_backfill_attempts',
+        'batch_update_source_fetch_state'
+    ];
 BEGIN
-    BEGIN
-        PERFORM public.cleanup_old_articles(7);
-        -- Reached ONLY if the gate failed to reject. Sentinel message is
-        -- re-raised below so it isn't swallowed as an "expected" rejection.
-        RAISE EXCEPTION 'caller-gate FAILED: non-service-role JWT was allowed to call cleanup_old_articles (migration 033)';
-    EXCEPTION WHEN OTHERS THEN
-        IF SQLERRM LIKE 'caller-gate FAILED%' THEN
-            RAISE;  -- propagate our sentinel -> fails CI
-        END IF;
-        -- Otherwise this is the EXPECTED gate rejection ("access denied ...").
-        -- Swallow it: the invariant holds.
-    END;
-END $$;
+    FOREACH fn IN ARRAY expected LOOP
+        SELECT p.oid INTO fn_oid
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = fn
+        ORDER BY p.oid
+        LIMIT 1;
 
-RESET SESSION AUTHORIZATION;
-RESET "request.jwt.claims";
+        IF fn_oid IS NULL THEN
+            RAISE EXCEPTION 'INVARIANT 4 FAILED: write function public.% not found (migration 033)', fn;
+        END IF;
+
+        -- (a) migration 033's JWT-claim gate is present (not the dead
+        -- CURRENT_USER check it replaced, which lacked request.jwt.claims).
+        IF pg_catalog.pg_get_functiondef(fn_oid) NOT LIKE '%request.jwt.claims%' THEN
+            RAISE EXCEPTION 'INVARIANT 4 FAILED: public.% lacks the request.jwt.claims caller gate (regressed to the dead CURRENT_USER check?) (migration 033)', fn;
+        END IF;
+
+        -- (b) GRANT boundary — the actual security per migration 033.
+        IF has_function_privilege('anon', fn_oid, 'EXECUTE') THEN
+            RAISE EXCEPTION 'INVARIANT 4 FAILED: anon can EXECUTE public.% (REVOKE regressed) (migration 027/033)', fn;
+        END IF;
+        IF has_function_privilege('authenticated', fn_oid, 'EXECUTE') THEN
+            RAISE EXCEPTION 'INVARIANT 4 FAILED: authenticated can EXECUTE public.% (REVOKE regressed) (migration 027/033)', fn;
+        END IF;
+        IF NOT has_function_privilege('service_role', fn_oid, 'EXECUTE') THEN
+            RAISE EXCEPTION 'INVARIANT 4 FAILED: service_role cannot EXECUTE public.% (GRANT missing) (migration 027/033)', fn;
+        END IF;
+    END LOOP;
+END $$;
 
 
 -- -----------------------------------------------------------------------------

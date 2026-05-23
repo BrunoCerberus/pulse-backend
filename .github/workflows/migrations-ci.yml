@@ -103,7 +103,7 @@ jobs:
               echo ""
               echo "- Apply-from-scratch: all migrations (\`supabase db reset --no-seed\`) applied with no SQL error"
               echo "- plpgsql lint: no error-level findings (\`supabase db lint --fail-on error\`)"
-              echo "- Security invariants (6): RLS on articles + fetch_logs · SECURITY DEFINER funcs pin empty search_path · 5 write functions are SECURITY DEFINER · caller gate rejects non-service-role · search_articles length cap · articles_with_source hides url_hash"
+              echo "- Security invariants (6): RLS on articles + fetch_logs · SECURITY DEFINER funcs pin empty search_path · 5 write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap · articles_with_source hides url_hash"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             tail=""
