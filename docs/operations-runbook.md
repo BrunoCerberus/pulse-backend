@@ -41,19 +41,16 @@ View workflow runs:
    job + sends GitHub email when `circuit_open` / `stale` /
    `high_failure` / `database.quota_pct` cross thresholds defined inline)
 5. Check `deploy.yml` for production deploys — gated by the
-   `production` GitHub Environment (required reviewer + master-only
-   branch rule); deploys pause for human approval in the Actions UI.
-   It runs ordered steps: apply migrations (`supabase db push`, gated —
-   no-ops with a notice if `SUPABASE_DB_PASSWORD` is unset, so functions
-   still ship), deploy Edge Functions, then a post-deploy api-health
-   smoke test against `${SUPABASE_URL}/functions/v1/api-health`.
+   `production` GitHub Environment (required-reviewer approval,
+   master-only); deploys pause for human approval in the Actions UI.
+   See [ci-cd.md](ci-cd.md) for the full ordered pipeline.
 
 ### Key Metrics to Monitor
 
 | Metric | Normal Range | Alert Threshold |
 |--------|--------------|-----------------|
 | Articles inserted per run | 5-50 | 0 for 3+ consecutive runs |
-| Sources processed | 133 (all sources) | < 100 |
+| Sources processed | 136 (all configured sources; live active count may be lower) | < 100 |
 | Errors per run | 0-2 | > 5 |
 | Fetch duration | 1-3 minutes | > 10 minutes |
 
@@ -121,6 +118,24 @@ go run . backfill-content
 ```
 
 This extracts full text using go-readability for up to 200 articles per run.
+
+---
+
+### Issue: Duplicate Articles
+
+**Symptoms:** The same article appears more than once in the feed
+
+**Possible Causes:**
+The system deduplicates on a SHA-256 `url_hash` with a `UNIQUE` constraint. A
+source that publishes the *same* article under *different* URLs (e.g. tracking
+parameters, or `/amp` variants) defeats hash-based dedup.
+
+**Resolution:**
+1. Check whether the source emits varying URLs for one story
+2. The `url_hash` column enforces uniqueness, so identical URLs are already
+   collapsed at insert time — only genuinely distinct URLs slip through
+3. If a source is a repeat offender, consider deactivating it (see
+   [Deactivating a Source](#deactivating-a-source))
 
 ---
 
@@ -262,7 +277,7 @@ Supabase free tier limits:
 ### High Traffic Scenarios
 
 Edge Functions handle caching automatically:
-- Articles: 5 min cache + 15 min stale-while-revalidate
+- Articles: 15 min cache + 30 min stale-while-revalidate
 - Categories/Sources: Long cache (1-24 hours)
 
 For higher traffic:

@@ -178,7 +178,7 @@ service-role PostgREST access if you need them.
 
 Full-text search across articles via the `search_articles` RPC.
 
-- **Cache:** 1 minute (public)
+- **Cache:** 1 minute (private)
 
 #### Query Parameters
 
@@ -251,7 +251,7 @@ view can stay revoked from anon at the DB layer.
     "quota_pct": 18
   },
   "summary": {
-    "total": 133,
+    "total": 136,
     "active": 131,
     "circuit_open_count": 2,
     "high_failure_count": 5,
@@ -273,6 +273,28 @@ view can stay revoked from anon at the DB layer.
 
 `database` is `null` if the DB-size RPC fails — the watchdog tolerates
 `null` so transient size-check failures don't false-page.
+
+---
+
+## Direct REST API (Alternative)
+
+Supabase auto-generates PostgREST endpoints under `/rest/v1` (requires the
+`apikey` header). The Edge Functions above are preferred for the iOS app because
+they add caching and request guards, but the raw REST surface is available:
+
+```
+# Base URL: https://<project-id>.supabase.co/rest/v1
+
+GET /articles_with_source?order=published_at.desc&limit=20
+GET /categories?order=display_order
+GET /sources?is_active=eq.true
+GET /rpc/search_articles?search_query=climate&result_limit=20
+```
+
+Direct access is bounded by the DB-layer column grants (anon sees only the safe
+column set on `articles_with_source`, `sources`, `categories`) — see
+[database-schema.md](./database-schema.md). Operational columns and the
+`source_health` view require the service-role key.
 
 ---
 

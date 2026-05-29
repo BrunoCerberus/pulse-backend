@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. It uses Go for RSS fetching and Supabase (PostgreSQL) for database and auto-generated REST API.
 
-**Tech Stack:** Go 1.24 | Supabase | GitHub Actions | PostgreSQL
+**Tech Stack:** Go 1.25 | Supabase | GitHub Actions | PostgreSQL
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 2 hours)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (133 sources, adaptive intervals)
+    ├─ Fetch RSS feeds (136 sources, adaptive intervals)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
@@ -26,7 +26,7 @@ PostgreSQL (articles, sources, categories, fetch_logs)
 Edge Functions (caching proxy + in-memory cache)
     ├── /api-categories    → Cache: 24h + 1h memory
     ├── /api-sources       → Cache: 1h + 30min memory
-    ├── /api-articles      → Cache: 5min + ETag
+    ├── /api-articles      → Cache: 15min + ETag
     ├── /api-search        → Cache: 1min (private)
     ├── /api-health        → Cache: no-store
     └── /api-source-health → Cache: 60s (feed health + summary)
@@ -148,7 +148,7 @@ pulse-backend/
 │       │   └── supabase-proxy.ts      # Proxy logic
 │       ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │       ├── api-sources/index.ts       # Sources endpoint (1h cache)
-│       ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
+│       ├── api-articles/index.ts      # Articles endpoint (15min + ETag)
 │       ├── api-search/index.ts        # Search endpoint (1min private)
 │       ├── api-health/index.ts        # Health check endpoint (no-store)
 │       └── api-source-health/index.ts # Per-source fetch health + summary + DB size (60s cache)
@@ -230,7 +230,7 @@ Caching proxy layer for iOS app with Cache-Control headers:
 |----------|-------|-------------|
 | `/api-categories` | 24h public | Static category list |
 | `/api-sources` | 1h public | RSS source list |
-| `/api-articles` | 5min + ETag | Article feed with 304 support |
+| `/api-articles` | 15min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Liveness probe — returns `{"status":"ok"}` only (no clock/version fingerprint) |
 | `/api-source-health` | 60s public | Per-source fetch health + aggregate summary (circuit/stale/high-failure counts) + `database` block (size_bytes/size_pretty/quota_pct via `get_db_size_bytes` RPC, default cap 500 MB via `SUPABASE_DB_QUOTA_BYTES`); watchdog workflow polls this |
@@ -261,7 +261,7 @@ curl -i http://localhost:54321/functions/v1/api-articles?limit=5
 
 ## Database Schema
 
-Tables: `categories` (10, including Podcasts & Videos), `sources` (133 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
+Tables: `categories` (10, including Podcasts & Videos), `sources` (136 pre-configured), `articles` (with full-text search via tsvector and media fields), `fetch_logs`
 
 Language support:
 - `sources.language`: ISO 639-1 code (VARCHAR(5), default `'en'`), e.g. `'en'`, `'pt'`, `'es'`
