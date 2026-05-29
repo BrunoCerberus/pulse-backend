@@ -51,7 +51,7 @@ RSS feed configurations for news sources.
 - `slug` is unique
 - `category_id` references `categories(id)`
 
-**Default Data:** 133 pre-configured sources across articles, podcasts, and videos in English, Portuguese, and Spanish
+**Default Data:** 136 pre-configured sources across articles, podcasts, and videos in English, Portuguese, and Spanish
 
 ---
 

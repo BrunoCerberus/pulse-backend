@@ -6,7 +6,7 @@ This file provides guidance to AI coding agents when working with this repositor
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. It uses Go for RSS fetching and Supabase (PostgreSQL) for database and auto-generated REST API.
 
-**Tech Stack:** Go 1.24 | Supabase | GitHub Actions | PostgreSQL | Deno (Edge Functions)
+**Tech Stack:** Go 1.25 | Supabase | GitHub Actions | PostgreSQL | Deno (Edge Functions)
 
 ## Architecture
 
@@ -14,7 +14,7 @@ Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. I
 GitHub Actions (every 2 hours)
     ↓
 Go RSS Worker (rss-worker/)
-    ├─ Fetch RSS feeds (133 sources, adaptive intervals)
+    ├─ Fetch RSS feeds (136 sources, adaptive intervals)
     ├─ Parse with gofeed library
     ├─ Enrich: og:image extraction (5 workers)
     ├─ Enrich: content extraction (3 workers)
@@ -26,7 +26,7 @@ PostgreSQL (articles, sources, categories, fetch_logs)
 Edge Functions (caching proxy + in-memory cache)
     ├── /api-categories    → Cache: 24h + 1h memory
     ├── /api-sources       → Cache: 1h + 30min memory
-    ├── /api-articles      → Cache: 5min + ETag
+    ├── /api-articles      → Cache: 15min + ETag
     ├── /api-search        → Cache: 1min (private)
     ├── /api-health        → Cache: no-store
     └── /api-source-health → Cache: 60s (feed health + summary)
@@ -135,7 +135,7 @@ pulse-backend/
 │   │   │   └── supabase-proxy.ts
 │   │   ├── api-categories/index.ts    # Categories endpoint (24h cache)
 │   │   ├── api-sources/index.ts       # Sources endpoint (1h cache)
-│   │   ├── api-articles/index.ts      # Articles endpoint (5min + ETag)
+│   │   ├── api-articles/index.ts      # Articles endpoint (15min + ETag)
 │   │   ├── api-search/index.ts        # Search endpoint (1min private)
 │   │   ├── api-health/index.ts        # Health check endpoint (no-store)
 │   │   └── api-source-health/index.ts # Per-source fetch health + summary + DB size (60s cache)
@@ -194,7 +194,7 @@ pulse-backend/
 |----------|-------|-------------|
 | `/api-categories` | 24h public | Static category list |
 | `/api-sources` | 1h public | RSS source list |
-| `/api-articles` | 5min + ETag | Article feed with 304 support |
+| `/api-articles` | 15min + ETag | Article feed with 304 support |
 | `/api-search` | 1min private | Full-text search via RPC |
 | `/api-health` | no-store | Liveness probe — returns `{"status":"ok"}` only (no clock fingerprint) |
 | `/api-source-health` | 60s public | Per-source fetch health + aggregate summary + DB size block (size_bytes/size_pretty/quota_pct via `get_db_size_bytes` RPC; default 500 MB cap via `SUPABASE_DB_QUOTA_BYTES`); watchdog.yml polls this |
@@ -249,7 +249,7 @@ Graceful shutdown: `main()` installs `signal.NotifyContext(SIGINT, SIGTERM)` and
 
 Tables:
 - `categories` - 10 categories (including Podcasts & Videos)
-- `sources` - 133 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6). Migration 019 adds `etag`/`last_modified` (conditional GET validators) and `consecutive_failures`/`circuit_open_until` (circuit breaker state).
+- `sources` - 136 pre-configured feeds with `fetch_interval_hours` (default 2, podcasts/videos 6). Migration 019 adds `etag`/`last_modified` (conditional GET validators) and `consecutive_failures`/`circuit_open_until` (circuit breaker state).
 - `articles` - News articles with full-text search (tsvector), media fields, denormalized source/category columns, and backfill tracking (`image_backfill_attempts`, `image_backfill_last_attempt_at`, `content_backfill_attempts`, `content_backfill_last_attempt_at` — migration 018)
 - `fetch_logs` - Monitoring records
 
