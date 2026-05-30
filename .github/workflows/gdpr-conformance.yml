@@ -40,7 +40,7 @@ jobs:
   # plus a gitleaks pass over full git history using the custom rules file.
   # ---------------------------------------------------------------------------
   pii-scan:
-    name: PII Scan
+    name: GDPR PII Scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -218,7 +218,7 @@ jobs:
   # Docs presence: every privacy / GDPR doc must exist and be non-empty.
   # ---------------------------------------------------------------------------
   docs-presence:
-    name: Docs Presence
+    name: GDPR Docs Presence
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -262,7 +262,7 @@ jobs:
   # is still asserted in docs/gdpr-conformance.md.
   # ---------------------------------------------------------------------------
   operational-controls:
-    name: Operational Controls
+    name: GDPR Operational Controls
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -344,7 +344,7 @@ jobs:
   # PR introduces PII processing without updating the conformance docs.
   # ---------------------------------------------------------------------------
   structural-integrity:
-    name: Structural Integrity
+    name: GDPR Structural Integrity
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
