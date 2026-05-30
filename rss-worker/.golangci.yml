@@ -14,3 +14,11 @@ linters:
       - path: _test\.go
         linters:
           - errcheck
+
+# Formatting is enforced by `golangci-lint run` (the Go Lint CI job): gofmt
+# canonicalizes whitespace/comment alignment, goimports additionally groups and
+# prunes imports. Previously unenforced — unformatted files could merge.
+formatters:
+  enable:
+    - gofmt
+    - goimports

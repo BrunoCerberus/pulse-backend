@@ -317,9 +317,9 @@ func TestNewRateLimitedClient_AppliesRedirectLimit(t *testing.T) {
 func TestIsForbiddenIP(t *testing.T) {
 	// allowLoopback is enabled in TestMain so loopback returns false here.
 	cases := []struct {
-		name   string
-		ip     net.IP
-		want   bool
+		name string
+		ip   net.IP
+		want bool
 	}{
 		{"nil", nil, true},
 		{"loopback v4 (exempted in tests)", net.ParseIP("127.0.0.1"), false},

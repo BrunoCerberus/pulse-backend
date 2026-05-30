@@ -521,31 +521,31 @@ func TestProcessSource_InsertError(t *testing.T) {
 // --- mockStore for testing runFetch, runCleanup, and backfill wrappers ---
 
 type mockStore struct {
-	sources           []models.Source
-	sourcesErr        error
-	insertResult      int
-	insertSkipped     int
-	insertErr         error
-	insertPanic       string // if non-empty, InsertArticles panics with this message
-	fetchLog          *models.FetchLog
-	fetchLogErr       error
-	updateLogErr      error
-	updateSourcesErr  error
-	cleanupResult       int
-	cleanupErr          error
-	cleanupLogsResult   int
-	cleanupLogsErr      error
-	pruneImgResult      int
-	pruneImgErr         error
-	pruneContentResult  int
-	pruneContentErr     error
-	ogArticles        []database.ArticleForBackfill
-	ogArticlesErr     error
-	contentArticles   []database.ArticleForContentBackfill
-	contentErr        error
-	batchImagesErr    error
-	batchContentErr   error
-	bumpErr           error
+	sources            []models.Source
+	sourcesErr         error
+	insertResult       int
+	insertSkipped      int
+	insertErr          error
+	insertPanic        string // if non-empty, InsertArticles panics with this message
+	fetchLog           *models.FetchLog
+	fetchLogErr        error
+	updateLogErr       error
+	updateSourcesErr   error
+	cleanupResult      int
+	cleanupErr         error
+	cleanupLogsResult  int
+	cleanupLogsErr     error
+	pruneImgResult     int
+	pruneImgErr        error
+	pruneContentResult int
+	pruneContentErr    error
+	ogArticles         []database.ArticleForBackfill
+	ogArticlesErr      error
+	contentArticles    []database.ArticleForContentBackfill
+	contentErr         error
+	batchImagesErr     error
+	batchContentErr    error
+	bumpErr            error
 
 	// bumped captures calls to BumpBackfillAttempts keyed by kind — tests
 	// assert we recorded the attempted url_hashes for failed articles.

@@ -171,3 +171,41 @@ jobs:
           fi
 
           exit $bad
+
+  # ---------------------------------------------------------------------------
+  # Dependency Review
+  # Fails the PR if it introduces a dependency (go.mod/go.sum, actions, etc.)
+  # carrying a known high/critical-severity advisory. Complements govulncheck
+  # (which scans the whole import graph) by diffing exactly what THIS PR adds —
+  # important because the repo merges with 0 required approvals. Always runs on
+  # PRs (no path filter), so it can safely become a required status check.
+  # ---------------------------------------------------------------------------
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Fail only on high/critical-severity vulnerabilities introduced by
+          # this PR. License findings stay informational (no deny-list) to avoid
+          # false positives on transitive Go modules.
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
+      - name: Annotate dependency review result
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Dependency Review::no new high/critical-severity dependency advisories"
+          {
+            echo "## Dependency Review ✅"
+            echo ""
+            echo "- No newly introduced dependencies with high/critical-severity advisories"
+          } >> "$GITHUB_STEP_SUMMARY"
