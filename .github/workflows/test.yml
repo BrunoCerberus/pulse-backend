@@ -135,6 +135,9 @@ jobs:
           # Must be a 2.x release because deno.lock is on lockfile version 5
           # (Deno 1.x only handles v3/4).
           deno-version: v2.7.14
+          # Cache the dependency download (DENO_DIR), keyed on deno.lock, so
+          # repeat runs don't re-fetch every imported std module.
+          cache: true
 
       - name: Lint + format-check Edge Functions
         working-directory: ./supabase/functions
@@ -160,7 +163,33 @@ jobs:
         # from slipping into CI silently.
         run: |
           set -o pipefail
-          deno test --frozen --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/ 2>&1 | tee /tmp/deno-test.log
+          deno test --frozen --allow-env --allow-net --coverage=cov_profile _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/ 2>&1 | tee /tmp/deno-test.log
+
+      # Enforce a line-coverage floor on the Edge Functions (currently ~96.8%).
+      # Mirrors the Go side's coverage gate so the TS layer can't silently
+      # regress. Floor is set below today's number to leave normal headroom.
+      - name: Check Edge Function coverage
+        if: success()
+        working-directory: ./supabase/functions
+        shell: bash
+        env:
+          DENO_COVERAGE_FLOOR: "90.0"
+        run: |
+          set -euo pipefail
+          report=$(deno coverage cov_profile | sed -E 's/\x1b\[[0-9;]*m//g')
+          echo "$report"
+          line=$(printf '%s\n' "$report" | awk -F'|' '/All files/ { v=$(NF-1); gsub(/[^0-9.]/,"",v); print v }')
+          : "${line:=0}"
+          echo "Total Edge Function line coverage: ${line}% (floor ${DENO_COVERAGE_FLOOR}%)"
+          if ! awk -v c="$line" -v f="$DENO_COVERAGE_FLOOR" 'BEGIN { exit !(c+0 >= f+0) }'; then
+            echo "::error title=Deno Tests::Edge Function line coverage ${line}% is below the ${DENO_COVERAGE_FLOOR}% floor"
+            exit 1
+          fi
+          {
+            echo "## Deno Coverage ✅"
+            echo ""
+            echo "- Total line coverage: **${line}%** (floor ${DENO_COVERAGE_FLOOR}%)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # deno prints a final tally ("ok | N passed | M failed (…)") on both
       # success and failure. Branch on the run step's outcome so the annotation

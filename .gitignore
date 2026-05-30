@@ -36,5 +36,8 @@ Thumbs.db
 # Supabase CLI temp files
 supabase/.temp/
 
+# Deno coverage profile (created by `deno test --coverage` in CI / locally)
+supabase/functions/cov_profile/
+
 # Claude Code session state (worktrees, transcripts, agent caches)
 .claude/

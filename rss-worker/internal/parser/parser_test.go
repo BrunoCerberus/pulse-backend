@@ -1709,9 +1709,9 @@ func TestIsControlOrBidi(t *testing.T) {
 		{'\t', false}, // tab kept
 		{'\n', false}, // newline kept
 		{'a', false},
-		{0x01, true},  // C0
-		{0x7F, true},  // DEL
-		{0x9F, true},  // C1
+		{0x01, true},   // C0
+		{0x7F, true},   // DEL
+		{0x9F, true},   // C1
 		{0x200E, true}, // LRM
 		{0x202E, true}, // RLO
 		{0x2069, true}, // PDI
@@ -1782,7 +1782,7 @@ func TestIsAcceptableOGImage(t *testing.T) {
 		{"file:///etc/passwd", false},
 		{"javascript:alert(1)", false},
 		{"https://cdn.example.com/\x00img.jpg", false}, // control char
-		{"https://cdn.example.com/\nimg.jpg", false}, // control char
+		{"https://cdn.example.com/\nimg.jpg", false},   // control char
 		{"https://", false},
 		{"not a url", false},
 	}
