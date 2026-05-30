@@ -130,15 +130,25 @@ jobs:
       - name: Annotate deploy
         if: always()
         shell: bash
+        env:
+          # Consume the migrate step's output so the persistent Job Summary
+          # states plainly whether migrations ran or were skipped.
+          MIGRATIONS_SKIPPED: ${{ steps.migrate.outputs.migrations_skipped }}
         run: |
           set -euo pipefail
 
+          if [ "${MIGRATIONS_SKIPPED:-}" = "true" ]; then
+            migrate_line="⚠️ Migrations **SKIPPED** (\`SUPABASE_DB_PASSWORD\` unset) — apply pending migrations manually"
+          else
+            migrate_line="Migrations applied via \`supabase db push\`"
+          fi
+
           if [ "${{ job.status }}" = "success" ]; then
-            echo "::notice title=Deploy::migrations applied (or skipped if unconfigured) + functions deployed + api-health OK"
+            echo "::notice title=Deploy::${migrate_line}; functions deployed; api-health OK"
             {
               echo "## Deploy ✅"
               echo ""
-              echo "- Migrations applied via \`supabase db push\` (or skipped if \`SUPABASE_DB_PASSWORD\` is unconfigured)"
+              echo "- ${migrate_line}"
               echo "- Edge Functions deployed to the production project"
               echo "- \`api-health\` smoke test returned healthy"
             } >> "$GITHUB_STEP_SUMMARY"
