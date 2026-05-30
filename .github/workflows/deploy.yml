@@ -63,10 +63,18 @@ jobs:
 
           # SUPABASE_DB_PASSWORD is the NEW secret. Until it's added on the
           # production environment, no-op (exit 0) so functions still deploy.
+          # We emit a ::warning:: (not ::notice::) and set migrations_skipped=true
+          # so a deploy that ships functions WITHOUT applying pending migrations
+          # is visibly flagged rather than reported as a clean green run.
+          # TODO: once SUPABASE_DB_PASSWORD exists on the production env, change
+          # this branch to `exit 1` so a missing secret can never silently ship
+          # a migration-dependent function set.
           if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
-            echo "::notice title=Deploy::SUPABASE_DB_PASSWORD not set on the production environment — skipping 'supabase db push'. Migrations must be applied manually until this secret is added. Functions will still deploy."
+            echo "migrations_skipped=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deploy::SUPABASE_DB_PASSWORD not set on the production environment — skipping 'supabase db push'. Migrations must be applied manually until this secret is added. Functions will still deploy."
             exit 0
           fi
+          echo "migrations_skipped=false" >> "$GITHUB_OUTPUT"
 
           # The CLI reads SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD from env.
           # `db push` applies pending migrations to the linked project. A failure

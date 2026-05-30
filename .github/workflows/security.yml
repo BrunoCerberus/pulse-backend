@@ -107,9 +107,17 @@ jobs:
           # past the project's Go version.
           GOSEC_VERSION: "v2.22.11"
         run: |
-          curl -sSfL https://raw.githubusercontent.com/securego/gosec/master/install.sh \
-            | sudo sh -s -- -b /usr/local/bin "${GOSEC_VERSION}"
-          gosec --version
+          # Fetch the installer from the PINNED release tag (an immutable ref),
+          # not the mutable `master` branch — so a later upstream commit can't
+          # silently alter the script that runs in CI. Install to a
+          # user-writable dir (no `sudo`, no root) and put it on PATH for the
+          # next step. This keeps the supply-chain surface to the pinned tag.
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL --retry 3 --retry-delay 2 \
+            "https://raw.githubusercontent.com/securego/gosec/${GOSEC_VERSION}/install.sh" \
+            | sh -s -- -b "$HOME/.local/bin" "${GOSEC_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/gosec" --version
 
       - name: Run gosec
         working-directory: ./rss-worker
