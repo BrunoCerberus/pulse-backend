@@ -5,14 +5,10 @@ on:
   schedule:
     - cron: '0 */2 * * *'
 
-  # Allow manual trigger
+  # Allow manual trigger. Cleanup is NOT an option here — it runs exclusively
+  # in cleanup.yml under its own concurrency group; routing it through this
+  # workflow would let a destructive batch-delete race the cleanup cron.
   workflow_dispatch:
-    inputs:
-      cleanup:
-        description: 'Run cleanup instead of fetch'
-        required: false
-        default: 'false'
-        type: boolean
 
 permissions:
   contents: read
@@ -56,17 +52,12 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          DO_CLEANUP: ${{ github.event.inputs.cleanup }}
         run: |
           # pipefail so a non-zero worker exit isn't masked by tee's success.
           # The worker logs to stderr, so 2>&1 routes its summary line into the
           # tee'd file for the "Annotate run summary" step below to parse.
           set -o pipefail
-          if [ "$DO_CLEANUP" = "true" ]; then
-            ./rss-worker cleanup 2>&1 | tee /tmp/worker.log
-          else
-            ./rss-worker 2>&1 | tee /tmp/worker.log
-          fi
+          ./rss-worker 2>&1 | tee /tmp/worker.log
 
       # Surface what the run did in the Annotations box + the run's Job Summary.
       # always() so a failed run still annotates, but branch on the Run step's
@@ -84,7 +75,6 @@ jobs:
           summary=""
           if [ -f "$log" ]; then
             summary=$(grep -oE 'Summary: sources=[0-9]+, fetched=[0-9]+, inserted=[0-9]+, skipped=[0-9]+, errors=[0-9]+' "$log" | tail -1 || true)
-            [ -n "$summary" ] || summary=$(grep -oE 'Cleanup complete: deleted [0-9]+ old articles' "$log" | tail -1 || true)
           fi
           if [ "$RUN_OUTCOME" = "success" ]; then
             echo "::notice title=Fetch RSS Feeds::${summary:-run completed}"
@@ -103,7 +93,6 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  # Cleanup is handled exclusively by `cleanup.yml` (separate workflow). The
-  # previous inline `cleanup` job here would double-fire alongside cleanup.yml
-  # at 03:00 UTC daily. The workflow_dispatch `cleanup` input above still
-  # routes to the same binary via the Run step.
+  # Cleanup is handled exclusively by `cleanup.yml` (separate workflow), under
+  # its own `cleanup` concurrency group. This workflow only ever fetches, so a
+  # manual run here can never race the daily 03:00 UTC cleanup cron.
