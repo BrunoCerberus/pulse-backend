@@ -178,8 +178,21 @@ jobs:
           set -euo pipefail
           report=$(deno coverage cov_profile | sed -E 's/\x1b\[[0-9;]*m//g')
           echo "$report"
-          line=$(printf '%s\n' "$report" | awk -F'|' '/All files/ { v=$(NF-1); gsub(/[^0-9.]/,"",v); print v }')
-          : "${line:=0}"
+          # Locate the "Line %" column from the HEADER row, then read that column
+          # from the "All files" total row. Keying off the header (rather than a
+          # fixed field offset) means a future Deno release that reorders or adds
+          # table columns breaks loudly here instead of silently reading the
+          # wrong number and rendering the floor check meaningless.
+          line=$(printf '%s\n' "$report" | awk -F'|' '
+            /Branch %/ && /Line %/ {
+              for (i = 1; i <= NF; i++) { h = $i; gsub(/^[ \t]+|[ \t]+$/, "", h); if (h == "Line %") col = i }
+            }
+            /All files/ && col { v = $col; gsub(/[^0-9.]/, "", v); print v; exit }
+          ')
+          if [ -z "$line" ]; then
+            echo "::error title=Deno Tests::could not parse the Line %% column from \`deno coverage\` output — the table format may have changed"
+            exit 1
+          fi
           echo "Total Edge Function line coverage: ${line}% (floor ${DENO_COVERAGE_FLOOR}%)"
           if ! awk -v c="$line" -v f="$DENO_COVERAGE_FLOOR" 'BEGIN { exit !(c+0 >= f+0) }'; then
             echo "::error title=Deno Tests::Edge Function line coverage ${line}% is below the ${DENO_COVERAGE_FLOOR}% floor"
