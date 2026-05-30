@@ -18,9 +18,23 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze
+    # Per-language context so each is distinct and individually requireable:
+    # "CodeQL go" / "CodeQL javascript-typescript".
+    name: CodeQL ${{ matrix.language }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      # Analyze every language even if one fails — a Go failure must not hide
+      # a TypeScript finding (or vice versa).
+      fail-fast: false
+      matrix:
+        include:
+          # Go: compiled — autobuild produces the database.
+          - language: go
+            build-mode: autobuild
+          # TypeScript (Deno Edge Functions): interpreted — no build step.
+          - language: javascript-typescript
+            build-mode: none
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -28,22 +42,24 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
         with:
-          languages: go
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        with:
+          category: "/language:${{ matrix.language }}"
 
       - name: Annotate CodeQL result
         if: success()
         shell: bash
+        env:
+          LANGUAGE: ${{ matrix.language }}
         run: |
-          echo "::notice title=CodeQL::Go analysis complete — results in the Security tab"
+          echo "::notice title=CodeQL::${LANGUAGE} analysis complete — results in the Security tab"
           {
-            echo "## CodeQL ✅"
+            echo "## CodeQL (${LANGUAGE}) ✅"
             echo ""
-            echo "- Language: go"
+            echo "- Language: ${LANGUAGE}"
             echo "- Findings (if any) are reported in the repository Security tab"
           } >> "$GITHUB_STEP_SUMMARY"
