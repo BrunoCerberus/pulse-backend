@@ -6,24 +6,17 @@ name: Migrations CI
 # authenticator) and the `request.jwt.claims` request GUC, so they can only be
 # applied via the local stack — a bare Postgres lacks those roles.
 #
-# Runs on changes to the migrations, the Supabase config, the invariants test,
-# or this workflow itself.
+# This workflow runs on EVERY PR/push to master (no path filter) so its
+# "Apply migrations + invariants" context always reports and can be a required
+# status check without deadlocking unrelated PRs. The expensive Supabase-stack
+# validation is gated internally: it runs only when migrations / config / tests
+# (or this workflow) changed, and is skipped-but-green otherwise.
 
 on:
   pull_request:
     branches: [master]
-    paths:
-      - 'supabase/migrations/**'
-      - 'supabase/config.toml'
-      - 'supabase/tests/**'
-      - '.github/workflows/migrations-ci.yml'
   push:
     branches: [master]
-    paths:
-      - 'supabase/migrations/**'
-      - 'supabase/config.toml'
-      - 'supabase/tests/**'
-      - '.github/workflows/migrations-ci.yml'
   workflow_dispatch:
 
 permissions:
@@ -44,10 +37,40 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
+      # Detect whether anything that affects the schema changed. Skipped on
+      # workflow_dispatch (which always force-runs the full validation below).
+      - name: Detect schema-related changes
+        id: changes
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+        with:
+          filters: |
+            schema:
+              - 'supabase/migrations/**'
+              - 'supabase/config.toml'
+              - 'supabase/tests/**'
+              - '.github/workflows/migrations-ci.yml'
+
+      - name: Decide whether to run full validation
+        id: decide
+        shell: bash
+        env:
+          CHANGED: ${{ steps.changes.outputs.schema }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANGED" = "true" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Supabase CLI
+        if: steps.decide.outputs.run == 'true'
         uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
 
       - name: Start local Postgres
+        if: steps.decide.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -56,6 +79,7 @@ jobs:
           supabase db start
 
       - name: Apply migrations from scratch
+        if: steps.decide.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -65,6 +89,7 @@ jobs:
           supabase db reset --no-seed
 
       - name: Lint plpgsql
+        if: steps.decide.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -74,6 +99,7 @@ jobs:
 
       - name: Run security invariants
         id: invariants
+        if: steps.decide.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -93,10 +119,18 @@ jobs:
         if: always()
         shell: bash
         env:
+          RUN_VALIDATION: ${{ steps.decide.outputs.run }}
           INVARIANTS_OUTCOME: ${{ steps.invariants.outcome }}
         run: |
           set -euo pipefail
-          if [ "$INVARIANTS_OUTCOME" = "success" ]; then
+          if [ "$RUN_VALIDATION" != "true" ]; then
+            echo "::notice title=Migrations CI::no schema/config/test changes — full validation skipped"
+            {
+              echo "## Migrations CI ⏭️"
+              echo ""
+              echo "- No changes under \`supabase/migrations\`, \`supabase/config.toml\`, or \`supabase/tests\` — the apply-from-scratch + lint + invariants suite was skipped (nothing to verify)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$INVARIANTS_OUTCOME" = "success" ]; then
             echo "::notice title=Migrations CI::33 migrations applied from scratch · db lint clean · 6 security invariants passed"
             {
               echo "## Migrations CI ✅"
