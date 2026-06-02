@@ -13,9 +13,9 @@ name: Deploy
 # Required secrets on the `production` Environment:
 #   SUPABASE_ACCESS_TOKEN  - Personal access token from https://supabase.com/dashboard/account/tokens
 #   SUPABASE_PROJECT_REF   - Project reference ID from Supabase project settings
-#   SUPABASE_DB_PASSWORD   - (NEW — must be added) DB password from Project Settings → Database;
-#                            required by `supabase db push`. If absent, the migrate step safely
-#                            no-ops (functions still deploy) — see the "Apply migrations" step.
+#   SUPABASE_DB_PASSWORD   - DB password from Project Settings → Database; required by
+#                            `supabase db push`. If absent, the migrate step FAILS the deploy
+#                            (functions are never shipped without their migrations) — see "Apply migrations".
 #   SUPABASE_URL           - (repo scope, reused) used by the post-deploy smoke test.
 
 on:
@@ -56,25 +56,18 @@ jobs:
         uses: supabase/setup-cli@3c2f5e2ae34c34e428e8e206e2c4d21fa2d20fbf # v2.1.1
 
       - name: Apply migrations
-        id: migrate
         shell: bash
         run: |
           set -euo pipefail
 
-          # SUPABASE_DB_PASSWORD is the NEW secret. Until it's added on the
-          # production environment, no-op (exit 0) so functions still deploy.
-          # We emit a ::warning:: (not ::notice::) and set migrations_skipped=true
-          # so a deploy that ships functions WITHOUT applying pending migrations
-          # is visibly flagged rather than reported as a clean green run.
-          # TODO: once SUPABASE_DB_PASSWORD exists on the production env, change
-          # this branch to `exit 1` so a missing secret can never silently ship
-          # a migration-dependent function set.
+          # SUPABASE_DB_PASSWORD lives on the production environment and is
+          # required by `supabase db push`. Fail loudly if it's missing rather
+          # than shipping Edge Functions without their migrations — applying
+          # migrations FIRST, under set -e, is the whole point of this job.
           if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
-            echo "migrations_skipped=true" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Deploy::SUPABASE_DB_PASSWORD not set on the production environment — skipping 'supabase db push'. Migrations must be applied manually until this secret is added. Functions will still deploy."
-            exit 0
+            echo "::error title=Deploy::SUPABASE_DB_PASSWORD is not set on the production environment. Refusing to deploy functions without applying pending migrations — add it under Settings → Environments → production."
+            exit 1
           fi
-          echo "migrations_skipped=false" >> "$GITHUB_OUTPUT"
 
           # The CLI reads SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD from env.
           # `db push` applies pending migrations to the linked project. A failure
@@ -130,18 +123,12 @@ jobs:
       - name: Annotate deploy
         if: always()
         shell: bash
-        env:
-          # Consume the migrate step's output so the persistent Job Summary
-          # states plainly whether migrations ran or were skipped.
-          MIGRATIONS_SKIPPED: ${{ steps.migrate.outputs.migrations_skipped }}
         run: |
           set -euo pipefail
 
-          if [ "${MIGRATIONS_SKIPPED:-}" = "true" ]; then
-            migrate_line="⚠️ Migrations **SKIPPED** (\`SUPABASE_DB_PASSWORD\` unset) — apply pending migrations manually"
-          else
-            migrate_line="Migrations applied via \`supabase db push\`"
-          fi
+          # On success the migrate step always ran `supabase db push` (a missing
+          # secret or a failed push aborts the job before this annotation).
+          migrate_line="Migrations applied via \`supabase db push\`"
 
           if [ "${{ job.status }}" = "success" ]; then
             echo "::notice title=Deploy::${migrate_line}; functions deployed; api-health OK"
