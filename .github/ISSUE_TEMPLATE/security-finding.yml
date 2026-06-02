@@ -1,0 +1,110 @@
+name: Security finding (tracking)
+description: Track a CONFIRMED, non-sensitive security finding or hardening task. Not for exploitable vulnerabilities.
+title: "[Security]: "
+labels: ["security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Do NOT file an exploitable vulnerability here.** A public issue
+        discloses the problem before a fix exists. Report it privately via the
+        repository's **Security** tab → *Report a vulnerability* (see
+        `SECURITY.md`).
+
+        Use this template only for maintainer tracking of:
+        - a hardening / defence-in-depth task with **no current exploit path**,
+        - a deferred **Low/Medium** finding already triaged as safe to discuss,
+        - a scanner / AI-review finding you want to track or record as a
+          **false positive**.
+
+        Triage with the rubric in `SECURITY.md` and fix per `PATCHING.md`.
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source
+      description: Where did this finding originate?
+      options:
+        - AI security review (security-review.yml)
+        - Claude Code review (claude-code-review.yml)
+        - Scanner (gosec / CodeQL / Trivy / govulncheck)
+        - Secret scan (gitleaks / TruffleHog)
+        - SQL invariants / conformance workflow
+        - Manual review
+        - Dependency advisory (Dependabot / Dependency Review)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity (per SECURITY.md rubric)
+      description: Assign this AFTER writing the triage reasoning below.
+      options:
+        - Low
+        - Medium
+        - High (consider reporting privately instead)
+        - Critical (STOP — report privately instead)
+        - "False positive"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of the backend is affected?
+      options:
+        - rss-worker
+        - Edge Functions
+        - database-migrations
+        - CI-workflows
+        - docs
+    validations:
+      required: true
+  - type: input
+    id: location
+    attributes:
+      label: Affected file(s) / symbol
+      description: Path and function/symbol, e.g. `internal/parser/ogimage.go` → `isAcceptableOGImage`.
+    validations:
+      required: true
+  - type: textarea
+    id: triage
+    attributes:
+      label: Triage reasoning (write this BEFORE picking severity)
+      description: Answer each of the six rubric questions; this prevents severity inflation.
+      value: |
+        - **Reachability:**
+        - **Attacker control:**
+        - **Preconditions:**
+        - **Authentication:**
+        - **Read vs. write:**
+        - **Blast radius:**
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description / root cause
+      description: What is the underlying root cause (not just the symptom or call site)?
+    validations:
+      required: true
+  - type: textarea
+    id: fix
+    attributes:
+      label: Proposed fix + variants to hunt
+      description: >
+        The smallest change that fixes the root cause, plus where the same
+        pattern (and same class) might recur elsewhere. See `PATCHING.md`.
+    validations:
+      required: false
+  - type: checkboxes
+    id: ladder
+    attributes:
+      label: Fix validation ladder (PATCHING.md)
+      description: Tick these as the fix progresses — leave unchecked when filing.
+      options:
+        - label: A failing test / PoC reproduces the issue on the current code
+        - label: Fix addresses the root cause, not just the reported call site
+        - label: Hunted same-pattern and same-class variants elsewhere
+        - label: Build + full test suite pass; no regressions
+        - label: Re-reviewed (fresh adversarial pass) and invariants updated if applicable
