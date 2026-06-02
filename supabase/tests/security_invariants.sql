@@ -275,4 +275,44 @@ BEGIN
 END $$;
 
 
+-- -----------------------------------------------------------------------------
+-- INVARIANT 7: anon/authenticated cannot read operational columns of
+--              public.sources, but retain the public column set.
+-- -----------------------------------------------------------------------------
+-- Guards migration 034 (C1 from the 2026-06 security discovery sweep). Migration
+-- 027 hardened articles but left `sources` with a default full-column anon
+-- grant, exposing operational/reconnaissance columns (feed_url, fetch state,
+-- circuit-breaker state) to the public anon key. 034 REVOKEs the table grant and
+-- re-GRANTs only the api-sources column set. has_column_privilege() reads the
+-- catalog, so this assertion needs no role switching (which the local stack's
+-- non-superuser postgres forbids — see INVARIANT 4's note).
+DO $$
+DECLARE
+    r           TEXT;
+    col         TEXT;
+    operational TEXT[] := ARRAY[
+        'feed_url', 'last_fetched_at', 'fetch_interval_hours',
+        'etag', 'last_modified', 'consecutive_failures',
+        'circuit_open_until', 'max_content_length'
+    ];
+    public_cols TEXT[] := ARRAY[
+        'id', 'name', 'slug', 'website_url', 'logo_url',
+        'category_id', 'language', 'is_active'
+    ];
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        FOREACH col IN ARRAY operational LOOP
+            IF has_column_privilege(r, 'public.sources', col, 'SELECT') THEN
+                RAISE EXCEPTION 'INVARIANT 7 FAILED: % can SELECT operational column public.sources.% (migration 034 column-grant regressed)', r, col;
+            END IF;
+        END LOOP;
+        FOREACH col IN ARRAY public_cols LOOP
+            IF NOT has_column_privilege(r, 'public.sources', col, 'SELECT') THEN
+                RAISE EXCEPTION 'INVARIANT 7 FAILED: % lost SELECT on public column public.sources.% (migration 034 over-revoked)', r, col;
+            END IF;
+        END LOOP;
+    END LOOP;
+END $$;
+
+
 \echo 'security_invariants: all assertions passed'

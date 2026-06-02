@@ -335,6 +335,17 @@ func TestIsForbiddenIP(t *testing.T) {
 		{"public 1.1.1.1", net.ParseIP("1.1.1.1"), false},
 		{"ULA v6", net.ParseIP("fc00::1"), true},
 		{"link-local v6", net.ParseIP("fe80::1"), true},
+		// Ranges the stdlib classifiers miss (forbiddenCIDRs).
+		{"CGNAT 100.64.x (RFC 6598)", net.ParseIP("100.64.0.1"), true},
+		{"CGNAT end-of-range", net.ParseIP("100.127.255.254"), true},
+		{"CGNAT v4-mapped", net.ParseIP("::ffff:100.64.0.1"), true},
+		{"NAT64 wrapping IMDS (RFC 6052)", net.ParseIP("64:ff9b::a9fe:a9fe"), true},
+		{"6to4 (RFC 3056)", net.ParseIP("2002::1"), true},
+		{"Teredo (RFC 4380)", net.ParseIP("2001::1"), true},
+		{"benchmarking 198.18.x (RFC 2544)", net.ParseIP("198.18.0.1"), true},
+		{"documentation 192.0.2.x (RFC 5737)", net.ParseIP("192.0.2.1"), true},
+		{"public v6 2001:4860 not blocked", net.ParseIP("2001:4860:4860::8888"), false},
+		{"malformed length fails closed", net.IP{0x01}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

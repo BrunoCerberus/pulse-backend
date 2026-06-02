@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sync"
 	"sync/atomic"
@@ -83,7 +84,41 @@ func IsForbiddenIP(ip net.IP) bool {
 		ip.IsMulticast() || ip.IsUnspecified() {
 		return true
 	}
+	// The stdlib classifiers above miss several internal / IPv4↔IPv6-translation
+	// ranges that an SSRF guard must still refuse (see forbiddenCIDRs). Fail
+	// closed on a malformed (non-4/16-byte) address slice.
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	for _, p := range forbiddenCIDRs {
+		if p.Contains(addr) {
+			return true
+		}
+	}
 	return false
+}
+
+// forbiddenCIDRs enumerates ranges that net.IP's stdlib classifiers
+// (IsPrivate / IsLinkLocal* / IsMulticast / IsUnspecified) do NOT cover but
+// that an SSRF guard must still refuse: carrier-grade NAT, the IPv4↔IPv6
+// translation prefixes (NAT64 / 6to4 / Teredo, which can wrap a forbidden v4
+// such as the 169.254.169.254 cloud-metadata address), and benchmarking /
+// documentation space. Parsed once at package init via MustParsePrefix on
+// static literals.
+var forbiddenCIDRs = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),   // RFC 6598 carrier-grade NAT / cloud-internal shared space
+	netip.MustParsePrefix("192.0.0.0/24"),    // RFC 6890 IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // RFC 5737 documentation (TEST-NET-1)
+	netip.MustParsePrefix("198.18.0.0/15"),   // RFC 2544 benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // RFC 5737 documentation (TEST-NET-2)
+	netip.MustParsePrefix("203.0.113.0/24"),  // RFC 5737 documentation (TEST-NET-3)
+	netip.MustParsePrefix("64:ff9b::/96"),    // RFC 6052 NAT64 well-known prefix (wraps IPv4)
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // RFC 8215 NAT64 local-use prefix
+	netip.MustParsePrefix("2002::/16"),       // RFC 3056 6to4 (wraps IPv4)
+	netip.MustParsePrefix("2001::/32"),       // RFC 4380 Teredo (wraps IPv4)
+	netip.MustParsePrefix("2001:db8::/32"),   // RFC 3849 documentation
 }
 
 // ValidateSSRFTarget checks a URL string for safety before issuing a request.

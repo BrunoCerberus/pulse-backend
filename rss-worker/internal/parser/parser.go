@@ -454,10 +454,14 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentC
 	return article
 }
 
-// isSafeArticleURL accepts only http/https URLs with a non-empty host.
-// This is a lexical check; the network-layer SSRF guard runs in
-// httputil.SafeTransport when the URL is actually fetched.
+// isSafeArticleURL accepts only http/https URLs with a non-empty host, and
+// rejects URLs carrying control or bidi-override codepoints. This is a lexical
+// check; the network-layer SSRF guard runs in httputil.SafeTransport when the
+// URL is actually fetched.
 func isSafeArticleURL(raw string) bool {
+	if urlHasUnsafeRune(raw) {
+		return false
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false
@@ -471,11 +475,28 @@ func isSafeArticleURL(raw string) bool {
 	return true
 }
 
-// isSafeMediaURL is the same check applied to thumbnail/media enclosure URLs
-// before they are stored. Stops `javascript:`/`data:` URLs from propagating
-// to iOS clients via the article feed.
+// isSafeMediaURL is isSafeArticleURL plus a length cap. Thumbnail / enclosure
+// URLs are stored verbatim and served to iOS, so — unlike the article link,
+// which is canonicalized and length-checked in itemToArticle — they need their
+// own maxURLLen ceiling here. Stops `javascript:`/`data:` URLs and oversized /
+// control-char-bearing publisher URLs from propagating to clients.
 func isSafeMediaURL(raw string) bool {
-	return isSafeArticleURL(raw)
+	return len(raw) <= maxURLLen && isSafeArticleURL(raw)
+}
+
+// urlHasUnsafeRune reports whether a stored URL contains a control character
+// (C0/C1, including tab/newline which are illegal in URLs and enable header /
+// URL spoofing) or a Unicode bidi-override codepoint (which can visually spoof
+// the rendered URL on iOS). title/summary/content/author get the equivalent
+// stripping via sanitizeText; URL fields, which must not be mutated, are
+// rejected outright instead.
+func urlHasUnsafeRune(raw string) bool {
+	for _, r := range raw {
+		if r == '\t' || r == '\n' || isControlOrBidi(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // canonicalizeURL strips the fragment, lowercases scheme/host, and sorts the
@@ -843,17 +864,24 @@ func parseDuration(s string) int {
 	case 2:
 		minutes := parseSafeInt(parts[0])
 		seconds := parseSafeInt(parts[1])
+		if minutes > maxMediaDurationSeconds || seconds > maxMediaDurationSeconds {
+			return maxMediaDurationSeconds
+		}
 		total = minutes*60 + seconds
 	case 3:
 		hours := parseSafeInt(parts[0])
 		minutes := parseSafeInt(parts[1])
 		seconds := parseSafeInt(parts[2])
+		if hours > maxMediaDurationSeconds || minutes > maxMediaDurationSeconds || seconds > maxMediaDurationSeconds {
+			return maxMediaDurationSeconds
+		}
 		total = hours*3600 + minutes*60 + seconds
 	default:
 		return 0
 	}
-	// parseSafeInt returns a non-negative value (0 on overflow), so total is
-	// always ≥ 0 here.
+	// Each part is bounded above by maxMediaDurationSeconds before the
+	// multiply/add, so total cannot overflow int64 (max ≈ 86400*3600 ≈ 3.1e8)
+	// and is always ≥ 0 — no wrap to a bogus, attacker-chosen positive value.
 	if total > maxMediaDurationSeconds {
 		return maxMediaDurationSeconds
 	}

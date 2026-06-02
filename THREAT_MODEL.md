@@ -176,8 +176,11 @@ rather than line numbers so this stays accurate as code moves.
 - **C-SSRF** — `internal/httputil/transport.go`: `SafeTransport`'s
   `SecureDialContext` resolves the host once, rejects loopback / RFC-1918 /
   link-local (169.254/16) / multicast / unspecified IPs via `IsForbiddenIP`,
-  then dials the resolved literal so DNS can't rebind. `ValidateSSRFTarget`
-  pre-flights scheme + host. Redirects are re-validated.
+  then dials the resolved literal so DNS can't rebind. `IsForbiddenIP` also
+  denies an explicit `forbiddenCIDRs` list the stdlib classifiers miss: CGNAT
+  (100.64/10), the NAT64 / 6to4 / Teredo IPv4↔IPv6 translation prefixes (which
+  could otherwise wrap 169.254.169.254), and benchmarking / documentation space.
+  `ValidateSSRFTarget` pre-flights scheme + host. Redirects are re-validated.
 - **C-OGIMG** — `internal/parser/ogimage.go`: `isAcceptableOGImage` rejects
   control chars, non-`http(s)` schemes, empty hosts, and forbidden IP literals
   before an og:image URL is stored; the fetch itself uses `SafeTransport`.
@@ -186,10 +189,13 @@ rather than line numbers so this stays accurate as code moves.
   caps (title 500 / summary 4096 / content 200K / author 200 / URL 2048).
 - **C-SANITIZE** — `internal/parser/parser.go`: `sanitizeText` strips C0/C1
   control + bidi-override codepoints; `sanitizeMIMEType` enforces a tight MIME
-  regex (no CRLF); `parseDuration`/`parseSafeInt` guard integer overflow and cap
-  at 24 h.
-- **C-URLSAFE** — `isSafeArticleURL` / `isSafeMediaURL` reject non-`http(s)`
-  schemes and empty hosts for article, media, and thumbnail URLs.
+  regex (no CRLF); `parseDuration` bounds each part before combining (so the
+  `hours*3600` multiply can't wrap to a bogus positive value) and `parseSafeInt`
+  guards per-part overflow; duration capped at 24 h.
+- **C-URLSAFE** — `isSafeArticleURL` / `isSafeMediaURL` / `isAcceptableOGImage`
+  reject non-`http(s)` schemes, empty hosts, control / bidi-override codepoints
+  (`urlHasUnsafeRune`), and over-`maxURLLen` URLs for article, media, thumbnail,
+  and og:image fields.
 - **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
   sorts query keys before SHA-256 hashing, so dedup can't be bypassed.
 - **C-CLAMP** — `clampPublishedDate` bounds `published_at` to `[now-10y, now+1h]`.
@@ -203,7 +209,9 @@ rather than line numbers so this stays accurate as code moves.
 
 - **C-GRANT** — column-level `GRANT SELECT` on `articles` exposes only the safe
   subset to `anon`/`authenticated`; `url_hash` and backfill state are
-  service-role only. `fetch_logs` is fully revoked from anon.
+  service-role only. The same pattern restricts `sources` to its public set —
+  operational / circuit-breaker columns are service-role only (migration 034).
+  `fetch_logs` is fully revoked from anon.
 - **C-VIEW** — `articles_with_source` is an explicit projection with
   `security_invoker=on`; `source_health` is revoked from anon (migration 027).
 - **C-DEFINER** — every `SECURITY DEFINER` function pins `SET search_path = ''`
