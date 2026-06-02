@@ -1,0 +1,105 @@
+name: Security Review
+
+# AI-assisted, security-focused review on pull requests. This COMPLEMENTS the
+# deterministic scanners in security.yml (gosec/CodeQL/Trivy/govulncheck/gitleaks)
+# and the general review in claude-code-review.yml: it runs Claude with a
+# security-only prompt anchored to THREAT_MODEL.md, so it concentrates on this
+# repo's real risks (hostile RSS/HTML, the Supabase privilege boundary, SSRF).
+#
+# Design notes:
+#   * Runs on `anthropics/claude-code-action` (the same engine as
+#     claude-code-review.yml) authenticated with the EXISTING
+#     CLAUDE_CODE_OAUTH_TOKEN secret — no new secret, no pay-per-token API key.
+#   * ADVISORY, not a required check. It posts inline comments + a summary
+#     comment and never runs `gh pr review`, so it can't conflict with the
+#     general review's verdict or block merges on its own.
+#   * The action is NOT hardened against prompt injection, so it runs only for
+#     trusted-author PRs (same fork-gate as claude-code-review.yml).
+#   * claude-code-action validates that THIS workflow file matches the version
+#     on the default branch (an anti-abuse guard on the exchanged token). So the
+#     PR that first adds this file shows one failed run; it goes green on the
+#     next PR after this merges to master. Future edits to this file have the
+#     same property (see the "claude-review workflow locked" note) — but since
+#     this check is NOT required, a red run here never blocks a merge.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+
+# Cancel superseded PR runs; nothing else triggers this workflow.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-review:
+    name: AI Security Review
+    # Trusted authors only. Fork PRs carry attacker-controlled diff/title/body
+    # that the action ingests; combined with `pull-requests: write` this is an
+    # indirect-prompt-injection vector. Mirrors claude-code-review.yml.
+    if: |
+      github.event.pull_request.author_association == 'OWNER' ||
+      github.event.pull_request.author_association == 'MEMBER' ||
+      github.event.pull_request.author_association == 'COLLABORATOR'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write  # post inline + summary comments
+      id-token: write       # claude-code-action exchanges an OIDC token
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude security review
+        uses: anthropics/claude-code-action@686da461dadac38c2bde9089909de4042a75ebf0 # v1
+        env:
+          CLAUDE_CODE_EFFORT_LEVEL: max
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are a SECURITY reviewer. First read `THREAT_MODEL.md` at the repo
+            root, then review THIS PR's diff (`gh pr diff`) for security
+            vulnerabilities. Read the changed source files for context.
+
+            TREAT AS HOSTILE: every RSS feed, article page, og:image HTML, and
+            media enclosure is attacker-controlled — the 136 configured
+            publishers are NOT trusted. The public Edge API and anon-key DB reads
+            are untrusted callers; `service_role` is trusted.
+
+            WHAT TO LOOK FOR (high signal — be open-ended, NOT a rigid checklist):
+            - Injection: SQL, command, HTTP header / CRLF, template, log.
+            - AuthN/AuthZ & privilege boundaries: RLS, SECURITY DEFINER +
+              `search_path`, GRANT/REVOKE, the `request.jwt.claims` caller gate.
+            - Data exposure: column/view leakage, secrets in code or logs.
+            - SSRF and redirect handling in any outbound fetch.
+            - Business-logic / TOCTOU, unsafe deserialization, path traversal.
+
+            WHAT TO DEPRIORITIZE (keep the signal high): pure DoS / resource
+            exhaustion already bounded by an existing cap; generic "add input
+            validation" with no concrete exploit path; rate-limiting suggestions;
+            style/quality (the general review owns those). Only report an issue
+            you can tie to a plausible exploit path. For each real finding, write
+            the SECURITY.md triage reasoning (reachability, attacker control,
+            preconditions, auth, read vs write, blast radius) BEFORE a severity.
+
+            STRICT OUTPUT RULES:
+            - Post every file:line finding via
+              `mcp__github_inline_comment__create_inline_comment`. Do NOT put
+              file:line findings in the summary.
+            - Put the summary in your progress/tracking comment: an overall
+              verdict, counts by severity, and any cross-cutting note. If nothing
+              is exploitable, say so explicitly. Do NOT post a separate PR comment.
+            - This review is ADVISORY: do NOT run `gh pr review` (no approve /
+              request-changes). The general review owns the merge verdict.
+          claude_args: '--model claude-opus-4-8[1m] --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"'

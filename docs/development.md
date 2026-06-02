@@ -96,8 +96,8 @@ see [ci-cd.md](ci-cd.md).
 ```
 pulse-backend/
 ├── README.md                          # Landing page + documentation index
-├── AGENTS.md                          # Guidance for coding agents
-├── CLAUDE.md                          # Guidance for Claude Code
+├── CLAUDE.md                          # Canonical agent guidance (Claude Code + any AGENTS.md tool)
+├── AGENTS.md                          # → symlink to CLAUDE.md (vendor-neutral agents.md alias)
 ├── SECURITY.md                        # Vulnerability disclosure policy
 ├── Makefile                           # Common commands (make help)
 ├── .gitignore

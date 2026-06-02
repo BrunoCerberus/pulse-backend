@@ -249,12 +249,15 @@ RLS is enabled on every table. After migration 027 the access model is:
 | Table | anon SELECT | service_role |
 |-------|-------------|--------------|
 | `categories` | all rows, all columns | full |
-| `sources` | rows with `is_active = true`, all columns | full |
+| `sources` | rows with `is_active = true`, **column-level** (migration 034): `id, name, slug, website_url, logo_url, category_id, language, is_active` | full |
 | `articles` | all rows, **column-level**: `id, title, summary, content, url, image_url, thumbnail_url, author, published_at, created_at, language, source_id, category_id, source_name, source_slug, category_name, category_slug, media_type, media_url, media_duration, media_mime_type, search_vector` | full |
 | `fetch_logs` | nothing (defence-in-depth REVOKE) | full |
 
 Backfill state (`*_backfill_attempts`, `*_backfill_last_attempt_at`) and
-`url_hash` are reserved for the worker.
+`url_hash` are reserved for the worker. On `sources`, the operational columns
+(`feed_url`, `last_fetched_at`, `fetch_interval_hours`, `etag`, `last_modified`,
+`consecutive_failures`, `circuit_open_until`, `max_content_length`) are likewise
+service-role only (migration 034).
 
 Writes are gated by the service-role key; there are no anon write policies.
 

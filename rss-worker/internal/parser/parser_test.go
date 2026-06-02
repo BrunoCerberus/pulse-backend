@@ -1751,6 +1751,15 @@ func TestParseDuration_Overflow(t *testing.T) {
 	if parseDuration("1:2:3:4") != 0 {
 		t.Error("expected 0 for 4-part duration")
 	}
+	// HH:MM:SS multiplication overflow: a huge hours value that would otherwise
+	// wrap to a bogus, attacker-chosen positive in-range total is capped (C6).
+	if got := parseDuration("1152921504606846977:00:00"); got != 24*3600 {
+		t.Errorf("expected HH overflow capped at 86400, got %d", got)
+	}
+	// MM:SS with an out-of-range minutes part is capped too.
+	if got := parseDuration("999999:00"); got != 24*3600 {
+		t.Errorf("expected MM overflow capped at 86400, got %d", got)
+	}
 }
 
 func TestParseSafeInt(t *testing.T) {
@@ -1793,6 +1802,49 @@ func TestIsAcceptableOGImage(t *testing.T) {
 		t.Run(c.raw, func(t *testing.T) {
 			if got := isAcceptableOGImage(c.raw); got != c.want {
 				t.Errorf("isAcceptableOGImage(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+
+	// Oversized og:image URL is rejected by the length cap.
+	if isAcceptableOGImage("https://cdn.example.com/" + strings.Repeat("x", maxURLLen)) {
+		t.Error("expected oversized og:image URL to be rejected")
+	}
+	// C1 control + bidi-override codepoints (which the old <0x20 loop missed)
+	// are now rejected via the shared urlHasUnsafeRune chokepoint.
+	for _, bad := range []string{
+		"https://cdn.example.com/\u0085img.jpg", // C1 control
+		"https://cdn.example.com/\u202eimg.jpg", // bidi override
+		"https://cdn.example.com/\timg.jpg",     // tab
+	} {
+		if isAcceptableOGImage(bad) {
+			t.Errorf("expected og:image with unsafe rune rejected: %q", bad)
+		}
+	}
+}
+
+// TestURLSafetyHelpers covers the codepoint chokepoint (urlHasUnsafeRune) shared
+// by isSafeArticleURL and the length cap added to isSafeMediaURL.
+func TestURLSafetyHelpers(t *testing.T) {
+	long := "https://example.com/" + strings.Repeat("x", maxURLLen)
+	cases := []struct {
+		name string
+		fn   func(string) bool
+		raw  string
+		want bool
+	}{
+		{"article ok", isSafeArticleURL, "https://example.com/x", true},
+		{"article tab rejected", isSafeArticleURL, "https://example.com/\tx", false},
+		{"article newline rejected", isSafeArticleURL, "https://example.com/\nx", false},
+		{"article bidi rejected", isSafeArticleURL, "https://example.com/\u202ex", false},
+		{"article C1 rejected", isSafeArticleURL, "https://example.com/\u0085x", false},
+		{"media ok", isSafeMediaURL, "https://example.com/a.mp3", true},
+		{"media too long rejected", isSafeMediaURL, long, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.fn(c.raw); got != c.want {
+				t.Errorf("%s(%q) = %v, want %v", c.name, c.raw, got, c.want)
 			}
 		})
 	}

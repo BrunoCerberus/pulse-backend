@@ -103,10 +103,8 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 //     resolution is deferred to the actual fetch (by iOS / image proxies),
 //     which we can't control from here.
 func isAcceptableOGImage(raw string) bool {
-	for _, r := range raw {
-		if r < 0x20 || r == 0x7f {
-			return false
-		}
+	if len(raw) > maxURLLen || urlHasUnsafeRune(raw) {
+		return false
 	}
 	u, err := url.Parse(raw)
 	if err != nil {

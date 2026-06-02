@@ -1,12 +1,12 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) and other AI coding agents (which reach it via the `AGENTS.md` symlink) when working with code in this repository.
 
 ## Project Overview
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app. It uses Go for RSS fetching and Supabase (PostgreSQL) for database and auto-generated REST API.
 
-**Tech Stack:** Go 1.25 | Supabase | GitHub Actions | PostgreSQL
+**Tech Stack:** Go 1.25 | Supabase | GitHub Actions | PostgreSQL | Deno (Edge Functions)
 
 ## Architecture
 
@@ -132,7 +132,8 @@ pulse-backend/
 │   │   ├── 030_add_source_max_content_length.sql # Optional per-source content cap (sources.max_content_length INT). Worker clamps to MIN(this, global maxContentLen) at both parse and backfill sites
 │   │   ├── 031_prune_old_image_urls_rpc.sql       # SECURITY DEFINER prune_old_image_urls(days_to_keep) — batched NULL-out of image_url + thumbnail_url on stale rows; non-fatal step in runCleanup; backfill candidate query gets matching age filter to prevent re-fetch. Uses JWT-claim caller gate (request.jwt.claims->>'role') since CURRENT_USER resolves to the definer inside SECURITY DEFINER and SESSION_USER is always 'authenticator' for PostgREST calls
 │   │   ├── 032_prune_old_content_rpc.sql          # SECURITY DEFINER prune_old_content(days_to_keep) — same shape as 031, nulls articles.content past CONTENT_PRUNE_DAYS (default 2). iOS detail view falls back to summary via SupabaseModels.swift's descriptionAndContent mapper
-│   │   └── 033_fix_security_definer_caller_gate.sql # Replaces dead CURRENT_USER caller check with the working JWT-claim pattern in all five migration-027 SECURITY DEFINER write functions (batch_update_article_images, batch_update_article_content, bump_backfill_attempts, batch_update_source_fetch_state, cleanup_old_articles). Defence-in-depth against a future GRANT regression; GRANT was and remains the actual security boundary
+│   │   ├── 033_fix_security_definer_caller_gate.sql # Replaces dead CURRENT_USER caller check with the working JWT-claim pattern in all five migration-027 SECURITY DEFINER write functions (batch_update_article_images, batch_update_article_content, bump_backfill_attempts, batch_update_source_fetch_state, cleanup_old_articles). Defence-in-depth against a future GRANT regression; GRANT was and remains the actual security boundary
+│   │   └── 034_restrict_sources_columns.sql # C1 (2026-06 discovery sweep): REVOKE anon/authenticated SELECT on `sources`, re-GRANT only the public api-sources column set (id/name/slug/website_url/logo_url/category_id/language/is_active). Operational + circuit-breaker columns (feed_url, etag, last_modified, consecutive_failures, circuit_open_until, last_fetched_at, fetch_interval_hours, max_content_length) become service-role-only — closes the base-table path migration 027 H8's source_health revoke left open. Asserted by security_invariants INVARIANT 7
 │   ├── tests/
 │   │   └── security_invariants.sql    # CI smoke tests run by migrations-ci.yml (RLS, SECURITY DEFINER search_path, caller-gate, search cap, view projection)
 │   └── functions/                     # Edge Functions (caching proxy)
@@ -355,6 +356,16 @@ make test-go-cover  # Go with coverage report
 make test-deno      # Deno Edge Function tests
 ```
 
+## Code Style Guidelines
+
+- Go code follows standard Go conventions (`go fmt`, `go vet`); `golangci-lint` runs in CI.
+- Use table-driven tests for comprehensive coverage; **all Go packages are held at 100% statement coverage** (enforced by `test.yml`).
+- HTTP calls should be mocked with `httptest.Server` in tests.
+- New HTTP clients must use `httputil.NewClient`, `httputil.NewClientWithRedirectLimit`, or `httputil.NewRateLimitedClient` (preferred for external hosts) so they share the connection pool and SSRF guards.
+- Prefer `logger.With(key, val, ...)` at per-source/per-article sites for structured correlation; printf-style `logger.Infof` is fine for one-off summary lines.
+- Edge Functions use TypeScript with Deno (`deno fmt` + `deno lint` enforced in CI).
+- All new code should include tests.
+
 ## GitHub Actions
 
 - **fetch-rss.yml**: Every 2 hours + manual trigger. Runs the Go RSS worker against the Supabase production DB.
@@ -362,14 +373,46 @@ make test-deno      # Deno Edge Function tests
 - **backfill.yml**: Daily at 04:30 UTC + manual trigger. Two parallel jobs (`backfill-images`, `backfill-content`) that drain articles missing og:image/content. The `workflow_dispatch` form takes a `kind` input (`both`/`images`/`content`) so you can run one in isolation. Cooldowns and attempt caps live in the DB queries (`BACKFILL_COOLDOWN_HOURS`, `BACKFILL_MAX_ATTEMPTS`); the daily cadence matches the 24h cooldown so re-runs are cheap.
 - **test.yml**: Runs on push/PR to master (Go tests with race detector + coverage, 100% coverage gate, golangci-lint, govulncheck, Deno lint + fmt-check + tests). The coverage step parses `go tool cover -func` output and fails the job if total coverage is below 100.0%, listing sub-100% functions.
 - **security.yml**: Runs on push/PR to master + weekly (Mon 06:00 UTC). Jobs: secret scan (gitleaks + TruffleHog), Go SAST (gosec), govulncheck, Trivy filesystem scan (vuln/secret/misconfig), CycloneDX SBOM artifact. gosec + Trivy upload SARIF to the Security tab (alongside CodeQL); the upload is skipped on fork PRs where the token is read-only.
+- **security-review.yml**: PR-only AI security review via `anthropics/claude-code-action` (same engine as `claude-code-review.yml`), authenticated with the existing `CLAUDE_CODE_OAUTH_TOKEN` — **no new secret**. Runs a security-only prompt that reads `THREAT_MODEL.md` and concentrates on hostile-RSS / SSRF / injection + the Supabase privilege boundary; posts inline comments + one summary comment and never runs `gh pr review` (so it can't conflict with the general review's verdict). Fork-gated. **Advisory, not a required check.** Like `claude-code-review.yml`, this file is "locked" by claude-code-action's workflow-validation guard: the PR that first adds it shows one red advisory run, going green on the next PR after merge.
 - **pr-checks.yml**: Runs on PR to master only. Jobs: PR title conventional-commits (`feat|fix|chore|…` prefix), go.mod Sync (fails if `go mod tidy` produces a diff), Migration Format (enforces `NNN_*.sql`, no gaps, no duplicate prefixes).
 - **deploy.yml**: Gated production deploy on push to master under `supabase/migrations/**` or `supabase/functions/**` (+ manual). One job, ordered steps: apply migrations (`supabase db push`) → deploy Edge Functions → `api-health` smoke test. The migrate step no-ops with a notice when `SUPABASE_DB_PASSWORD` isn't set (functions still deploy), so adding this workflow can't break the functions path before that secret exists; `set -e` ordering means a failed migration aborts before functions ship. Gated by the `production` GitHub Environment (required-reviewer approval); `SUPABASE_ACCESS_TOKEN` / `SUPABASE_PROJECT_REF` / `SUPABASE_DB_PASSWORD` live on that Environment, not at repo scope. Replaces the old `deploy-functions.yml`.
-- **migrations-ci.yml**: Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` (+ manual). Boots the Supabase local stack, applies every migration from scratch (`supabase db reset --no-seed`), runs `supabase db lint --fail-on error`, then asserts security invariants via `supabase/tests/security_invariants.sql` (RLS enabled; every SECURITY DEFINER func pins `search_path=''`; the five write funcs exist + are SECURITY DEFINER; every write func carries the JWT-claim caller gate and `anon`/`authenticated` are denied EXECUTE; `search_articles` enforces its 200-char cap; `articles_with_source` hides `url_hash`). First automated coverage of the SQL layer. (The caller gate is asserted via the catalog, not behaviorally: the local-stack `postgres` is not a superuser, so `SET SESSION AUTHORIZATION` to flip `SESSION_USER` is denied.)
+- **migrations-ci.yml**: Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` (+ manual). Boots the Supabase local stack, applies every migration from scratch (`supabase db reset --no-seed`), runs `supabase db lint --fail-on error`, then asserts security invariants via `supabase/tests/security_invariants.sql` (RLS enabled; every SECURITY DEFINER func pins `search_path=''`; the five write funcs exist + are SECURITY DEFINER; every write func carries the JWT-claim caller gate and `anon`/`authenticated` are denied EXECUTE; `search_articles` enforces its 200-char cap; `articles_with_source` hides `url_hash`; `anon`/`authenticated` cannot read `sources` operational columns — migration 034). First automated coverage of the SQL layer. (The caller gate is asserted via the catalog, not behaviorally: the local-stack `postgres` is not a superuser, so `SET SESSION AUTHORIZATION` to flip `SESSION_USER` is denied.)
 - **lint-meta.yml**: Push/PR + manual. Runs `actionlint` (which auto-invokes `shellcheck` on every `run:` block) across all workflows.
 - **watchdog.yml**: Every 6 hours (`:15` past the hour) + manual trigger. Calls `api-source-health` and fails the job (→ GitHub email) when `circuit_open_count`, `stale_count`, `high_failure_count`, or `database.quota_pct` (trips at 60% — tightened from 70% after the May 2026 cleanup brought the DB to 21%) exceed thresholds set inline in the workflow. The DB quota check tolerates `database == null` (RPC failure) without alerting so transient size-fetch errors don't false-page.
 - **lgpd-conformance.yml** + **gdpr-conformance.yml**: Push/PR to master + weekly Mon 07:00 UTC. Four parallel jobs each (`pii-scan`, `docs-presence`, `operational-controls`, `structural-integrity`). Enforce regulator-specific PII bans (CPF/CNPJ for LGPD; IBAN + EU/EEA phone for GDPR; SSN for CCPA in both), a case-insensitive email allowlist via `.github/pii-allowlist.txt`, no `RemoteAddr` / `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP` in `rss-worker/`, presence + non-emptiness of every doc under `docs/{privacy,lgpd-conformance,gdpr-conformance,ccpa-conformance,ropa,data-retention}.md`, `ArticleRetentionDays = 7`, no plaintext `http://` in migrations, the literal `No PII redaction layer required` in both regulator docs, RLS still on, schema-qualifier-aware CREATE TABLE allowlist, ALTER TABLE ADD COLUMN PII bans, and `| GitHub ` / `| Supabase ` rows in `docs/ropa.md`. Run with a `cancel-in-progress` concurrency block for PRs.
 
 All 19 job names from `test.yml`, `security.yml`, `pr-checks.yml`, `lgpd-conformance.yml`, and `gdpr-conformance.yml` are required status checks on `master` via branch protection. Direct pushes to `master` are blocked (even for admins); every change goes through a PR with `delete_branch_on_merge` + squash-only merges. The newer `migrations-ci.yml` and `lint-meta.yml` checks run on every PR but are not yet in the required set — promote them in branch protection once they've proven stable in CI.
+
+## Security Review Guidance
+
+The repo follows the find → verify → triage → patch loop from Anthropic's
+"using LLMs to secure source code." The authoritative threat model is
+[`THREAT_MODEL.md`](THREAT_MODEL.md); disclosure + the severity/triage rubric
+live in [`SECURITY.md`](SECURITY.md); the fix workflow is in
+[`PATCHING.md`](PATCHING.md).
+
+**When reviewing a PR (human or automated):** consult `THREAT_MODEL.md` and
+treat every RSS feed, article page, and media enclosure as **hostile,
+attacker-controlled input** — the 136 configured publishers are not trusted.
+Concentrate scrutiny where this codebase's risk concentrates, and where it has
+historically had real bugs:
+
+- the SSRF-aware transport (`internal/httputil`) — resolve-once, forbidden-IP
+  rejection, redirect re-validation;
+- parser input limits and sanitizers (`internal/parser`) — body-size caps,
+  rune caps, MIME/CRLF, bidi/control codepoints, URL safety + canonicalization,
+  date clamping, integer-overflow guards;
+- the Supabase privilege boundary — `SECURITY DEFINER` + `search_path=''`, the
+  `request.jwt.claims` caller gate, RLS, and column-level GRANTs / view
+  projections;
+- Edge Function request guards and the public read-only API surface;
+- workflow changes that handle secrets or ingest fork-PR input.
+
+This is *context, not a checklist* — open-ended review finds more than a rigid
+list. Two automated reviewers run on every trusted-author PR: `claude-code-review.yml`
+(general, loads this file) and `security-review.yml` (threat-anchored, reads
+`THREAT_MODEL.md`). Keep `THREAT_MODEL.md` current in the same PR that changes
+any control above — it directly sharpens both reviewers.
 
 ## Data Protection Conformance
 
