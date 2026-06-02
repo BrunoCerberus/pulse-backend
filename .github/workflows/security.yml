@@ -103,15 +103,19 @@ jobs:
           # past the project's Go version.
           GOSEC_VERSION: "v2.22.11"
         run: |
-          # Fetch the installer from the PINNED release tag (an immutable ref),
-          # not the mutable `master` branch — so a later upstream commit can't
-          # silently alter the script that runs in CI. Install to a
-          # user-writable dir (no `sudo`, no root) and put it on PATH for the
-          # next step. This keeps the supply-chain surface to the pinned tag.
+          # Download the PINNED release tarball directly (an immutable asset)
+          # instead of gosec's install.sh — that script resolves the tag through
+          # the UNAUTHENTICATED GitHub API, which gets rate-limited (HTTP 403) on
+          # shared runner IPs and then misreports the pinned tag as "not found"
+          # (the failure mode we hit). A direct asset download makes no API call,
+          # so it's both rate-limit-proof and pinned to the exact release. This
+          # mirrors the gitleaks install in the secret-scan job. Install to a
+          # user-writable dir (no `sudo`, no root) and put it on PATH.
           mkdir -p "$HOME/.local/bin"
+          ver="${GOSEC_VERSION#v}"
           curl -sSfL --retry 3 --retry-delay 2 \
-            "https://raw.githubusercontent.com/securego/gosec/${GOSEC_VERSION}/install.sh" \
-            | sh -s -- -b "$HOME/.local/bin" "${GOSEC_VERSION}"
+            "https://github.com/securego/gosec/releases/download/${GOSEC_VERSION}/gosec_${ver}_linux_amd64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" gosec
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/gosec" --version
 
