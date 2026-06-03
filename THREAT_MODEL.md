@@ -252,6 +252,18 @@ rather than line numbers so this stays accurate as code moves.
 - Supabase enforces RLS and PostgREST sets `request.jwt.claims` per request.
 - The worker handles **no inbound user requests** — there is no client-IP code
   path in `rss-worker/` (asserted by the conformance workflows).
+- **The Edge Functions are a *narrowing* proxy over a directly-reachable anon
+  PostgREST surface** (the anon key is public). They can only reduce surface
+  (forced `select`, length caps, order allow-list, limit cap), never widen it —
+  so PostgREST operator-injection via forwarded params (`id=not.is.null`,
+  `language=ilike.*`) is harmless **today** because every filterable column is
+  already anon-`SELECT`able directly. **If this ever changes** — PostgREST locked
+  behind the Edge layer, or anon column-grants tightened so the proxy becomes the
+  *only* path to some data — `buildProxyUrl` must validate filter *values* (not
+  just length), or operator-injection becomes a real disclosure/oracle vector.
+  The one privileged endpoint, `api-source-health`, queries as service-role over
+  the anon-revoked `source_health` view and returns a **generic** error body
+  (never the raw upstream PostgREST error), so its error path leaks no internals.
 
 ### Residual risks (accepted)
 

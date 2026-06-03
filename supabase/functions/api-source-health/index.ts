@@ -192,7 +192,15 @@ async function buildPayload(req: Request): Promise<{ status: number; body: strin
     };
   }
   if (result.status !== 200) {
-    return { status: result.status, body: result.data };
+    // Do NOT echo the upstream body. This query runs as service_role against
+    // source_health (revoked from anon by migration 027), so its raw PostgREST
+    // error text / SQLSTATE would disclose internals an anonymous caller can't
+    // reach directly (e.g. a malformed `id`/`slug` triggers a 22P02 cast error).
+    // Preserve the status code; return a generic body.
+    return {
+      status: result.status,
+      body: JSON.stringify({ error: "upstream error" }),
+    };
   }
   const rows: SourceHealthRow[] = JSON.parse(result.data);
   const payload = {
