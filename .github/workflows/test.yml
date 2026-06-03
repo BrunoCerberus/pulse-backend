@@ -73,6 +73,14 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
         with:
+          # Analyse with the SAME Go the worker builds with (go.mod's pinned
+          # 1.25.x), NOT the action's default `go-version-input: stable`.
+          # "stable" resolves to whatever the runner has (e.g. an unpatched
+          # go1.26.3), so govulncheck would report stdlib CVEs already fixed in
+          # the project's pinned toolchain. Empty go-version-input lets
+          # go-version-file win (setup-go prefers go-version only when non-empty).
+          go-version-input: ""
+          go-version-file: rss-worker/go.mod
           work-dir: ./rss-worker
           repo-checkout: false
 

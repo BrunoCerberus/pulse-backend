@@ -166,6 +166,11 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
         with:
+          # Pin govulncheck's Go to go.mod (not the action's default "stable",
+          # which resolves to an unpatched runner Go) so it reports against the
+          # project's actual patched toolchain. See test.yml for the rationale.
+          go-version-input: ""
+          go-version-file: rss-worker/go.mod
           work-dir: ./rss-worker
           repo-checkout: false
 
