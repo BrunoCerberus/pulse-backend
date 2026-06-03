@@ -230,6 +230,45 @@ Deno.test("upstream failure returns 500", async () => {
   }
 });
 
+Deno.test("non-200 upstream does not echo the service-role error body", async () => {
+  clearCache();
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    // source_health is queried as service_role; a malformed client param makes
+    // PostgREST return a 400 with a revealing SQL error body. That body must NOT
+    // reach the anonymous caller — it would disclose internals anon can't read.
+    const leak = JSON.stringify({
+      code: "22P02",
+      message: "invalid input syntax for type uuid: notauuid",
+    });
+    globalThis.fetch = (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      if (url.includes("/rpc/get_db_size_bytes")) {
+        return Promise.resolve(new Response("0", { status: 200 }));
+      }
+      return Promise.resolve(new Response(leak, { status: 400 }));
+    };
+    const res = await handler(
+      new Request("http://localhost/api-source-health?id=notauuid"),
+    );
+    assertEquals(res.status, 400); // upstream status preserved
+    const text = await res.text();
+    assertEquals(text.includes("22P02"), false);
+    assertEquals(text.includes("invalid input syntax"), false);
+    assertEquals(JSON.parse(text).error, "upstream error");
+  } finally {
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
+  }
+});
+
 Deno.test("empty source list yields zero summary", async () => {
   clearCache();
   const origUrl = Deno.env.get("SUPABASE_URL");
