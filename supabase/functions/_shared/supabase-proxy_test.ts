@@ -8,6 +8,10 @@ import {
   buildCacheKey,
   buildProxyUrl,
   fetchFromSupabase,
+  isBooleanFilter,
+  isCacheableResult,
+  isSlugFilter,
+  isUuidFilter,
   MAX_QUERY_STRING_LEN,
   type ProxyConfig,
   tooLong,
@@ -444,3 +448,70 @@ Deno.test(
     },
   ),
 );
+
+Deno.test("isUuidFilter accepts only UUID value(s)", () => {
+  assert(isUuidFilter("eq.11111111-1111-1111-1111-111111111111"));
+  assert(isUuidFilter("11111111-1111-1111-1111-111111111111")); // no operator
+  assert(isUuidFilter(
+    "in.(11111111-1111-1111-1111-111111111111,22222222-2222-2222-2222-222222222222)",
+  ));
+  assert(!isUuidFilter("eq.not-a-uuid"));
+  assert(!isUuidFilter("eq.")); // empty value
+  assert(!isUuidFilter("eq.(11111111-1111-1111-1111-111111111111,bad)"));
+});
+
+Deno.test("isSlugFilter accepts only kebab-case slug value(s)", () => {
+  assert(isSlugFilter("eq.bbc-news"));
+  assert(isSlugFilter("eq.20-minutos"));
+  assert(isSlugFilter("g1"));
+  assert(!isSlugFilter("eq.has spaces"));
+  assert(!isSlugFilter("eq.under_score"));
+  assert(!isSlugFilter("eq." + "a".repeat(129))); // length cap
+});
+
+Deno.test("isBooleanFilter accepts only true/false value(s)", () => {
+  assert(isBooleanFilter("eq.true"));
+  assert(isBooleanFilter("is.false"));
+  assert(isBooleanFilter("true"));
+  assert(!isBooleanFilter("eq.maybe"));
+  assert(!isBooleanFilter("eq.1"));
+});
+
+Deno.test("isCacheableResult rejects empty result sets", () => {
+  assert(isCacheableResult('[{"id":"x"}]'));
+  assert(isCacheableResult('{"sources":[]}')); // non-array object still cacheable
+  assert(!isCacheableResult("[]"));
+  assert(!isCacheableResult("  []  "));
+  assert(!isCacheableResult(""));
+});
+
+Deno.test("paramValidators drop invalid values from the upstream URL", () => {
+  const cfg: ProxyConfig = {
+    table: "sources",
+    allowedParams: ["id", "is_active"],
+    defaultSelect: "id,name",
+    paramValidators: { id: isUuidFilter, is_active: isBooleanFilter },
+  };
+  const prevUrl = Deno.env.get("SUPABASE_URL");
+  Deno.env.set("SUPABASE_URL", "https://t.supabase.co");
+  try {
+    const url = buildProxyUrl(
+      new Request("http://localhost/x?id=not.a.uuid&is_active=eq.maybe"),
+      cfg,
+    );
+    assert(!url.includes("id="), `invalid id should be dropped: ${url}`);
+    assert(!url.includes("is_active="), `invalid is_active should be dropped: ${url}`);
+
+    const ok = buildProxyUrl(
+      new Request(
+        "http://localhost/x?id=eq.11111111-1111-1111-1111-111111111111&is_active=eq.true",
+      ),
+      cfg,
+    );
+    assertStringIncludes(ok, "id=eq.11111111-1111-1111-1111-111111111111");
+    assertStringIncludes(ok, "is_active=eq.true");
+  } finally {
+    if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});

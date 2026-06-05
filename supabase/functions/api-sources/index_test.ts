@@ -130,7 +130,9 @@ Deno.test("junk query params do not inflate cache (canonical key)", async () => 
     let fetchCount = 0;
     globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
       fetchCount++;
-      return Promise.resolve(new Response("[]", { status: 200 }));
+      // Non-empty body so the (cacheable) result is actually cached; the point
+      // here is that junk params collapse to one canonical key, not skip-cache.
+      return Promise.resolve(new Response('[{"id":"x"}]', { status: 200 }));
     };
 
     // Three requests with different junk params — same canonical request.
@@ -138,6 +140,73 @@ Deno.test("junk query params do not inflate cache (canonical key)", async () => 
     await handler(new Request("http://localhost/api-sources?junk=b"));
     await handler(new Request("http://localhost/api-sources?evil=c"));
     assertEquals(fetchCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("empty result sets are not cached (eviction-thrash guard)", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    let fetchCount = 0;
+    globalThis.fetch = (_input: string | URL | Request, _init?: RequestInit) => {
+      fetchCount++;
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+
+    // A non-matching filter returns []; it must NOT be cached, so a repeat
+    // re-fetches rather than minting a permanent cache entry per junk value.
+    await handler(new Request("http://localhost/api-sources?slug=eq.nope-1"));
+    await handler(new Request("http://localhost/api-sources?slug=eq.nope-1"));
+    assertEquals(fetchCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("invalid filter values are dropped before the upstream query", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    let lastUrl = "";
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      lastUrl = String(input);
+      return Promise.resolve(new Response('[{"id":"x"}]', { status: 200 }));
+    };
+
+    // A non-UUID id and a non-boolean is_active must be dropped, not forwarded.
+    await handler(
+      new Request("http://localhost/api-sources?id=not.a.uuid&is_active=eq.maybe"),
+    );
+    assertEquals(lastUrl.includes("id="), false, "malformed id must be dropped");
+    assertEquals(
+      lastUrl.includes("is_active="),
+      false,
+      "malformed is_active must be dropped",
+    );
+
+    // A well-formed id is forwarded.
+    await handler(
+      new Request(
+        "http://localhost/api-sources?id=eq.11111111-1111-1111-1111-111111111111",
+      ),
+    );
+    assertEquals(lastUrl.includes("id=eq.11111111"), true, "valid id must be forwarded");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);

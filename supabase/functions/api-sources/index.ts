@@ -27,16 +27,29 @@ import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import {
   buildCacheKey,
   fetchFromSupabase,
+  isBooleanFilter,
+  isCacheableResult,
+  isUuidFilter,
   type ProxyConfig,
   tooLong,
 } from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
+// Validators are scoped to params whose value domain is unambiguous (UUID,
+// boolean). `slug` / `language` are intentionally left unvalidated so a
+// publisher-defined slug can never be silently dropped; junk-value cache
+// thrash on those is already neutralized by isCacheableResult (empty result
+// sets aren't cached) below.
 const config: ProxyConfig = {
   table: "sources",
   allowedParams: ["id", "slug", "category_id", "language", "is_active", "order"],
   defaultSelect: "id,name,slug,website_url,logo_url,category_id,language,is_active",
   allowedOrderColumns: ["name", "slug", "language"],
+  paramValidators: {
+    id: isUuidFilter,
+    category_id: isUuidFilter,
+    is_active: isBooleanFilter,
+  },
 };
 
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -62,7 +75,7 @@ export async function handler(req: Request): Promise<Response> {
 
     const data = cached ?? (await (async () => {
       const result = await fetchFromSupabase(req, config);
-      if (result.status === 200) {
+      if (result.status === 200 && isCacheableResult(result.data)) {
         setCached(cacheKey, result.data, CACHE_TTL_MS);
       }
       return result.data;

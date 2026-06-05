@@ -44,12 +44,20 @@ type Client struct {
 	httpClient *http.Client // HTTP client with configured timeout
 }
 
-// NewClient creates a new Supabase client
+// NewClient creates a new Supabase client.
+//
+// The HTTP client is configured to REFUSE redirects (maxRedirects = 0). The
+// client authenticates with the service-role key in both Authorization and the
+// custom `apikey` header (setHeaders). Go strips Authorization on a cross-host
+// redirect but FORWARDS custom headers like `apikey`, so following a redirect
+// to an attacker- or typo-controlled host would leak the crown-jewel key.
+// PostgREST never legitimately 3xx-redirects, so refusing is safe: a redirect
+// surfaces as a non-2xx status the callers already treat as an error.
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
 		baseURL:    cfg.SupabaseURL + "/rest/v1",
 		apiKey:     cfg.SupabaseKey,
-		httpClient: httputil.NewClient(30 * time.Second),
+		httpClient: httputil.NewClientWithRedirectLimit(30*time.Second, 0),
 	}
 }
 

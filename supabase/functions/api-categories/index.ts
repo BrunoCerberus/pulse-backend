@@ -20,6 +20,8 @@ import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import {
   buildCacheKey,
   fetchFromSupabase,
+  isCacheableResult,
+  isUuidFilter,
   type ProxyConfig,
   tooLong,
 } from "../_shared/supabase-proxy.ts";
@@ -30,6 +32,9 @@ const config: ProxyConfig = {
   allowedParams: ["id", "order"],
   defaultSelect: "id,name,slug",
   allowedOrderColumns: ["display_order", "name", "slug"],
+  paramValidators: {
+    id: isUuidFilter,
+  },
 };
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -54,7 +59,7 @@ export async function handler(req: Request): Promise<Response> {
 
     const data = cached ?? (await (async () => {
       const result = await fetchFromSupabase(req, config);
-      if (result.status === 200) {
+      if (result.status === 200 && isCacheableResult(result.data)) {
         setCached(cacheKey, result.data, CACHE_TTL_MS);
       }
       return result.data;

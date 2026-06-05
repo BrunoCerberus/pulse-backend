@@ -177,27 +177,45 @@ rather than line numbers so this stays accurate as code moves.
   `SecureDialContext` resolves the host once, rejects loopback / RFC-1918 /
   link-local (169.254/16) / multicast / unspecified IPs via `IsForbiddenIP`,
   then dials the resolved literal so DNS can't rebind. `IsForbiddenIP` also
-  denies an explicit `forbiddenCIDRs` list the stdlib classifiers miss: CGNAT
-  (100.64/10), the NAT64 / 6to4 / Teredo IPv4↔IPv6 translation prefixes (which
-  could otherwise wrap 169.254.169.254), and benchmarking / documentation space.
+  denies an explicit `forbiddenCIDRs` list the stdlib classifiers miss: the
+  `0.0.0.0/8` "this host" block (whose `0.0.0.1` routes to localhost on Linux —
+  `IsUnspecified()` only matches the single `0.0.0.0`), CGNAT (100.64/10), the
+  NAT64 / 6to4 / Teredo IPv4↔IPv6 translation prefixes (which could otherwise
+  wrap 169.254.169.254), 6to4 relay anycast (192.88.99/24), reserved Class-E +
+  limited-broadcast (240/4), and benchmarking / documentation space.
   `ValidateSSRFTarget` pre-flights scheme + host. Redirects are re-validated.
-- **C-OGIMG** — `internal/parser/ogimage.go`: `isAcceptableOGImage` rejects
-  control chars, non-`http(s)` schemes, empty hosts, and forbidden IP literals
-  before an og:image URL is stored; the fetch itself uses `SafeTransport`.
+- **C-OGIMG** — `internal/parser/ogimage.go`: `isAcceptableOGImage` delegates to
+  the unified storage guard (`isSafeMediaURL` → `isSafeArticleURL`), so an
+  og:image URL is rejected before storage if it has a non-`http(s)` scheme,
+  empty host, control/bidi runes, userinfo, or a forbidden / obfuscated IP-literal
+  host; the fetch itself also uses `SafeTransport`.
 - **C-LIMITS** — body caps via `io.LimitReader`: feed body `MaxFeedBodyBytes`
   (50 MB), content extraction (5 MB), og:image `<head>` (100 KB); per-field rune
-  caps (title 500 / summary 4096 / content 200K / author 200 / URL 2048).
+  caps (title 500 / summary 4096 / content 200K / author 200 / URL 2048). The
+  content extractor also bounds go-readability's node count
+  (`MaxElemsToParse = 100K`) so a pathological DOM can't pin a worker on the
+  super-linear scoring passes within the byte cap.
 - **C-SANITIZE** — `internal/parser/parser.go`: `sanitizeText` strips C0/C1
   control + bidi-override codepoints; `sanitizeMIMEType` enforces a tight MIME
   regex (no CRLF); `parseDuration` bounds each part before combining (so the
   `hours*3600` multiply can't wrap to a bogus positive value) and `parseSafeInt`
   guards per-part overflow; duration capped at 24 h.
-- **C-URLSAFE** — `isSafeArticleURL` / `isSafeMediaURL` / `isAcceptableOGImage`
-  reject non-`http(s)` schemes, empty hosts, control / bidi-override codepoints
-  (`urlHasUnsafeRune`), and over-`maxURLLen` URLs for article, media, thumbnail,
-  and og:image fields.
+- **C-URLSAFE** — `isSafeArticleURL` is the single storage guard shared by all
+  four publisher-URL sinks (article link, thumbnail, media via `isSafeMediaURL`,
+  og:image via `isAcceptableOGImage`). It rejects non-`http(s)` schemes, empty
+  hosts, control / bidi-override codepoints (`urlHasUnsafeRune`), over-`maxURLLen`
+  URLs, **embedded userinfo** (`trusted.com@evil/` phishing spoof), and **any
+  forbidden or obfuscated IP-literal host** — `hostIsForbiddenIPLiteral` runs
+  `IsForbiddenIP` on canonical literals and decodes inet_aton decimal/hex/octal
+  forms (`2852039166`, `0x7f000001`) that `net.ParseIP` misses but iOS
+  `getaddrinfo` resolves, so a stored URL can't coerce a client into an internal
+  probe. (The worker's own fetch is guarded at the dial layer; this guards the
+  value that is *served to iOS*.)
 - **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
-  sorts query keys before SHA-256 hashing, so dedup can't be bypassed.
+  and sorts query parameters before SHA-256 hashing, so dedup can't be bypassed.
+  Sorting splits the raw query on `&` only (not the lossy `url.Values` round-trip,
+  which since Go 1.17 discards the whole query on a `;` — collapsing distinct
+  articles to one `url_hash`).
 - **C-CLAMP** — `clampPublishedDate` bounds `published_at` to `[now-10y, now+1h]`.
 - **C-RATELIMIT** — `RateLimitingTransport` applies a per-host token bucket
   (default 2 rps / burst 5) to all user-content clients.
@@ -216,14 +234,21 @@ rather than line numbers so this stays accurate as code moves.
   `security_invoker=on`; `source_health` is revoked from anon (migration 027).
 - **C-DEFINER** — every `SECURITY DEFINER` function pins `SET search_path = ''`
   with fully-qualified references (migration 027).
-- **C-CALLERGATE** — the five write functions check `request.jwt.claims->>'role'`
-  for `service_role` (or a direct `postgres` session) — defence in depth behind
-  the GRANT boundary (migration 033).
+- **C-CALLERGATE** — all seven SECURITY DEFINER write functions (the five from
+  027/033 plus `prune_old_image_urls` / `prune_old_content` from 031/032) check
+  `request.jwt.claims->>'role'` for `service_role` (or a direct `postgres`
+  session) — defence in depth behind the GRANT boundary.
 - **C-SEARCHCAP** — `search_articles` rejects empty/whitespace/>200-char queries
   and runs under `statement_timeout = '3s'` with an explicit projection.
 - **C-BATCHCAP** — `bump_backfill_attempts` rejects arrays over 10K entries.
-- The SQL invariants in `supabase/tests/security_invariants.sql` assert
-  C-GRANT/C-VIEW/C-DEFINER/C-CALLERGATE/C-SEARCHCAP on every migration run.
+- **C-WRITEREVOKE** — `sources`/`categories` carry a table-level write REVOKE
+  (migration 035) so the GRANT boundary, not just RLS, blocks anon/authenticated
+  writes.
+- The SQL invariants in `supabase/tests/security_invariants.sql` (11 blocks)
+  assert C-GRANT/C-VIEW/C-DEFINER/C-CALLERGATE/C-SEARCHCAP/C-WRITEREVOKE on every
+  migration run — including the base-table `articles` column grant (not just the
+  view), `search_articles`'s bounded projection, RLS on all four anon-reachable
+  tables, and `security_invoker=on` on the two views.
 
 ### CI / supply-chain controls
 
@@ -248,7 +273,10 @@ rather than line numbers so this stays accurate as code moves.
 - The `author` byline is public-record journalist attribution under the
   journalism exemption — **not** end-user PII (see `SECURITY.md` / `docs/`).
 - The service-role key is only ever present in CI secrets and the worker
-  process. If it leaks, **A1 is fully compromised** — rotate immediately.
+  process. If it leaks, **A1 is fully compromised** — rotate immediately. The
+  Supabase HTTP client refuses redirects (`NewClientWithRedirectLimit(_, 0)`) so
+  a 3xx to another host can't make Go forward the key in the custom `apikey`
+  header (which, unlike `Authorization`, survives a cross-host redirect).
 - Supabase enforces RLS and PostgREST sets `request.jwt.claims` per request.
 - The worker handles **no inbound user requests** — there is no client-IP code
   path in `rss-worker/` (asserted by the conformance workflows).
@@ -261,9 +289,14 @@ rather than line numbers so this stays accurate as code moves.
   behind the Edge layer, or anon column-grants tightened so the proxy becomes the
   *only* path to some data — `buildProxyUrl` must validate filter *values* (not
   just length), or operator-injection becomes a real disclosure/oracle vector.
-  The one privileged endpoint, `api-source-health`, queries as service-role over
-  the anon-revoked `source_health` view and returns a **generic** error body
-  (never the raw upstream PostgREST error), so its error path leaks no internals.
+  `ProxyConfig.paramValidators` exists for exactly this: the one privileged
+  endpoint, `api-source-health` (service-role over the anon-revoked
+  `source_health` view), already validates its `id`/`slug`/`is_active` values so
+  a malformed value is dropped before the service-role DB round-trip; it returns
+  a **generic** error body (never the raw upstream PostgREST error) and does not
+  cache empty result sets (so a rotated non-matching filter can't thrash the
+  bounded in-memory cache). The memory-cached public endpoints likewise skip
+  caching empty results (`isCacheableResult`).
 
 ### Residual risks (accepted)
 

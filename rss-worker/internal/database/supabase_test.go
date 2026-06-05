@@ -63,6 +63,33 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+// TestNewClient_RefusesRedirect asserts the Supabase client does NOT follow a
+// redirect — so the service-role key in the `apikey` header (which Go forwards
+// across hosts, unlike Authorization) can never leak to a redirect target.
+func TestNewClient_RefusesRedirect(t *testing.T) {
+	var targetHit bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer target.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	// The call must error (the 302 is a non-2xx the caller rejects) and the
+	// redirect target must never be contacted.
+	if _, err := newTestClient(origin).GetActiveSources(); err == nil {
+		t.Error("expected error when origin redirects, got nil (redirect was followed?)")
+	}
+	if targetHit {
+		t.Error("redirect target was contacted — client followed a redirect and would leak the apikey header")
+	}
+}
+
 func TestGetActiveSources_Success(t *testing.T) {
 	expectedSources := []models.Source{
 		{ID: "src-1", Name: "BBC News", FeedURL: "https://bbc.com/feed", IsActive: true},
