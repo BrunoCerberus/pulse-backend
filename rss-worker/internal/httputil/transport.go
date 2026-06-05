@@ -102,18 +102,27 @@ func IsForbiddenIP(ip net.IP) bool {
 
 // forbiddenCIDRs enumerates ranges that net.IP's stdlib classifiers
 // (IsPrivate / IsLinkLocal* / IsMulticast / IsUnspecified) do NOT cover but
-// that an SSRF guard must still refuse: carrier-grade NAT, the IPv4↔IPv6
-// translation prefixes (NAT64 / 6to4 / Teredo, which can wrap a forbidden v4
-// such as the 169.254.169.254 cloud-metadata address), and benchmarking /
-// documentation space. Parsed once at package init via MustParsePrefix on
-// static literals.
+// that an SSRF guard must still refuse: the "this host"/"this network" block,
+// carrier-grade NAT, the IPv4↔IPv6 translation prefixes (NAT64 / 6to4 /
+// Teredo, which can wrap a forbidden v4 such as the 169.254.169.254
+// cloud-metadata address), 6to4 relay anycast, reserved Class-E /
+// limited-broadcast space, and benchmarking / documentation space. Parsed once
+// at package init via MustParsePrefix on static literals.
+//
+// NOTE on 0.0.0.0/8: net.IP.IsUnspecified() matches ONLY the single address
+// 0.0.0.0 (and ::), not the rest of the /8. On Linux the whole 0.0.0.0/8
+// "this network" block routes to the local host, so 0.0.0.1 reaches loopback —
+// it must be blocked explicitly here.
 var forbiddenCIDRs = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // RFC 1122 "this host on this network" — 0.0.0.1 routes to localhost on Linux
 	netip.MustParsePrefix("100.64.0.0/10"),   // RFC 6598 carrier-grade NAT / cloud-internal shared space
 	netip.MustParsePrefix("192.0.0.0/24"),    // RFC 6890 IETF protocol assignments
 	netip.MustParsePrefix("192.0.2.0/24"),    // RFC 5737 documentation (TEST-NET-1)
+	netip.MustParsePrefix("192.88.99.0/24"),  // RFC 7526 6to4 relay anycast (deprecated)
 	netip.MustParsePrefix("198.18.0.0/15"),   // RFC 2544 benchmarking
 	netip.MustParsePrefix("198.51.100.0/24"), // RFC 5737 documentation (TEST-NET-2)
 	netip.MustParsePrefix("203.0.113.0/24"),  // RFC 5737 documentation (TEST-NET-3)
+	netip.MustParsePrefix("240.0.0.0/4"),     // RFC 1112 reserved Class-E + 255.255.255.255 limited broadcast
 	netip.MustParsePrefix("64:ff9b::/96"),    // RFC 6052 NAT64 well-known prefix (wraps IPv4)
 	netip.MustParsePrefix("64:ff9b:1::/48"),  // RFC 8215 NAT64 local-use prefix
 	netip.MustParsePrefix("2002::/16"),       // RFC 3056 6to4 (wraps IPv4)

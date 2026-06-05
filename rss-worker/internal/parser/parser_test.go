@@ -3,6 +3,7 @@ package parser
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1522,11 +1523,90 @@ func TestIsSafeArticleURL(t *testing.T) {
 		{"://nohost", false},
 		{"", false},
 		{"   ", false},
+		// M1 — embedded userinfo spoof (Host is the part after @).
+		{"https://www.reuters.com@evil.example/login", false},
+		{"https://cdn.trusted.com@beacon.evil/track.jpg", false},
+		{"https://carol@internal.example/", false}, // userinfo (no password) still rejected
+		// M3 — bare private / link-local / this-network IP literals are rejected
+		// at the storage layer (not just the dial layer). loopback exemption is
+		// on in this package's TestMain, so 127.x is intentionally NOT here.
+		{"http://192.168.0.1/x.jpg", false},
+		{"http://10.0.0.1/internal.mp3", false},
+		{"http://169.254.169.254/latest/meta-data/", false},
+		{"http://0.0.0.1/probe", false},
+		// M2 — obfuscated IP literals net.ParseIP rejects but getaddrinfo
+		// accepts; rejected outright regardless of range.
+		{"http://2852039166/latest/meta-data/", false}, // decimal 169.254.169.254
+		{"http://0x7f000001/", false},                  // hex 127.0.0.1
+		{"http://134744072/", false},                   // decimal 8.8.8.8 (public, still rejected)
+		// A canonical public dotted-quad literal stays allowed.
+		{"http://93.184.216.34/img.jpg", true},
 	}
 	for _, c := range cases {
 		t.Run(c.raw, func(t *testing.T) {
 			if got := isSafeArticleURL(c.raw); got != c.want {
 				t.Errorf("isSafeArticleURL(%q) = %v, want %v", c.raw, got, c.want)
+			}
+		})
+	}
+}
+
+func TestObfuscatedIPv4(t *testing.T) {
+	cases := []struct {
+		host string
+		want string // "" => expect nil (not an obfuscated literal)
+	}{
+		{"", ""},
+		{"example.com", ""},         // real DNS name
+		{"1.2.3.4.5", ""},           // too many parts
+		{"1.bad", ""},               // a part fails to parse
+		{"2130706433", "127.0.0.1"}, // 1-part decimal
+		{"0x7f000001", "127.0.0.1"}, // 1-part hex
+		{"4294967296", ""},          // 1-part overflow (>32 bits)
+		{"127.1", "127.0.0.1"},      // 2-part
+		{"256.1", ""},               // 2-part first octet overflow
+		{"1.16777216", ""},          // 2-part second field overflow
+		{"127.0.1", "127.0.0.1"},    // 3-part
+		{"1.256.1", ""},             // 3-part middle overflow
+		{"1.1.65536", ""},           // 3-part last field overflow
+		{"0177.0.0.1", "127.0.0.1"}, // 4-part with octal first octet
+		{"127.0.0.256", ""},         // 4-part octet overflow
+	}
+	for _, c := range cases {
+		t.Run(c.host, func(t *testing.T) {
+			got := obfuscatedIPv4(c.host)
+			if c.want == "" {
+				if got != nil {
+					t.Errorf("obfuscatedIPv4(%q) = %v, want nil", c.host, got)
+				}
+				return
+			}
+			if got == nil || !got.Equal(net.ParseIP(c.want)) {
+				t.Errorf("obfuscatedIPv4(%q) = %v, want %s", c.host, got, c.want)
+			}
+		})
+	}
+}
+
+func TestParseIPv4Part(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   uint64
+		wantOK bool
+	}{
+		{"", 0, false},
+		{"255", 255, true},
+		{"0x7f", 127, true},
+		{"0xZZ", 0, false}, // hex parse error
+		{"0177", 127, true},
+		{"08", 0, false}, // invalid octal digit
+		{"0x", 0, true},  // bare hex prefix → 0
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, ok := parseIPv4Part(c.in)
+			if got != c.want || ok != c.wantOK {
+				t.Errorf("parseIPv4Part(%q) = (%d,%v), want (%d,%v)", c.in, got, ok, c.want, c.wantOK)
 			}
 		})
 	}
@@ -1543,6 +1623,17 @@ func TestCanonicalizeURL(t *testing.T) {
 	bad := "ht\x7ftp://broken"
 	if canonicalizeURL(bad) != bad {
 		t.Errorf("canonicalizeURL should pass through on parse error")
+	}
+	// L2 regression: a ';' in the query must be PRESERVED, not dropped. The old
+	// url.Query().Encode() round-trip silently discarded the whole query on a
+	// ';', collapsing distinct articles to one url_hash.
+	a := canonicalizeURL("https://site.example/view?id=1;ref=rss")
+	b := canonicalizeURL("https://site.example/view?id=2;ref=rss")
+	if a == b {
+		t.Errorf("semicolon-query URLs collapsed to same canonical form: %q", a)
+	}
+	if !strings.Contains(a, "id=1;ref=rss") {
+		t.Errorf("semicolon query dropped during canonicalization: %q", a)
 	}
 }
 
@@ -1642,8 +1733,9 @@ func TestExtractMediaInfo_RejectsBadMIME(t *testing.T) {
 }
 
 func TestSanitizeText_StripsControlAndBidi(t *testing.T) {
-	// Escape sequence used (not literal U+202E) so staticcheck stays happy.
-	in := "Hello\u202eWorld\x01"
+	// Escape sequences used (not the literal codepoints) so staticcheck stays
+	// happy. Includes U+061C (Arabic Letter Mark, L3) alongside U+202E (RLO).
+	in := "He\u061cllo\u202eWorld\x01"
 	out := sanitizeText(in, 0)
 	want := "HelloWorld"
 	if out != want {
@@ -1788,6 +1880,9 @@ func TestIsAcceptableOGImage(t *testing.T) {
 		{"https://10.0.0.1/img.jpg", false},
 		{"https://127.0.0.1/img.jpg", false},
 		{"https://169.254.169.254/img.jpg", false},
+		{"https://cdn.trusted.com@evil.example/x.jpg", false}, // M1 userinfo spoof
+		{"http://2852039166/x.jpg", false},                    // M2 decimal IMDS
+		{"http://0x7f000001/x.jpg", false},                    // M2 hex loopback
 		{"file:///etc/passwd", false},
 		{"javascript:alert(1)", false},
 		{"https://cdn.example.com/\x00img.jpg", false}, // control char

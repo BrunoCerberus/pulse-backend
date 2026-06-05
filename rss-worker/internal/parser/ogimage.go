@@ -3,9 +3,7 @@ package parser
 import (
 	"context"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -94,34 +92,12 @@ func (e *OGImageExtractor) ExtractOGImage(ctx context.Context, articleURL string
 }
 
 // isAcceptableOGImage validates an extracted og:image URL before it lands in
-// the DB and propagates to iOS clients. Rejects:
-//   - control characters or NUL bytes (which can spoof URLs in iOS rendering)
-//   - non-http(s) schemes
-//   - empty host
-//   - IP-literal hosts that fall in forbidden ranges (private, loopback,
-//     link-local 169.254.169.254 cloud-metadata, multicast). Hostname
-//     resolution is deferred to the actual fetch (by iOS / image proxies),
-//     which we can't control from here.
+// the DB and propagates to iOS clients. It applies the SAME guard as every
+// other publisher-supplied URL sink (article link, thumbnail, media) — see
+// isSafeMediaURL: http(s) only, non-empty host, no userinfo, no control /
+// bidi-override runes, the maxURLLen cap, and rejection of forbidden or
+// obfuscated IP-literal hosts. Hostname resolution is still deferred to the
+// actual fetch (by iOS / image proxies), which we can't control from here.
 func isAcceptableOGImage(raw string) bool {
-	if len(raw) > maxURLLen || urlHasUnsafeRune(raw) {
-		return false
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	// If host is an IP literal, reject if it's in a forbidden range.
-	if ip := net.ParseIP(host); ip != nil {
-		if httputil.IsForbiddenIP(ip) {
-			return false
-		}
-	}
-	return true
+	return isSafeMediaURL(raw)
 }
