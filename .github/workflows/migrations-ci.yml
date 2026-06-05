@@ -131,13 +131,13 @@ jobs:
               echo "- No changes under \`supabase/migrations\`, \`supabase/config.toml\`, or \`supabase/tests\` — the apply-from-scratch + lint + invariants suite was skipped (nothing to verify)."
             } >> "$GITHUB_STEP_SUMMARY"
           elif [ "$INVARIANTS_OUTCOME" = "success" ]; then
-            echo "::notice title=Migrations CI::33 migrations applied from scratch · db lint clean · 6 security invariants passed"
+            echo "::notice title=Migrations CI::35 migrations applied from scratch · db lint clean · 11 security invariants passed"
             {
               echo "## Migrations CI ✅"
               echo ""
               echo "- Apply-from-scratch: all migrations (\`supabase db reset --no-seed\`) applied with no SQL error"
               echo "- plpgsql lint: no error-level findings (\`supabase db lint --fail-on error\`)"
-              echo "- Security invariants (6): RLS on articles + fetch_logs · SECURITY DEFINER funcs pin empty search_path · 5 write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap · articles_with_source hides url_hash"
+              echo "- Security invariants (11): RLS on articles + fetch_logs + sources + categories · SECURITY DEFINER funcs pin empty search_path · 7 write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap + bounded projection · articles_with_source hides url_hash · base-table articles column grant hides url_hash/backfill · sources/categories writes revoked · sources operational columns revoked · security_invoker on views"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             tail=""

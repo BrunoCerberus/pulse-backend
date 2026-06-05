@@ -13,9 +13,12 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -454,10 +457,17 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentC
 	return article
 }
 
-// isSafeArticleURL accepts only http/https URLs with a non-empty host, and
-// rejects URLs carrying control or bidi-override codepoints. This is a lexical
-// check; the network-layer SSRF guard runs in httputil.SafeTransport when the
-// URL is actually fetched.
+// isSafeArticleURL accepts only http/https URLs with a non-empty host, no
+// embedded userinfo, no control/bidi-override codepoints, and no forbidden or
+// obfuscated IP-literal host. This is a *storage* guard: unlike the worker's
+// own fetch (protected at the dial layer by httputil.SafeTransport, which
+// re-resolves and rejects forbidden IPs), these URLs are persisted and shipped
+// to iOS clients, which then dereference them. So the same value must be safe
+// to hand a client, not just safe for us to fetch.
+//
+// It is shared by every publisher-supplied URL sink — article link
+// (itemToArticle), thumbnail / RSS-image / media (isSafeMediaURL), and og:image
+// (isAcceptableOGImage) — so all four enforce one consistent policy.
 func isSafeArticleURL(raw string) bool {
 	if urlHasUnsafeRune(raw) {
 		return false
@@ -472,7 +482,119 @@ func isSafeArticleURL(raw string) bool {
 	if u.Host == "" {
 		return false
 	}
+	// Reject embedded userinfo: https://www.reuters.com@evil.example/ parses
+	// with Host=evil.example but renders trusted-looking — a phishing / host
+	// spoof once stored and shown to iOS.
+	if u.User != nil {
+		return false
+	}
+	// Reject IP-literal hosts in forbidden ranges, plus any obfuscated
+	// (decimal / hex / octal) IPv4 literal a client resolver would accept —
+	// a client-side SSRF / internal-network-probe vector once served to iOS.
+	if hostIsForbiddenIPLiteral(u.Hostname()) {
+		return false
+	}
 	return true
+}
+
+// hostIsForbiddenIPLiteral reports whether host (a url.Hostname() result) is an
+// IP literal an SSRF-aware storage guard must refuse. It catches two cases the
+// bare scheme/host lexical check misses:
+//   - a canonical IP literal (dotted-quad IPv4 or IPv6) in a forbidden range
+//     (httputil.IsForbiddenIP); and
+//   - an obfuscated inet_aton-style IPv4 literal (decimal "2852039166", hex
+//     "0x7f000001", octal "0177.0.0.1", short "a.b.c" forms) that net.ParseIP
+//     does NOT recognize but iOS's getaddrinfo will. These are never legitimate
+//     in a publisher URL, so any such literal is rejected outright.
+func hostIsForbiddenIPLiteral(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return httputil.IsForbiddenIP(ip)
+	}
+	return obfuscatedIPv4(host) != nil
+}
+
+// obfuscatedIPv4 decodes host as a legacy inet_aton-style IPv4 literal, or
+// returns nil if host is not one (e.g. a real DNS name, where at least one
+// label fails to parse as a numeric part). net.ParseIP already handles the
+// canonical dotted-quad form, so this only needs to cover the 1–4 part
+// decimal/hex/octal encodings it rejects.
+func obfuscatedIPv4(host string) net.IP {
+	if host == "" {
+		return nil
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return nil
+	}
+	nums := make([]uint64, len(parts))
+	for i, p := range parts {
+		n, ok := parseIPv4Part(p)
+		if !ok {
+			return nil
+		}
+		nums[i] = n
+	}
+	// Accumulate in a uint64 (each term is range-checked first, so the value
+	// never exceeds 32 bits) and split into octets with explicit & 0xFF masks.
+	// Staying in uint64 + masking avoids narrowing conversions that would
+	// otherwise trip gosec G115 (integer-overflow); the masks make each octet
+	// provably in range.
+	var addr uint64
+	switch len(parts) {
+	case 1: // a — whole 32-bit value
+		if nums[0] > 0xFFFFFFFF {
+			return nil
+		}
+		addr = nums[0]
+	case 2: // a.b — a(8) . b(24)
+		if nums[0] > 0xFF || nums[1] > 0xFFFFFF {
+			return nil
+		}
+		addr = nums[0]<<24 | nums[1]
+	case 3: // a.b.c — a(8).b(8).c(16)
+		if nums[0] > 0xFF || nums[1] > 0xFF || nums[2] > 0xFFFF {
+			return nil
+		}
+		addr = nums[0]<<24 | nums[1]<<16 | nums[2]
+	default: // a.b.c.d
+		for _, n := range nums {
+			if n > 0xFF {
+				return nil
+			}
+		}
+		addr = nums[0]<<24 | nums[1]<<16 | nums[2]<<8 | nums[3]
+	}
+	return net.IPv4(
+		byte((addr>>24)&0xFF),
+		byte((addr>>16)&0xFF),
+		byte((addr>>8)&0xFF),
+		byte(addr&0xFF),
+	)
+}
+
+// parseIPv4Part parses one component of an inet_aton-style IPv4 literal,
+// honoring the C base prefixes inet_aton accepts: "0x"/"0X" → hex, a leading
+// "0" → octal, otherwise decimal. Returns (value, true) on success.
+func parseIPv4Part(p string) (uint64, bool) {
+	if p == "" {
+		return 0, false
+	}
+	base := 10
+	s := p
+	switch {
+	case len(s) >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'):
+		base, s = 16, s[2:]
+	case len(s) >= 2 && s[0] == '0':
+		base, s = 8, s[1:]
+	}
+	if s == "" { // bare "0x" / "0X" — treat the value as zero
+		return 0, true
+	}
+	n, err := strconv.ParseUint(s, base, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // isSafeMediaURL is isSafeArticleURL plus a length cap. Thumbnail / enclosure
@@ -513,9 +635,22 @@ func canonicalizeURL(raw string) string {
 		u.Host = strings.ToLower(u.Host)
 	}
 	if u.RawQuery != "" {
-		u.RawQuery = u.Query().Encode() // Encode() sorts keys
+		u.RawQuery = canonicalizeRawQuery(u.RawQuery)
 	}
 	return u.String()
+}
+
+// canonicalizeRawQuery sorts the &-separated parameters of a raw query string
+// so semantically-equivalent URLs hash identically — WITHOUT the lossy
+// url.Values round-trip. url.Values.Encode (via url.Query) silently DROPS the
+// entire query when it contains a ';' (Go 1.17+ rejects ';' as a separator),
+// which collapsed distinct articles like `?id=1;ref=x` and `?id=2;ref=x` to
+// one url_hash and silently suppressed all but the first. Sorting the raw
+// segments preserves every byte (including ';') while keeping dedup canonical.
+func canonicalizeRawQuery(raw string) string {
+	params := strings.Split(raw, "&")
+	sort.Strings(params)
+	return strings.Join(params, "&")
 }
 
 // parsePublishedDate extracts the publication date from a feed item,
@@ -759,7 +894,8 @@ func isControlOrBidi(r rune) bool {
 	switch r {
 	case '\t', '\n':
 		return false
-	case 0x200E, 0x200F, // LRM, RLM
+	case 0x061C, // ALM (Arabic Letter Mark) — same implicit-mark family as LRM/RLM
+		0x200E, 0x200F, // LRM, RLM
 		0x202A, 0x202B, 0x202C, 0x202D, 0x202E, // bidi embedding/override
 		0x2066, 0x2067, 0x2068, 0x2069: // bidi isolate
 		return true

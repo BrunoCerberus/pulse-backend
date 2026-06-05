@@ -35,17 +35,30 @@ import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import {
   buildCacheKey,
   buildProxyUrl,
+  isBooleanFilter,
+  isSlugFilter,
+  isUuidFilter,
   type ProxyConfig,
   tooLong,
 } from "../_shared/supabase-proxy.ts";
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
+// This endpoint runs upstream as service_role (see privilegedHeaders), so
+// validating the filter values keeps a malformed id/slug from costing a
+// service-role DB round-trip and from minting a unique cache key. Safe to
+// validate strictly: api-source-health is called by the watchdog / dashboards,
+// not the iOS app.
 const config: ProxyConfig = {
   table: "source_health",
   allowedParams: ["id", "slug", "is_active", "order"],
   defaultSelect:
     "id,name,slug,is_active,consecutive_failures,circuit_open_until,circuit_open,last_fetched_at,most_recent_article_at,articles_last_24h",
   allowedOrderColumns: ["name", "slug", "consecutive_failures", "last_fetched_at"],
+  paramValidators: {
+    id: isUuidFilter,
+    slug: isSlugFilter,
+    is_active: isBooleanFilter,
+  },
 };
 
 const CACHE_TTL_MS = 60 * 1000;
@@ -180,7 +193,9 @@ async function fetchSourceHealth(
   return { status: response.status, data };
 }
 
-async function buildPayload(req: Request): Promise<{ status: number; body: string }> {
+async function buildPayload(
+  req: Request,
+): Promise<{ status: number; body: string; cacheable: boolean }> {
   const [result, database] = await Promise.all([
     fetchSourceHealth(req),
     fetchDatabaseSize(),
@@ -189,6 +204,7 @@ async function buildPayload(req: Request): Promise<{ status: number; body: strin
     return {
       status: 500,
       body: JSON.stringify({ error: "Service configuration missing" }),
+      cacheable: false,
     };
   }
   if (result.status !== 200) {
@@ -200,6 +216,7 @@ async function buildPayload(req: Request): Promise<{ status: number; body: strin
     return {
       status: result.status,
       body: JSON.stringify({ error: "upstream error" }),
+      cacheable: false,
     };
   }
   const rows: SourceHealthRow[] = JSON.parse(result.data);
@@ -209,7 +226,10 @@ async function buildPayload(req: Request): Promise<{ status: number; body: strin
     summary: summarize(rows),
     sources: rows,
   };
-  return { status: 200, body: JSON.stringify(payload) };
+  // Don't cache an empty fleet view: a caller rotating a valid-but-nonexistent
+  // id/slug would otherwise mint a unique cache key per request and evict the
+  // hot (unfiltered) watchdog entry from the bounded LRU.
+  return { status: 200, body: JSON.stringify(payload), cacheable: rows.length > 0 };
 }
 
 export async function handler(req: Request): Promise<Response> {
@@ -239,8 +259,8 @@ export async function handler(req: Request): Promise<Response> {
         },
       });
     }
-    const { status, body } = await buildPayload(req);
-    if (status === 200) {
+    const { status, body, cacheable } = await buildPayload(req);
+    if (status === 200 && cacheable) {
       setCached(cacheKey, body, CACHE_TTL_MS);
     }
     return new Response(body, {

@@ -12,6 +12,16 @@ import (
 	"github.com/pulsefeed/rss-worker/internal/logger"
 )
 
+// maxReadabilityElems caps the number of element tags go-readability will score
+// (it counts elements via GetElementsByTagName(doc, "*"), excluding text/comment
+// nodes). The 5 MB body LimitReader bounds memory, but readability's scoring
+// passes are super-linear in element count, so a deeply-nested ~hundreds-of-KB
+// page could pin a content worker for ~100s (no OOM, but it burns the backfill
+// budget and Actions minutes). 100K elements is far above any real article yet
+// bounds the pathological case; readability returns an error past this, handled
+// below.
+const maxReadabilityElems = 100_000
+
 // ContentExtractor fetches and extracts article content from web pages
 type ContentExtractor struct {
 	client *http.Client
@@ -61,8 +71,11 @@ func (e *ContentExtractor) ExtractContent(ctx context.Context, articleURL string
 	// Limit response body to 5MB to prevent OOM from oversized pages
 	limitedBody := io.LimitReader(resp.Body, 5*1024*1024)
 
-	// Use go-readability to extract the article content
-	article, err := readability.FromReader(limitedBody, parsedURL)
+	// Use go-readability to extract the article content, bounding the node
+	// count so a pathological DOM can't pin the worker (see maxReadabilityElems).
+	rp := readability.NewParser()
+	rp.MaxElemsToParse = maxReadabilityElems
+	article, err := rp.Parse(limitedBody, parsedURL)
 	if err != nil {
 		_, _ = io.Copy(io.Discard, limitedBody) // drain remaining body to enable connection reuse
 		logger.Debugf("[CONTENT] Readability failed for %s: %v", articleURL, err)

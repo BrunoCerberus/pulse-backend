@@ -6,7 +6,7 @@
 -- HOW IT RUNS (see .github/workflows/migrations-ci.yml):
 --   psql "<local-stack-conn>" -v ON_ERROR_STOP=1 -f supabase/tests/security_invariants.sql
 --
--- Run AFTER `supabase db reset --no-seed` has applied migrations 001..033 from
+-- Run AFTER `supabase db reset --no-seed` has applied migrations 001..035 from
 -- scratch against the Supabase local stack. The local stack provisions the
 -- Supabase-managed roles (anon, authenticated, service_role, authenticator) and
 -- the `request.jwt.claims` request GUC that these migrations reference; a bare
@@ -29,36 +29,35 @@
 
 
 -- -----------------------------------------------------------------------------
--- INVARIANT 1: RLS is enabled on public.articles AND public.fetch_logs.
+-- INVARIANT 1: RLS is enabled on every anon-reachable base table —
+--              public.articles, public.fetch_logs, public.sources,
+--              public.categories.
 -- -----------------------------------------------------------------------------
--- Guards migration 001 (ALTER TABLE ... ENABLE ROW LEVEL SECURITY at lines
--- 152-153) and the defence-in-depth posture reinforced by 005 (drops the
--- over-broad write policies) and 027 (column-level grants + fetch_logs REVOKE).
--- We check the catalog flag pg_class.relrowsecurity directly so the assertion
--- is independent of which policies exist.
+-- Guards migration 001 (ALTER TABLE ... ENABLE ROW LEVEL SECURITY) and the
+-- defence-in-depth posture reinforced by 005 (drops the over-broad write
+-- policies), 027 (column-level grants + fetch_logs REVOKE), and 035 (the
+-- sources/categories write REVOKE — whose backstop only matters while RLS is
+-- also on). We check the catalog flag pg_class.relrowsecurity directly so the
+-- assertion is independent of which policies exist. sources/categories are
+-- included because they are anon-readable and an RLS-disable regression there
+-- (dashboard toggle / table recreate) would re-expose writes that 035 only
+-- defends at the GRANT layer.
 DO $$
+DECLARE
+    tbl TEXT;
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public'
-          AND c.relname = 'articles'
-          AND c.relrowsecurity = true
-    ) THEN
-        RAISE EXCEPTION 'INVARIANT 1 FAILED: RLS is not enabled on public.articles (migration 001/005/027)';
-    END IF;
-
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public'
-          AND c.relname = 'fetch_logs'
-          AND c.relrowsecurity = true
-    ) THEN
-        RAISE EXCEPTION 'INVARIANT 1 FAILED: RLS is not enabled on public.fetch_logs (migration 001/027)';
-    END IF;
+    FOREACH tbl IN ARRAY ARRAY['articles', 'fetch_logs', 'sources', 'categories'] LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = tbl
+              AND c.relrowsecurity = true
+        ) THEN
+            RAISE EXCEPTION 'INVARIANT 1 FAILED: RLS is not enabled on public.% (migration 001/005/027/035)', tbl;
+        END IF;
+    END LOOP;
 END $$;
 
 
@@ -105,14 +104,15 @@ END $$;
 
 
 -- -----------------------------------------------------------------------------
--- INVARIANT 3: The five service-role write functions exist and are SECURITY
+-- INVARIANT 3: The service-role write functions exist and are SECURITY
 --              DEFINER.
 -- -----------------------------------------------------------------------------
--- Guards migration 027 (which introduced/rebuilt all five with an in-function
--- caller check) and migration 033 (which fixed that check). We match by
--- function name in schema public and require prosecdef = true. We do not
--- over-constrain on argument types — name + SECURITY DEFINER is the invariant
--- the security model depends on.
+-- Guards migration 027 (which introduced/rebuilt the original five with an
+-- in-function caller check), migration 033 (which fixed that check), and
+-- migrations 031/032 (the prune_old_* pair, SECURITY DEFINER from birth with
+-- the working JWT-claim gate). We match by function name in schema public and
+-- require prosecdef = true. We do not over-constrain on argument types — name +
+-- SECURITY DEFINER is the invariant the security model depends on.
 DO $$
 DECLARE
     fn TEXT;
@@ -121,7 +121,9 @@ DECLARE
         'batch_update_article_images',
         'batch_update_article_content',
         'bump_backfill_attempts',
-        'batch_update_source_fetch_state'
+        'batch_update_source_fetch_state',
+        'prune_old_image_urls',
+        'prune_old_content'
     ];
 BEGIN
     FOREACH fn IN ARRAY expected LOOP
@@ -172,7 +174,9 @@ DECLARE
         'batch_update_article_images',
         'batch_update_article_content',
         'bump_backfill_attempts',
-        'batch_update_source_fetch_state'
+        'batch_update_source_fetch_state',
+        'prune_old_image_urls',
+        'prune_old_content'
     ];
 BEGIN
     FOREACH fn IN ARRAY expected LOOP
@@ -311,6 +315,147 @@ BEGIN
                 RAISE EXCEPTION 'INVARIANT 7 FAILED: % lost SELECT on public column public.sources.% (migration 034 over-revoked)', r, col;
             END IF;
         END LOOP;
+    END LOOP;
+END $$;
+
+
+-- -----------------------------------------------------------------------------
+-- INVARIANT 8: anon/authenticated cannot read url_hash or backfill-state
+--              columns of the BASE table public.articles.
+-- -----------------------------------------------------------------------------
+-- Guards migration 027's H6 column-level grant (REVOKE SELECT ON articles +
+-- GRANT SELECT (safe cols)). INVARIANT 6 only checks the VIEW's column list,
+-- but anon reaches the base table directly via PostgREST
+-- (GET /rest/v1/articles?select=url_hash), so the load-bearing control is the
+-- base-table column grant. A stray `GRANT SELECT ON public.articles TO anon`
+-- (Supabase re-grants on table recreate; 024 does DROP/ADD COLUMN on articles)
+-- would re-expose these while INVARIANT 6 stayed green. has_column_privilege
+-- reads the catalog, so no role switching is needed (see INVARIANT 4's note).
+DO $$
+DECLARE
+    r   TEXT;
+    col TEXT;
+    forbidden TEXT[] := ARRAY[
+        'url_hash',
+        'image_backfill_attempts', 'image_backfill_last_attempt_at',
+        'content_backfill_attempts', 'content_backfill_last_attempt_at'
+    ];
+    public_sample TEXT[] := ARRAY['id', 'title', 'url'];
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        FOREACH col IN ARRAY forbidden LOOP
+            IF has_column_privilege(r, 'public.articles', col, 'SELECT') THEN
+                RAISE EXCEPTION 'INVARIANT 8 FAILED: % can SELECT public.articles.% (migration 027 H6 column-grant regressed)', r, col;
+            END IF;
+        END LOOP;
+        FOREACH col IN ARRAY public_sample LOOP
+            IF NOT has_column_privilege(r, 'public.articles', col, 'SELECT') THEN
+                RAISE EXCEPTION 'INVARIANT 8 FAILED: % lost SELECT on public column public.articles.% (migration 027 over-revoked)', r, col;
+            END IF;
+        END LOOP;
+    END LOOP;
+END $$;
+
+
+-- -----------------------------------------------------------------------------
+-- INVARIANT 9: anon/authenticated have NO INSERT/UPDATE/DELETE on
+--              public.sources or public.categories.
+-- -----------------------------------------------------------------------------
+-- Guards migration 035 (the defence-in-depth write REVOKE). Writes are also
+-- blocked by RLS (INVARIANT 1), but 035 makes the GRANT boundary block them
+-- too, so an RLS-disable regression can't silently re-open writes. The worker
+-- writes sources only via the service_role RPC, so this REVOKE breaks nothing.
+DO $$
+DECLARE
+    r    TEXT;
+    tbl  TEXT;
+    priv TEXT;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        FOREACH tbl IN ARRAY ARRAY['public.sources', 'public.categories'] LOOP
+            FOREACH priv IN ARRAY ARRAY['INSERT', 'UPDATE', 'DELETE'] LOOP
+                IF has_table_privilege(r, tbl, priv) THEN
+                    RAISE EXCEPTION 'INVARIANT 9 FAILED: % has % on % (migration 035 write-REVOKE regressed)', r, priv, tbl;
+                END IF;
+            END LOOP;
+        END LOOP;
+    END LOOP;
+END $$;
+
+
+-- -----------------------------------------------------------------------------
+-- INVARIANT 10: search_articles is SECURITY DEFINER and keeps its bounded,
+--               explicit column projection (no SETOF articles).
+-- -----------------------------------------------------------------------------
+-- Guards migrations 027/028. search_articles is SECURITY DEFINER and GRANTed to
+-- anon, so it bypasses the column-level grants on articles. The original C1 bug
+-- was `RETURNS SETOF public.articles`, which leaked url_hash / search_vector /
+-- backfill state to anon. The current form is an explicit `RETURNS TABLE(...)`
+-- with only the safe columns. A regression back to SETOF (or one that adds a
+-- sensitive column to the TABLE list) would re-open the leak while every other
+-- invariant stayed green. pg_get_function_result renders the RETURNS clause:
+-- 'TABLE(...)' for the explicit projection, 'SETOF articles' for the leak.
+DO $$
+DECLARE
+    fn_oid OID;
+    result TEXT;
+BEGIN
+    SELECT p.oid INTO fn_oid
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'search_articles'
+    ORDER BY p.oid
+    LIMIT 1;
+
+    IF fn_oid IS NULL THEN
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: public.search_articles not found (migration 027/028)';
+    END IF;
+
+    IF NOT (SELECT prosecdef FROM pg_catalog.pg_proc WHERE oid = fn_oid) THEN
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: public.search_articles is not SECURITY DEFINER (migration 027)';
+    END IF;
+
+    result := pg_catalog.pg_get_function_result(fn_oid);
+    IF result NOT LIKE 'TABLE(%' THEN
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles no longer returns an explicit TABLE projection (regressed to %?) — possible SETOF leak (migration 027/028 C1)', result;
+    END IF;
+    IF result LIKE '%url_hash%'
+       OR result LIKE '%search_vector%'
+       OR result LIKE '%backfill%' THEN
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles projection leaks a sensitive column: %', result;
+    END IF;
+END $$;
+
+
+-- -----------------------------------------------------------------------------
+-- INVARIANT 11: the security_invoker views run with security_invoker = on.
+-- -----------------------------------------------------------------------------
+-- Guards migrations 005/027 (articles_with_source) and 020/027 (source_health).
+-- security_invoker = on makes a view honor the CALLER's RLS + column grants
+-- rather than the view owner's. The flag has historically been lost on a view
+-- recreate (e.g. 004 created articles_with_source without it; 005 re-set it).
+-- If it were dropped, the view would run as owner and bypass anon's column
+-- grants — re-leaking whatever the view projects. reloptions stores boolean
+-- options as 'name=on' or 'name=true' depending on how they were written; we
+-- accept either.
+DO $$
+DECLARE
+    v TEXT;
+    opts TEXT[];
+BEGIN
+    FOREACH v IN ARRAY ARRAY['articles_with_source', 'source_health'] LOOP
+        SELECT c.reloptions INTO opts
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = v;
+
+        IF opts IS NULL
+           OR NOT (
+               opts @> ARRAY['security_invoker=on']
+               OR opts @> ARRAY['security_invoker=true']
+           ) THEN
+            RAISE EXCEPTION 'INVARIANT 11 FAILED: view public.% is not security_invoker=on (reloptions=%) (migration 005/020/027)', v, opts;
+        END IF;
     END LOOP;
 END $$;
 

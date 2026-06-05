@@ -46,6 +46,18 @@ export interface ProxyConfig {
    */
   allowedOrderColumns?: string[];
 
+  /**
+   * Optional per-param value validators keyed by param name. When a param has
+   * a validator and the client's value fails it, the value is DROPPED (same
+   * as an invalid `order`) — it never reaches the upstream query or the cache
+   * key. Values are full PostgREST filter expressions (e.g. `eq.en`,
+   * `in.(a,b)`), so validators check the `<operator>.<value>` shape against
+   * the column's domain (see isUuidFilter / isSlugFilter / isBooleanFilter).
+   * Bounds the cache-key cardinality (and, for the service-role
+   * api-source-health endpoint, the malformed-value DB round-trips).
+   */
+  paramValidators?: Record<string, (value: string) => boolean>;
+
   /** Per-value length cap. Defaults to 256. */
   maxValueLength?: number;
 }
@@ -95,6 +107,58 @@ function isValidOrder(value: string, allowedColumns?: string[]): boolean {
   return true;
 }
 
+// --- Filter-value validators (for ProxyConfig.paramValidators) ----------------
+// PostgREST filter values arrive as "<operator>.<value>" (e.g. "eq.en",
+// "in.(en,pt)"). These helpers strip the operator and validate the value
+// domain so malformed / high-cardinality junk is dropped before it can reach
+// the upstream query or inflate the bounded in-memory cache key.
+
+const FILTER_OP = /^(eq|neq|gt|gte|lt|lte|like|ilike|in|is|cs|cd)\.(.*)$/is;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
+
+/** Returns the value portion of a PostgREST filter, or the raw string if it
+ * carries no recognized operator prefix. */
+function filterValueOf(raw: string): string {
+  const m = FILTER_OP.exec(raw);
+  return m ? m[2] : raw;
+}
+
+/** Applies `ok` to each member of an `in.(a,b,c)` list, or to a single value. */
+function everyFilterValue(raw: string, ok: (v: string) => boolean): boolean {
+  const val = filterValueOf(raw);
+  const inner = val.startsWith("(") && val.endsWith(")") ? val.slice(1, -1) : val;
+  const items = inner.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return items.length > 0 && items.every(ok);
+}
+
+/** Accepts only canonical UUID value(s) (e.g. `eq.<uuid>`, `in.(<uuid>,<uuid>)`). */
+export function isUuidFilter(raw: string): boolean {
+  return everyFilterValue(raw, (v) => UUID_RE.test(v));
+}
+
+/** Accepts only kebab-case slug value(s) up to 128 chars. */
+export function isSlugFilter(raw: string): boolean {
+  return everyFilterValue(raw, (v) => v.length <= 128 && SLUG_RE.test(v));
+}
+
+/** Accepts only boolean value(s): `eq.true` / `is.false` / `true` / `false`. */
+export function isBooleanFilter(raw: string): boolean {
+  return everyFilterValue(raw, (v) => v === "true" || v === "false");
+}
+
+/**
+ * Reports whether an upstream JSON body is worth caching. Empty result sets
+ * ("[]") are NOT cached: an attacker rotating non-matching filter values
+ * (e.g. `?slug=eq.nonexistent-N`) would otherwise mint a unique cache key per
+ * request and evict hot legitimate entries from the bounded in-memory LRU.
+ * Zero-row queries are cheap to re-run; hot entries are not.
+ */
+export function isCacheableResult(data: string): boolean {
+  const t = data.trim();
+  return t !== "" && t !== "[]";
+}
+
 /**
  * Builds the upstream Supabase REST URL with sanitized, sorted params so
  * the same logical request always produces an identical URL (good for
@@ -140,6 +204,11 @@ export function buildProxyUrl(req: Request, config: ProxyConfig): string {
       accepted.push([param, raw]);
       continue;
     }
+
+    // Per-param value-domain validation. A failing value is dropped (like an
+    // invalid `order`) so it never reaches the upstream query or cache key.
+    const validate = config.paramValidators?.[param];
+    if (validate && !validate(raw)) continue;
 
     accepted.push([param, raw]);
   }
