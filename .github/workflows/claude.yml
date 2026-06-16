@@ -74,7 +74,7 @@ jobs:
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          claude_args: '--model claude-opus-4-8[1m]'
+          claude_args: '--model claude-sonnet-4-6'
 
       # The action's substantive output is the comment/review it posts; this is
       # just a run-completion marker. always() so a failed run is visible too.
