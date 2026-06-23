@@ -49,8 +49,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments?per_page=100")
           ids=$(echo "$resp" | jq -r '.[] | select(.user.login == "github-actions[bot]" and (.body != null) and (.body | test("claude-code-review"))) | .id')
           for rid in $ids; do
-            curl -s -X DELETE \
-              "https://api.github.com/repos/${{ github.repository }}/pulls/comments/$rid" > /dev/null 2>&1 && inline_count=$((inline_count + 1))
+            gh api "repos/${{ github.repository }}/pulls/comments/$rid" --method DELETE > /dev/null 2>&1 && inline_count=$((inline_count + 1))
           done
 
           # Delete body comments from previous runs (issues/comments endpoint).
@@ -59,8 +58,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments?per_page=100")
           ids=$(echo "$resp" | jq -r '.[] | select(.user.login == "github-actions[bot]" and (.body != null) and (.body | test("Claude Code Review"))) | .id')
           for cid in $ids; do
-            curl -s -X DELETE \
-              "https://api.github.com/repos/${{ github.repository }}/issues/comments/$cid" > /dev/null 2>&1 && body_count=$((body_count + 1))
+            gh api "repos/${{ github.repository }}/issues/comments/$cid" --method DELETE > /dev/null 2>&1 && body_count=$((body_count + 1))
           done
 
           if [ $((inline_count + body_count)) -gt 0 ]; then
@@ -105,4 +103,4 @@ jobs:
             Approvals: if no significant issues, run `gh pr review --approve`.
             If significant issues, run `gh pr review --request-changes`.
             Never leave review verdicts only as prose.
-          claude_args: '--model claude-sonnet-4-6 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api:*)"'
+          claude_args: '--model claude-sonnet-4-6 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api repos/*/pulls/comments/*:*),Bash(gh api repos/*/issues/comments/*:*)"'
