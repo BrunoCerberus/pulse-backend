@@ -7,6 +7,14 @@ function setupEnv() {
   Deno.env.set("SUPABASE_ANON_KEY", "test-anon-key");
 }
 
+function makeMockFetch(
+  data: string,
+  status = 200,
+) {
+  return (_input: string | URL | Request, _init?: RequestInit) =>
+    Promise.resolve(new Response(data, { status }));
+}
+
 Deno.test("GET success with 1h cache", async () => {
   clearCache();
   const originalUrl = Deno.env.get("SUPABASE_URL");
@@ -250,4 +258,110 @@ Deno.test("oversized request URI returns 414", async () => {
   const req = new Request(`http://localhost/api-sources?slug=${big}`);
   const res = await handler(req);
   assertEquals(res.status, 414);
+});
+
+Deno.test("invalid language filter value is dropped", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response('[{"id":"x"}]', { status: 200 }));
+    };
+    await handler(
+      new Request("http://localhost/api-sources?language=eq.english"),
+    );
+    assertEquals(
+      new URL(capturedUrl).searchParams.has("language"),
+      false,
+      "malformed language must be dropped",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("valid language filter value is forwarded", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response('[{"id":"x"}]', { status: 200 }));
+    };
+    await handler(
+      new Request("http://localhost/api-sources?language=eq.pt"),
+    );
+    assertEquals(
+      new URL(capturedUrl).searchParams.get("language"),
+      "eq.pt",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("non-200 upstream masks error body", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    globalThis.fetch = makeMockFetch(
+      '{"message":"column \\"secret\\" does not exist"}',
+      400,
+    );
+    const req = new Request("http://localhost/api-sources");
+    const res = await handler(req);
+    assertEquals(res.status, 400);
+    const body = await res.json();
+    assertEquals(body.error, "upstream error");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
+});
+
+Deno.test("upstream 502 returns status, not 200", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    // Legacy behavior: old code always returned status 200 even on upstream errors.
+    // Verify the fix: actual upstream status is propagated.
+    globalThis.fetch = makeMockFetch("Service Unavailable", 502);
+    const req = new Request("http://localhost/api-sources");
+    const res = await handler(req);
+    assertEquals(res.status, 502);
+    const body = await res.json();
+    assertEquals(body.error, "upstream error");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    else Deno.env.delete("SUPABASE_URL");
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    else Deno.env.delete("SUPABASE_ANON_KEY");
+  }
 });

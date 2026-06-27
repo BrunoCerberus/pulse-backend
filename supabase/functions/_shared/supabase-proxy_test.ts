@@ -10,6 +10,7 @@ import {
   fetchFromSupabase,
   isBooleanFilter,
   isCacheableResult,
+  isLanguageFilter,
   isSlugFilter,
   isUuidFilter,
   MAX_QUERY_STRING_LEN,
@@ -510,6 +511,42 @@ Deno.test("paramValidators drop invalid values from the upstream URL", () => {
     );
     assertStringIncludes(ok, "id=eq.11111111-1111-1111-1111-111111111111");
     assertStringIncludes(ok, "is_active=eq.true");
+  } finally {
+    if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
+Deno.test("isLanguageFilter accepts only ISO 639-1 code(s)", () => {
+  assert(isLanguageFilter("eq.en"));
+  assert(isLanguageFilter("eq.pt"));
+  assert(isLanguageFilter("in.(en,pt,es)"));
+  assert(!isLanguageFilter("eq.english")); // full name not allowed
+  assert(!isLanguageFilter("eq.en-US")); // region suffix rejected
+  assert(!isLanguageFilter("eq.")); // empty value
+});
+
+Deno.test("paramValidators drop invalid language from the upstream URL", () => {
+  const cfg: ProxyConfig = {
+    table: "articles",
+    allowedParams: ["language"],
+    defaultSelect: "id,title",
+    paramValidators: { language: isLanguageFilter },
+  };
+  const prevUrl = Deno.env.get("SUPABASE_URL");
+  Deno.env.set("SUPABASE_URL", "https://t.supabase.co");
+  try {
+    const url = buildProxyUrl(
+      new Request("http://localhost/x?language=eq.english"),
+      cfg,
+    );
+    assert(!url.includes("language="), `invalid language should be dropped: ${url}`);
+
+    const ok = buildProxyUrl(
+      new Request("http://localhost/x?language=eq.en"),
+      cfg,
+    );
+    assertStringIncludes(ok, "language=eq.en");
   } finally {
     if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
     else Deno.env.delete("SUPABASE_URL");

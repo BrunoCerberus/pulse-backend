@@ -260,3 +260,68 @@ Deno.test("empty limit value falls back to defaultLimit", async () => {
     tearDownEnv(originalUrl, originalKey);
   }
 });
+
+Deno.test("invalid language filter value is dropped", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    const req = new Request("http://localhost/api-articles?language=eq.english");
+    await handler(req);
+    assertEquals(
+      new URL(capturedUrl).searchParams.has("language"),
+      false,
+      "malformed language must be dropped",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("valid language filter value is forwarded", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    const req = new Request("http://localhost/api-articles?language=eq.en");
+    await handler(req);
+    assertEquals(
+      new URL(capturedUrl).searchParams.get("language"),
+      "eq.en",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("non-200 upstream masks PostgREST error body", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    globalThis.fetch = makeMockFetch('{"message":"column "foo" does not exist"}', 400);
+    const req = new Request("http://localhost/api-articles");
+    const res = await handler(req);
+    assertEquals(res.status, 400);
+    const body = await res.json();
+    assertEquals(body.error, "upstream error");
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});

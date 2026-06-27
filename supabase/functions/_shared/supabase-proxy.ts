@@ -116,6 +116,7 @@ function isValidOrder(value: string, allowedColumns?: string[]): boolean {
 const FILTER_OP = /^(eq|neq|gt|gte|lt|lte|like|ilike|in|is|cs|cd)\.(.*)$/is;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
+const ISO6391_RE = /^[a-z]{2}$/;
 
 /** Returns the value portion of a PostgREST filter, or the raw string if it
  * carries no recognized operator prefix. */
@@ -145,6 +146,11 @@ export function isSlugFilter(raw: string): boolean {
 /** Accepts only boolean value(s): `eq.true` / `is.false` / `true` / `false`. */
 export function isBooleanFilter(raw: string): boolean {
   return everyFilterValue(raw, (v) => v === "true" || v === "false");
+}
+
+/** Accepts only ISO 639-1 language code(s): `eq.en` / `in.(en,pt)` etc. */
+export function isLanguageFilter(raw: string): boolean {
+  return everyFilterValue(raw, (v) => ISO6391_RE.test(v));
 }
 
 /**
