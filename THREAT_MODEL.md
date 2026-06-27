@@ -282,21 +282,21 @@ rather than line numbers so this stays accurate as code moves.
   path in `rss-worker/` (asserted by the conformance workflows).
 - **The Edge Functions are a *narrowing* proxy over a directly-reachable anon
   PostgREST surface** (the anon key is public). They can only reduce surface
-  (forced `select`, length caps, order allow-list, limit cap), never widen it —
-  so PostgREST operator-injection via forwarded params (`id=not.is.null`,
-  `language=ilike.*`) is harmless **today** because every filterable column is
-  already anon-`SELECT`able directly. **If this ever changes** — PostgREST locked
-  behind the Edge layer, or anon column-grants tightened so the proxy becomes the
-  *only* path to some data — `buildProxyUrl` must validate filter *values* (not
-  just length), or operator-injection becomes a real disclosure/oracle vector.
-  `ProxyConfig.paramValidators` exists for exactly this: the one privileged
-  endpoint, `api-source-health` (service-role over the anon-revoked
-  `source_health` view), already validates its `id`/`slug`/`is_active` values so
-  a malformed value is dropped before the service-role DB round-trip; it returns
-  a **generic** error body (never the raw upstream PostgREST error) and does not
-  cache empty result sets (so a rotated non-matching filter can't thrash the
-  bounded in-memory cache). The memory-cached public endpoints likewise skip
-  caching empty results (`isCacheableResult`).
+   (forced `select`, length caps, order allow-list, limit cap), never widen it —
+   so PostgREST operator-injection via forwarded params (`id=not.is.null`,
+   `language=ilike.*`) is harmless **today** because every filterable column is
+   already anon-`SELECT`able directly. **If this ever changes** — PostgREST locked
+   behind the Edge layer, or anon column-grants tightened so the proxy becomes the
+   *only* path to some data — `buildProxyUrl` must validate filter *values* (not
+   just length), or operator-injection becomes a real disclosure/oracle vector.
+   `ProxyConfig.paramValidators` exists for exactly this: endpoints validate their
+   filter values so a malformed value is dropped before the upstream DB round-trip.
+   All proxy endpoints return a **generic** error body (never the raw upstream
+   PostgREST error) — `api-source-health` validates its `id`/`slug`/`is_active`,
+   while the memory-cached public endpoints (`api-sources`) and non-cached `api-articles`
+   validate UUIDs, booleans, slugs, and ISO 639-1 language codes. Empty result sets
+   are not cached (`isCacheableResult`), so a rotated non-matching filter can't thrash
+   the bounded in-memory cache.
 
 ### Residual risks (accepted)
 

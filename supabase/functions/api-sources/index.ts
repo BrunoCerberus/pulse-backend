@@ -29,6 +29,7 @@ import {
   fetchFromSupabase,
   isBooleanFilter,
   isCacheableResult,
+  isLanguageFilter,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -36,7 +37,7 @@ import {
 import { getCached, setCached } from "../_shared/memory-cache.ts";
 
 // Validators are scoped to params whose value domain is unambiguous (UUID,
-// boolean). `slug` / `language` are intentionally left unvalidated so a
+// boolean, ISO 639-1 language). `slug` is intentionally left unvalidated so a
 // publisher-defined slug can never be silently dropped; junk-value cache
 // thrash on those is already neutralized by isCacheableResult (empty result
 // sets aren't cached) below.
@@ -49,6 +50,7 @@ const config: ProxyConfig = {
     id: isUuidFilter,
     category_id: isUuidFilter,
     is_active: isBooleanFilter,
+    language: isLanguageFilter,
   },
 };
 
@@ -71,18 +73,28 @@ export async function handler(req: Request): Promise<Response> {
   try {
     // Canonical cache key — junk/empty/oversized params never inflate cache.
     const cacheKey = buildCacheKey("sources", req, config);
-    const cached = getCached(cacheKey);
 
-    const data = cached ?? (await (async () => {
+    let data: string;
+    let status = 200;
+
+    const cached = getCached(cacheKey);
+    if (cached !== null) {
+      data = cached;
+    } else {
       const result = await fetchFromSupabase(req, config);
+      status = result.status;
       if (result.status === 200 && isCacheableResult(result.data)) {
-        setCached(cacheKey, result.data, CACHE_TTL_MS);
+        data = result.data;
+        setCached(cacheKey, data, CACHE_TTL_MS);
+      } else {
+        // Mask any non-200 upstream response (PostgREST errors, gateway HTML)
+        // with a generic JSON body. Only cache successful, non-empty results.
+        data = result.status === 200 ? result.data : JSON.stringify({ error: "upstream error" });
       }
-      return result.data;
-    })());
+    }
 
     return new Response(data, {
-      status: 200,
+      status,
       headers: {
         ...corsHeaders,
         ...cacheHeaders(CacheDurations.SOURCES),

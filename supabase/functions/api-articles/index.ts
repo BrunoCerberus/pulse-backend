@@ -29,7 +29,12 @@
 import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import { CacheDurations, cacheHeaders } from "../_shared/cache.ts";
 import { checkConditionalRequest, generateETag } from "../_shared/etag.ts";
-import { fetchFromSupabase, type ProxyConfig, tooLong } from "../_shared/supabase-proxy.ts";
+import {
+  fetchFromSupabase,
+  isLanguageFilter,
+  type ProxyConfig,
+  tooLong,
+} from "../_shared/supabase-proxy.ts";
 
 const config: ProxyConfig = {
   table: "articles_with_source",
@@ -49,6 +54,9 @@ const config: ProxyConfig = {
   defaultLimit: 100,
   maxLimit: 100,
   allowedOrderColumns: ["published_at"],
+  paramValidators: {
+    language: isLanguageFilter,
+  },
 };
 
 export async function handler(req: Request): Promise<Response> {
@@ -68,13 +76,18 @@ export async function handler(req: Request): Promise<Response> {
   try {
     const result = await fetchFromSupabase(req, config);
 
-    // ETag/304 only on success — never cache error bodies (which would
-    // pin clients to a stale error state on `If-None-Match` replay).
+    // ETag/304 only on success — never cache or echo error bodies (which would
+    // pin clients to a stale error state on `If-None-Match` replay, and may
+    // leak PostgREST schema details). All non-200 upstream responses are
+    // returned with a generic JSON error body.
     if (result.status !== 200) {
-      return new Response(result.data, {
-        status: result.status,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ error: "upstream error" }),
+        {
+          status: result.status,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
     }
 
     const etag = await generateETag(result.data);
