@@ -103,4 +103,4 @@ jobs:
             Approvals: if no significant issues, run `gh pr review --approve`.
             If significant issues, run `gh pr review --request-changes`.
             Never leave review verdicts only as prose.
-          claude_args: '--model claude-sonnet-4-6 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api repos/*/pulls/comments/*:*),Bash(gh api repos/*/issues/comments/*:*)"'
+          claude_args: '--model claude-sonnet-5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api repos/*/pulls/comments/*:*),Bash(gh api repos/*/issues/comments/*:*)"'
