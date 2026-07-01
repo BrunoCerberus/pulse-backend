@@ -2,13 +2,15 @@ name: Claude Code Review
 
 on:
   pull_request:
+    branches: [master]
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+
+# Rapid pushes to a PR fire `synchronize` per push; without this, each starts
+# a parallel billed review and the stale-comment cleanup below races a review
+# that is still posting. Cancel the superseded run (same as security-review.yml).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
@@ -16,10 +18,15 @@ jobs:
     # carry attacker-controlled diff/title/body that the action ingests as
     # input; combined with `pull-requests: write` + the OAuth token, this is
     # an indirect-prompt-injection vector (PR auto-approve via fake comment).
+    # Dependabot is allowed explicitly: its PRs come in with author_association
+    # NONE, and the action-side `allowed_bots` gate below only matters if the
+    # job actually runs. Its titles/bodies are machine-generated, not
+    # attacker-controlled.
     if: |
       github.event.pull_request.author_association == 'OWNER' ||
       github.event.pull_request.author_association == 'MEMBER' ||
-      github.event.pull_request.author_association == 'COLLABORATOR'
+      github.event.pull_request.author_association == 'COLLABORATOR' ||
+      github.event.pull_request.user.login == 'dependabot[bot]'
 
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -92,15 +99,10 @@ jobs:
             - If you have zero line-level findings to leave, say so explicitly in
               the summary — do not substitute prose for inline comments.
 
-            STALE COMMENT CLEANUP:
-            Before posting any new inline review comments, clean up your own stale
-            comments from previous runs so only fresh findings remain:
-
-              gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments \
-                --jq '.[] | select(.user.login == "github-actions[bot]" and (.body != null) and (.body | test("claude-code-review"))) | .id' \
-                | xargs -I{} gh api repos/${{ github.repository }}/pulls/comments/{} --method DELETE > /dev/null 2>&1
+            Stale comments from previous runs were already deleted by an earlier
+            workflow step — do not attempt any comment cleanup yourself.
 
             Approvals: if no significant issues, run `gh pr review --approve`.
             If significant issues, run `gh pr review --request-changes`.
             Never leave review verdicts only as prose.
-          claude_args: '--model claude-sonnet-5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*),Bash(gh api repos/*/pulls/comments/*:*),Bash(gh api repos/*/issues/comments/*:*)"'
+          claude_args: '--model claude-sonnet-5 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"'

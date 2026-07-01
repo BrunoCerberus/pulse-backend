@@ -5,13 +5,19 @@ name: LGPD Conformance
 # substantive position; this workflow keeps that position true over time.
 #
 # Four parallel jobs:
-#   - pii-scan              Bans CPF/CNPJ patterns, non-allowlisted emails,
-#                           and IP-handling Go code paths in rss-worker.
+#   - pii-scan              Bans CPF/CNPJ patterns (LGPD-specific, inline
+#                           below) plus the shared SSN / email / IP-code
+#                           guard rails.
 #   - docs-presence         Required privacy / LGPD / ROPA / retention docs.
 #   - operational-controls  Cleanup workflow, retention literal, no-plaintext-
 #                           HTTP migrations, RLS, no-PII-redaction invariant.
 #   - structural-integrity  Bans new tables outside the allowlist and
 #                           suspicious column names that imply PII storage.
+#
+# Steps shared with gdpr-conformance.yml live in the
+# .github/actions/conformance-* composite actions — fix them there, once.
+# The gitleaks custom-rules history sweep runs in security.yml (secret-scan
+# job) so each PR pays for one sweep, not one per regulation.
 
 on:
   push:
@@ -36,8 +42,8 @@ concurrency:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # PII scan: CPF + CNPJ patterns, disallowed emails, IP-handling code paths,
-  # plus a gitleaks pass over full git history using the custom rules file.
+  # PII scan: CPF + CNPJ patterns (LGPD-specific), then the shared
+  # SSN / email-allowlist / IP-handling guard rails via the composite action.
   # ---------------------------------------------------------------------------
   pii-scan:
     name: LGPD PII Scan
@@ -46,9 +52,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          # Full history so gitleaks can sweep every commit.
-          fetch-depth: 0
+
+      # rg is NOT preinstalled on ubuntu runners; without it the `if rg …`
+      # guards below silently pass (exit 127 looks like "no match"), which is
+      # exactly what happened until 2026-07.
+      - name: Ensure ripgrep
+        uses: ./.github/actions/ensure-ripgrep
 
       - name: CPF / CNPJ pattern ban
         shell: bash
@@ -71,6 +80,7 @@ jobs:
               -g '!.github/pii-allowlist.txt' \
               -g '!.github/workflows/lgpd-conformance.yml' \
               -g '!.github/workflows/gdpr-conformance.yml' \
+              -g '!.github/actions/conformance-pii-scan/action.yml' \
               -e "$CPF_RE" -e "$CNPJ_RE" \
               .; then
             echo "::error::CPF or CNPJ pattern found. LGPD: no Brazilian personal identifiers may be stored in this repo."
@@ -78,97 +88,11 @@ jobs:
           fi
           echo "OK: no CPF/CNPJ patterns."
 
-      - name: US SSN pattern ban (CCPA / CPRA)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # XXX-XX-XXXX. Same exclusion set as the LGPD scan above so
-          # illustrative examples in conformance docs are permitted.
-          SSN_RE='\b\d{3}-\d{2}-\d{4}\b'
-
-          if rg --pcre2 \
-              -g '!docs/privacy.md' \
-              -g '!docs/lgpd-conformance.md' \
-              -g '!docs/gdpr-conformance.md' \
-              -g '!docs/ccpa-conformance.md' \
-              -g '!docs/ropa.md' \
-              -g '!docs/data-retention.md' \
-              -g '!.github/lgpd-gdpr-rules.toml' \
-              -g '!.github/pii-allowlist.txt' \
-              -g '!.github/workflows/lgpd-conformance.yml' \
-              -g '!.github/workflows/gdpr-conformance.yml' \
-              -e "$SSN_RE" \
-              .; then
-            echo "::error::US SSN pattern found. CCPA / CPRA: no US Social Security Numbers may be stored in this repo. See docs/ccpa-conformance.md."
-            exit 1
-          fi
-          echo "OK: no US SSN patterns."
-
-      - name: Email allowlist enforcement
-        shell: bash
-        run: |
-          set -euo pipefail
-          EMAIL_RE='\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
-
-          # All email literals in the repo, excluding the allowlist itself.
-          # Both sides are lowercased before comparison: RFC 5321 specifies
-          # the domain as case-insensitive and the local part is conventionally
-          # treated as case-insensitive, so 'Bruno.Guitarpro@gmail.com' and
-          # 'bruno.guitarpro@gmail.com' must compare equal.
-          found=$(rg --pcre2 -o "$EMAIL_RE" \
-            -g '!.github/pii-allowlist.txt' \
-            --no-filename . 2>/dev/null \
-            | tr '[:upper:]' '[:lower:]' \
-            | sort -u || true)
-
-          # Allowed addresses (strip comments + blank lines, lowercased).
-          allowed=$(grep -vE '^[[:space:]]*(#|$)' .github/pii-allowlist.txt \
-            | tr '[:upper:]' '[:lower:]' \
-            | sort -u)
-
-          # Anything in `found` not in `allowed`.
-          bad=$(comm -23 <(printf '%s\n' "$found") <(printf '%s\n' "$allowed") || true)
-
-          if [ -n "${bad//[[:space:]]/}" ]; then
-            echo "::error::Disallowed email addresses found in source:"
-            printf '%s\n' "$bad" | sed 's/^/  /'
-            echo "If intentional, add to .github/pii-allowlist.txt with a justifying comment."
-            exit 1
-          fi
-          echo "OK: all emails are on the allowlist."
-
-      - name: IP-handling code path ban (rss-worker)
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The Go RSS worker must not handle inbound user requests. The
-          # canonical Go ways to read a client IP are RemoteAddr and the
-          # X-Forwarded-For / X-Real-IP / CF-Connecting-IP headers. If any of
-          # these appear in production code, the no-PII invariant is broken
-          # and this document set must be revisited.
-          if rg -t go \
-              -g '!*_test.go' \
-              -e '\bRemoteAddr\b' \
-              -e 'X-Forwarded-For' \
-              -e 'X-Real-IP' \
-              -e 'CF-Connecting-IP' \
-              rss-worker/; then
-            echo "::error::Inbound-request / client-IP handling detected in rss-worker. LGPD posture requires no IP collection. Review docs/lgpd-conformance.md before proceeding."
-            exit 1
-          fi
-          echo "OK: no client-IP handling code paths."
-
-      - name: Install gitleaks
-        env:
-          # Matches the version pinned in .github/workflows/security.yml.
-          GITLEAKS_VERSION: "8.30.1"
-        run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
-          gitleaks version
-
-      - name: Gitleaks (LGPD/GDPR custom rules)
-        run: gitleaks detect --source . --verbose --redact --no-banner --config .github/lgpd-gdpr-rules.toml
+      - name: Shared PII guard rails (SSN, emails, IP-handling)
+        uses: ./.github/actions/conformance-pii-scan
+        with:
+          regulation: LGPD
+          doc: docs/lgpd-conformance.md
 
       # One per-job notice + a Job Summary checklist. if:success() means a
       # failing guard rail (which emits its own ::error::) skips this, so the
@@ -185,7 +109,7 @@ jobs:
             echo "- US SSN pattern ban (CCPA / CPRA)"
             echo "- Email allowlist enforcement"
             echo "- IP-handling code path ban (rss-worker)"
-            echo "- gitleaks custom-rules history sweep"
+            echo "- gitleaks custom-rules history sweep: runs in security.yml (Secret Scan)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ---------------------------------------------------------------------------
@@ -200,24 +124,10 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Required docs exist and are non-empty
-        shell: bash
-        run: |
-          set -euo pipefail
-          required=(
-            docs/privacy.md
-            docs/lgpd-conformance.md
-            docs/ropa.md
-            docs/data-retention.md
-          )
-          fail=0
-          for f in "${required[@]}"; do
-            if [ ! -s "$f" ]; then
-              echo "::error file=$f::Missing or empty — required by LGPD conformance workflow."
-              fail=1
-            fi
-          done
-          [ "$fail" -eq 0 ] || exit 1
-          echo "OK: all required LGPD docs present."
+        uses: ./.github/actions/conformance-docs-presence
+        with:
+          regulation: LGPD
+          doc: docs/lgpd-conformance.md
 
       - name: Annotate docs presence
         if: success()
@@ -243,62 +153,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: cleanup.yml exists and invokes 'rss-worker cleanup'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f .github/workflows/cleanup.yml \
-            || { echo "::error::Missing .github/workflows/cleanup.yml — retention enforcement gone."; exit 1; }
-          grep -q '\./rss-worker cleanup' .github/workflows/cleanup.yml \
-            || { echo "::error::cleanup.yml no longer invokes './rss-worker cleanup'."; exit 1; }
-          echo "OK: cleanup workflow present and correctly wired."
-
-      - name: ArticleRetentionDays = 7 in config
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! grep -qE 'ArticleRetentionDays:[[:space:]]+7,' rss-worker/internal/config/config.go; then
-            echo "::error::ArticleRetentionDays != 7 in rss-worker/internal/config/config.go; update docs/data-retention.md to match before changing this value."
-            exit 1
-          fi
-          echo "OK: ArticleRetentionDays = 7."
-
-      - name: No plaintext http:// in migrations
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Allow XML namespace URLs, W3C schema URLs, and example.com /
-          # localhost loopbacks. Anything else must use https.
-          if rg --pcre2 \
-              -g 'supabase/migrations/*.sql' \
-              'http://(?!localhost|127\.0\.0\.1|[a-z0-9.-]*\.example\.(com|org)|www\.w3\.org|schemas\.|xmlns\.)' \
-              .; then
-            echo "::error::Plaintext http:// URL in supabase/migrations/. Use https or extend the technical allowlist if this is an XML namespace."
-            exit 1
-          fi
-          echo "OK: migrations use https (or technical exceptions only)."
-
-      - name: No-PII-redaction invariant still asserted in LGPD doc
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! grep -q 'No PII redaction layer required' docs/lgpd-conformance.md; then
-            echo "::error::docs/lgpd-conformance.md no longer asserts 'No PII redaction layer required'. If a redaction layer was introduced, update both the doc and this workflow."
-            exit 1
-          fi
-          echo "OK: no-PII invariant still asserted."
-
-      - name: RLS not disabled on user-facing tables
-        shell: bash
-        run: |
-          set -euo pipefail
-          if rg -t sql --pcre2 \
-              'ALTER TABLE\s+(articles|sources|categories|fetch_logs)\s+DISABLE ROW LEVEL SECURITY' \
-              supabase/migrations/; then
-            echo "::error::A migration disables RLS on a user-facing table. RLS is a load-bearing control."
-            exit 1
-          fi
-          echo "OK: RLS remains enabled everywhere it matters."
+      - name: Retention + RLS + no-PII invariants
+        uses: ./.github/actions/conformance-operational-controls
+        with:
+          regulation: LGPD
+          doc: docs/lgpd-conformance.md
 
       - name: Annotate operational controls
         if: success()
@@ -327,80 +186,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: No new tables outside the conformance allowlist
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Exact set of tables declared in migrations as of the initial
-          # conformance review (2026-05-14). Any new table must be reviewed
-          # under LGPD before this list is extended.
-          allowed=" categories sources articles fetch_logs "
-
-          # Optional `schema.` prefix is consumed and discarded so a future
-          # `CREATE TABLE public.user_profiles` extracts `user_profiles`,
-          # not `public` (which would either spuriously fail or — if the
-          # schema name collides with an allowlisted table — silently slip
-          # the real table past the check).
-          tables=$(rg --pcre2 -oNI '^[[:space:]]*CREATE TABLE[[:space:]]+(?:IF NOT EXISTS[[:space:]]+)?(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)' \
-            -r '$1' \
-            supabase/migrations/ 2>/dev/null | sort -u || true)
-
-          fail=0
-          for t in $tables; do
-            case "$allowed" in
-              *" $t "*) : ;;
-              *)
-                echo "::error::Migration declares a new table '$t' outside the conformance allowlist. Update docs/lgpd-conformance.md, docs/ropa.md, and the allowlist in this workflow before re-running."
-                fail=1
-                ;;
-            esac
-          done
-          [ "$fail" -eq 0 ] || exit 1
-          echo "OK: only allowlisted tables exist."
-
-      - name: No suspicious PII column names in migrations
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Two patterns, both catching PII-implying column declarations:
-          #   1. Block-style:   inside CREATE TABLE, columns start the line.
-          #   2. ALTER TABLE:   `ADD COLUMN <name> <TYPE>` is mid-statement.
-          # Anchored to a type-like token following the column name so we
-          # don't catch column references in WHERE clauses or function args.
-          if rg --pcre2 \
-              -g 'supabase/migrations/*.sql' \
-              -i \
-              -e '^\s*(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
-              -e 'ADD COLUMN\s+(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
-              .; then
-            echo "::error::A migration introduces a column name that implies PII storage. Review docs/lgpd-conformance.md before continuing."
-            exit 1
-          fi
-          echo "OK: no PII-implying column names."
-
-      - name: ROPA subprocessor table lists GitHub and Supabase
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! grep -qE '^\|[[:space:]]*GitHub[[:space:]]' docs/ropa.md; then
-            echo "::error::docs/ropa.md no longer lists GitHub as a subprocessor."
-            exit 1
-          fi
-          if ! grep -qE '^\|[[:space:]]*Supabase[[:space:]]' docs/ropa.md; then
-            echo "::error::docs/ropa.md no longer lists Supabase as a subprocessor."
-            exit 1
-          fi
-          echo "OK: ROPA lists both subprocessors."
-
-      - name: Retention doc declares '7 days'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! grep -qE '\b7 days?\b' docs/data-retention.md; then
-            echo "::error::docs/data-retention.md no longer states '7 days'. Update to match ArticleRetentionDays in config.go."
-            exit 1
-          fi
-          echo "OK: retention doc matches config."
+      - name: Schema + ROPA invariants
+        uses: ./.github/actions/conformance-structural-integrity
+        with:
+          regulation: LGPD
+          doc: docs/lgpd-conformance.md
 
       - name: Annotate structural integrity
         if: success()

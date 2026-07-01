@@ -65,4 +65,5 @@ paths = [
   '''\.github/pii-allowlist\.txt''',
   '''\.github/workflows/lgpd-conformance\.yml''',
   '''\.github/workflows/gdpr-conformance\.yml''',
+  '''\.github/actions/conformance-pii-scan/action\.yml''',
 ]

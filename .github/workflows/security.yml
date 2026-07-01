@@ -45,16 +45,32 @@ jobs:
 
       - name: Install gitleaks
         env:
-          # Bump periodically — see https://github.com/gitleaks/gitleaks/releases
+          # Bump both together — see https://github.com/gitleaks/gitleaks/releases
+          # (sha256 from the release's gitleaks_<ver>_checksums.txt).
           GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
         run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin gitleaks
+          # Verify against the checksum pinned above before extracting: release
+          # assets are mutable, so a version pin alone doesn't stop a compromised
+          # upstream from swapping the tarball behind the same tag. This mirrors
+          # the SHA-pinning we already do for actions.
+          curl -sSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          sudo tar -xz -C /usr/local/bin -f /tmp/gitleaks.tar.gz gitleaks
           gitleaks version
 
       - name: Run gitleaks
         # Exits non-zero on any finding. --redact hides secret values in logs.
         run: gitleaks detect --source . --verbose --redact --no-banner
+
+      - name: Run gitleaks (LGPD/GDPR custom PII rules)
+        # Second sweep with the conformance rules (CPF/CNPJ, IBAN, SSN, …) on
+        # top of the default ruleset. Lives here — not in the two conformance
+        # workflows — so each PR pays for ONE custom-rules history sweep and one
+        # gitleaks install instead of three. The conformance workflows' summaries
+        # point at this job.
+        run: gitleaks detect --source . --verbose --redact --no-banner --config .github/lgpd-gdpr-rules.toml
 
       - name: Run TruffleHog
         uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70 # v3.95.6
@@ -67,11 +83,12 @@ jobs:
         if: success()
         shell: bash
         run: |
-          echo "::notice title=Secret Scan::no leaked secrets (gitleaks history sweep + TruffleHog verified)"
+          echo "::notice title=Secret Scan::no leaked secrets (gitleaks default + LGPD/GDPR rules + TruffleHog verified)"
           {
             echo "## Secret Scan ✅"
             echo ""
-            echo "- gitleaks: full git-history sweep — no findings"
+            echo "- gitleaks: full git-history sweep (default rules) — no findings"
+            echo "- gitleaks: full git-history sweep (LGPD/GDPR custom PII rules) — no findings"
             echo "- TruffleHog: verified scan — no findings"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -97,25 +114,29 @@ jobs:
 
       - name: Install gosec
         env:
-          # Pinned — bump periodically (see https://github.com/securego/gosec/releases).
+          # Bump both together (see https://github.com/securego/gosec/releases;
+          # sha256 from the release's gosec_<ver>_checksums.txt).
           # Using the prebuilt binary avoids `go install`'s strict toolchain
           # check, which rejects gosec releases that bump their own go.mod
           # past the project's Go version.
           GOSEC_VERSION: "v2.22.11"
+          GOSEC_SHA256: "a9a3fb304a78cd22f4f3673403c70c2ad03011da876c9ca14e17244599d4f0ab"
         run: |
-          # Download the PINNED release tarball directly (an immutable asset)
-          # instead of gosec's install.sh — that script resolves the tag through
-          # the UNAUTHENTICATED GitHub API, which gets rate-limited (HTTP 403) on
+          # Download the PINNED release tarball directly instead of gosec's
+          # install.sh — that script resolves the tag through the
+          # UNAUTHENTICATED GitHub API, which gets rate-limited (HTTP 403) on
           # shared runner IPs and then misreports the pinned tag as "not found"
-          # (the failure mode we hit). A direct asset download makes no API call,
-          # so it's both rate-limit-proof and pinned to the exact release. This
-          # mirrors the gitleaks install in the secret-scan job. Install to a
+          # (the failure mode we hit). A direct asset download makes no API call.
+          # Release assets are mutable, so also verify the sha256 pinned above
+          # before extracting — a version pin alone doesn't stop a compromised
+          # upstream from swapping the tarball behind the same tag. Install to a
           # user-writable dir (no `sudo`, no root) and put it on PATH.
           mkdir -p "$HOME/.local/bin"
           ver="${GOSEC_VERSION#v}"
-          curl -sSfL --retry 3 --retry-delay 2 \
-            "https://github.com/securego/gosec/releases/download/${GOSEC_VERSION}/gosec_${ver}_linux_amd64.tar.gz" \
-            | tar -xz -C "$HOME/.local/bin" gosec
+          curl -sSfL --retry 3 --retry-delay 2 -o /tmp/gosec.tar.gz \
+            "https://github.com/securego/gosec/releases/download/${GOSEC_VERSION}/gosec_${ver}_linux_amd64.tar.gz"
+          echo "${GOSEC_SHA256}  /tmp/gosec.tar.gz" | sha256sum -c -
+          tar -xz -C "$HOME/.local/bin" -f /tmp/gosec.tar.gz gosec
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/gosec" --version
 

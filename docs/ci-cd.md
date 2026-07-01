@@ -22,19 +22,24 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `lgpd-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, required privacy docs, retention + RLS + no-PII-redaction invariant, structural integrity on migrations |
 | `gdpr-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU-phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |
 | `claude.yml` | Issue/PR comments, reviews, issue events | On-demand Claude Code agent (restricted to repo owner/members/collaborators) |
-| `claude-code-review.yml` | PR opened/synchronize/reopened (trusted authors) | Automated Claude Code review of PR diffs |
+| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors + dependabot) | Automated Claude Code review of PR diffs |
+| `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
+| `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
+| `keepalive.yml` | Monthly (1st, 05:45 UTC) + manual | Resets GitHub's 60-day scheduled-trigger inactivity timer so crons (fetch, cleanup, watchdog, …) survive commit-quiet periods |
 
 ## Branch Protection
 
-Branch protection on `master` requires all **19 jobs** across `test.yml` (3),
-`security.yml` (5), `pr-checks.yml` (3), `lgpd-conformance.yml` (4), and
-`gdpr-conformance.yml` (4) to pass before merge. Direct pushes to `master` are
-blocked (even for admins); every change goes through a PR. The repo is configured
-with squash-only merges and `delete_branch_on_merge`.
-
-> `migrations-ci.yml`, `lint-meta.yml`, and `codeql.yml` run on every relevant PR
-> but are not yet in the required-check set — promote them in branch protection
-> once they've proven stable.
+Protection on `master` is a repository **ruleset** ("Master") requiring **25
+status checks** before merge: `test.yml` (3), `security.yml` (5), `pr-checks.yml`
+(4, incl. Dependency Review), `lgpd-conformance.yml` (4), `gdpr-conformance.yml`
+(4), `codeql.yml` (2), `migrations-ci.yml` (1), `lint-meta.yml` (1), and
+`claude-code-review.yml` (`claude-review`, 1). Direct pushes to `master` are
+blocked; every change goes through a PR. Squash-only merges,
+`delete_branch_on_merge`, linear history, strict up-to-date branches, and
+required review-thread resolution. Repository admins can bypass via PR — needed
+e.g. when a PR edits `claude-code-review.yml` itself, since `claude-code-action`
+refuses to run from a workflow file that differs from the default branch,
+leaving the required `claude-review` check red until the edit merges.
 
 ## Security
 

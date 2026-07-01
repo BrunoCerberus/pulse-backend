@@ -1,0 +1,22 @@
+name: Ensure ripgrep
+description: >
+  Installs ripgrep if it is missing and fails loudly if it can't be provided.
+  Every conformance guard rail that shells out to `rg` depends on this: rg is
+  NOT preinstalled on GitHub's ubuntu runners, and `if rg …` treats
+  "command not found" (exit 127) exactly like "no match" — so without this
+  step the guard rails silently pass without scanning anything (which is how
+  they behaved until 2026-07). The conformance-* composite actions call this
+  themselves; workflows with inline rg steps must call it before those steps.
+
+runs:
+  using: composite
+  steps:
+    - name: Install ripgrep if missing
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rg >/dev/null; then
+          sudo apt-get update -q
+          sudo apt-get install -yq ripgrep
+        fi
+        rg --version
