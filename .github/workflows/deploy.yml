@@ -5,6 +5,12 @@ name: Deploy
 # so a failed `supabase db push` aborts the job before any function ships —
 # that ordering is the whole point.
 #
+# There is deliberately NO rollback: if the smoke test fails, the new
+# migrations and functions are already live. Posture is fix-forward — a red
+# run here means "production may be broken, fix it now", not "nothing
+# changed". Rolling back applied migrations automatically is riskier than the
+# failure modes it would cover.
+#
 # Gated on the `production` GitHub Environment (Settings → Environments →
 # production: required reviewers + branch restriction to master). One approval
 # covers the entire DB-and-functions deploy. The Environment also scopes the
@@ -123,6 +129,8 @@ jobs:
       - name: Annotate deploy
         if: always()
         shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
           set -euo pipefail
 
@@ -130,7 +138,7 @@ jobs:
           # secret or a failed push aborts the job before this annotation).
           migrate_line="Migrations applied via \`supabase db push\`"
 
-          if [ "${{ job.status }}" = "success" ]; then
+          if [ "$JOB_STATUS" = "success" ]; then
             echo "::notice title=Deploy::${migrate_line}; functions deployed; api-health OK"
             {
               echo "## Deploy ✅"

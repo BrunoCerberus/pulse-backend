@@ -1,0 +1,81 @@
+name: Conformance operational controls (shared)
+description: >
+  Shared by the GDPR and LGPD conformance workflows: cleanup workflow wiring,
+  the 7-day retention literal, no plaintext http:// in migrations, the
+  no-PII-redaction invariant in the regulation doc, and RLS staying enabled on
+  user-facing tables. Requires the repository to already be checked out.
+
+inputs:
+  regulation:
+    description: Regulation label for error messages (e.g. GDPR, LGPD)
+    required: true
+  doc:
+    description: Path to the regulation's conformance doc
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # rg is NOT preinstalled on ubuntu runners, and a missing rg makes every
+    # `if rg …` guard below silently pass (exit 127 looks like "no match").
+    - name: Ensure ripgrep
+      uses: ./.github/actions/ensure-ripgrep
+
+    - name: cleanup.yml exists and invokes 'rss-worker cleanup'
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -f .github/workflows/cleanup.yml \
+          || { echo "::error::Missing .github/workflows/cleanup.yml — retention enforcement gone."; exit 1; }
+        grep -q '\./rss-worker cleanup' .github/workflows/cleanup.yml \
+          || { echo "::error::cleanup.yml no longer invokes './rss-worker cleanup'."; exit 1; }
+        echo "OK: cleanup workflow present and correctly wired."
+
+    - name: ArticleRetentionDays = 7 in config
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! grep -qE 'ArticleRetentionDays:[[:space:]]+7,' rss-worker/internal/config/config.go; then
+          echo "::error::ArticleRetentionDays != 7 in rss-worker/internal/config/config.go; update docs/data-retention.md to match before changing this value."
+          exit 1
+        fi
+        echo "OK: ArticleRetentionDays = 7."
+
+    - name: No plaintext http:// in migrations
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Allow XML namespace URLs, W3C schema URLs, and example.com /
+        # localhost loopbacks. Anything else must use https.
+        if rg --pcre2 \
+            -g 'supabase/migrations/*.sql' \
+            'http://(?!localhost|127\.0\.0\.1|[a-z0-9.-]*\.example\.(com|org)|www\.w3\.org|schemas\.|xmlns\.)' \
+            .; then
+          echo "::error::Plaintext http:// URL in supabase/migrations/. Use https or extend the technical allowlist if this is an XML namespace."
+          exit 1
+        fi
+        echo "OK: migrations use https (or technical exceptions only)."
+
+    - name: No-PII-redaction invariant still asserted in conformance doc
+      shell: bash
+      env:
+        DOC: ${{ inputs.doc }}
+      run: |
+        set -euo pipefail
+        if ! grep -q 'No PII redaction layer required' "$DOC"; then
+          echo "::error::${DOC} no longer asserts 'No PII redaction layer required'. If a redaction layer was introduced, update both the doc and this workflow."
+          exit 1
+        fi
+        echo "OK: no-PII invariant still asserted."
+
+    - name: RLS not disabled on user-facing tables
+      shell: bash
+      run: |
+        set -euo pipefail
+        if rg -t sql --pcre2 \
+            'ALTER TABLE\s+(articles|sources|categories|fetch_logs)\s+DISABLE ROW LEVEL SECURITY' \
+            supabase/migrations/; then
+          echo "::error::A migration disables RLS on a user-facing table. RLS is a load-bearing control."
+          exit 1
+        fi
+        echo "OK: RLS remains enabled everywhere it matters."

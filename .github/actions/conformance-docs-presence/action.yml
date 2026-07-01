@@ -1,0 +1,39 @@
+name: Conformance docs presence (shared)
+description: >
+  Shared by the GDPR and LGPD conformance workflows: asserts that the privacy
+  doc set (privacy, regulation-specific conformance doc, ROPA, retention)
+  exists and is non-empty. Requires the repository to already be checked out.
+
+inputs:
+  regulation:
+    description: Regulation label for error messages (e.g. GDPR, LGPD)
+    required: true
+  doc:
+    description: Path to the regulation's conformance doc
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Required docs exist and are non-empty
+      shell: bash
+      env:
+        REGULATION: ${{ inputs.regulation }}
+        DOC: ${{ inputs.doc }}
+      run: |
+        set -euo pipefail
+        required=(
+          docs/privacy.md
+          "$DOC"
+          docs/ropa.md
+          docs/data-retention.md
+        )
+        fail=0
+        for f in "${required[@]}"; do
+          if [ ! -s "$f" ]; then
+            echo "::error file=$f::Missing or empty — required by ${REGULATION} conformance workflow."
+            fail=1
+          fi
+        done
+        [ "$fail" -eq 0 ] || exit 1
+        echo "OK: all required ${REGULATION} docs present."
