@@ -65,7 +65,7 @@ jobs:
 
           # Delete inline review comments from this bot (pulls/comments endpoint).
           inline_count=0
-          resp=$(curl -s \
+          resp=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/pulls/${PR_NUMBER}/comments?per_page=100")
           ids=$(echo "$resp" | jq -r '.[] | select(.user.login == "github-actions[bot]" and (.body != null) and (.body | test("security-review"))) | .id')
           for rid in $ids; do
@@ -74,7 +74,7 @@ jobs:
 
           # Delete body/summary comments from previous runs (issues/comments endpoint).
           body_count=0
-          resp=$(curl -s \
+          resp=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments?per_page=100")
           ids=$(echo "$resp" | jq -r '.[] | select(.user.login == "github-actions[bot]" and (.body != null) and (.body | test("Security Review"))) | .id')
           for cid in $ids; do
