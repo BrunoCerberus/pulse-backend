@@ -18,15 +18,17 @@ jobs:
     # carry attacker-controlled diff/title/body that the action ingests as
     # input; combined with `pull-requests: write` + the OAuth token, this is
     # an indirect-prompt-injection vector (PR auto-approve via fake comment).
-    # Dependabot is allowed explicitly: its PRs come in with author_association
-    # NONE, and the action-side `allowed_bots` gate below only matters if the
-    # job actually runs. Its titles/bodies are machine-generated, not
-    # attacker-controlled.
+    # Dependabot is deliberately NOT carved out: its PR bodies embed upstream
+    # release notes verbatim (written by the dependency's maintainer, not by
+    # us), which would put partially attacker-controlled text in front of an
+    # agent holding `gh pr review --approve` authority. Dependency bumps are
+    # already gated deterministically (dependency-review, govulncheck, Trivy),
+    # and a skipped required check still satisfies the ruleset, so dependabot
+    # PRs merge fine without this review.
     if: |
       github.event.pull_request.author_association == 'OWNER' ||
       github.event.pull_request.author_association == 'MEMBER' ||
-      github.event.pull_request.author_association == 'COLLABORATOR' ||
-      github.event.pull_request.user.login == 'dependabot[bot]'
+      github.event.pull_request.author_association == 'COLLABORATOR'
 
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -82,7 +84,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
-          allowed_bots: "dependabot[bot]"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}

@@ -22,7 +22,7 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `lgpd-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, required privacy docs, retention + RLS + no-PII-redaction invariant, structural integrity on migrations |
 | `gdpr-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU-phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |
 | `claude.yml` | Issue/PR comments, reviews, issue events | On-demand Claude Code agent (restricted to repo owner/members/collaborators) |
-| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors + dependabot) | Automated Claude Code review of PR diffs |
+| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Automated Claude Code review of PR diffs |
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
 | `keepalive.yml` | Monthly (1st, 05:45 UTC) + manual | Resets GitHub's 60-day scheduled-trigger inactivity timer so crons (fetch, cleanup, watchdog, …) survive commit-quiet periods |

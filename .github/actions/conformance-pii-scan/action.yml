@@ -56,13 +56,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # The negative lookbehind rejects matches whose start is glued to a
-        # `/` or a longer token: URL userinfo like
-        # `https://www.reuters.com@evil.example/` is NOT an email address, and
-        # the SSRF test fixtures in rss-worker use exactly that shape. Without
-        # the lookbehind, PCRE backtracking would still match the
-        # `reuters.com@evil.example` suffix.
-        EMAIL_RE='(?<![/A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+        # Two negative lookbehinds:
+        #   (?<![A-Za-z0-9._%+-])  don't start mid-token — without it, PCRE
+        #                          backtracking matches the
+        #                          `reuters.com@evil.example` suffix of
+        #                          `https://www.reuters.com@evil.example/`.
+        #   (?<!//)                URL userinfo (`scheme://user@host`, the SSRF
+        #                          test-fixture shape) is not an email address.
+        #                          Deliberately `//`, not `/`: an email after a
+        #                          SINGLE slash (`/api/users/alice@example.com`)
+        #                          is a classic accidental-PII leak and must
+        #                          still be flagged.
+        EMAIL_RE='(?<![A-Za-z0-9._%+-])(?<!//)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
 
         # All email literals in the repo, excluding the allowlist itself.
         # Both sides are lowercased before comparison: RFC 5321 specifies
