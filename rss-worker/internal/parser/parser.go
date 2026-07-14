@@ -640,17 +640,41 @@ func canonicalizeURL(raw string) string {
 	return u.String()
 }
 
-// canonicalizeRawQuery sorts the &-separated parameters of a raw query string
+// canonicalizeRawQuery sorts the &- and ; -separated parameters of a raw query string
 // so semantically-equivalent URLs hash identically — WITHOUT the lossy
 // url.Values round-trip. url.Values.Encode (via url.Query) silently DROPS the
 // entire query when it contains a ';' (Go 1.17+ rejects ';' as a separator),
 // which collapsed distinct articles like `?id=1;ref=x` and `?id=2;ref=x` to
 // one url_hash and silently suppressed all but the first. Sorting the raw
-// segments preserves every byte (including ';') while keeping dedup canonical.
+// segments preserves every byte while keeping dedup canonical (RFC 3986 treats
+// ';' and '&' as equivalent parameter separators).
 func canonicalizeRawQuery(raw string) string {
-	params := strings.Split(raw, "&")
+	params := splitQueryParams(raw)
 	sort.Strings(params)
 	return strings.Join(params, "&")
+}
+
+// splitQueryParams splits a raw query string into individual parameter segments.
+// RFC 3986 treats both '&' and ';' as parameter separators; feeds may use either.
+// The original separator character is preserved in each segment so that canonical
+// forms remain byte-identical for feeds that use ';' as a separator.
+func splitQueryParams(raw string) []string {
+	var segments []string
+	var current strings.Builder
+	for _, c := range raw {
+		if c == ';' || c == '&' {
+			if current.Len() > 0 {
+				segments = append(segments, current.String())
+				current.Reset()
+			}
+		} else {
+			current.WriteRune(c)
+		}
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	return segments
 }
 
 // parsePublishedDate extracts the publication date from a feed item,

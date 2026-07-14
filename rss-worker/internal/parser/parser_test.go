@@ -1632,7 +1632,7 @@ func TestCanonicalizeURL(t *testing.T) {
 	if a == b {
 		t.Errorf("semicolon-query URLs collapsed to same canonical form: %q", a)
 	}
-	if !strings.Contains(a, "id=1;ref=rss") {
+	if !strings.Contains(a, "id=1") || !strings.Contains(a, "ref=rss") {
 		t.Errorf("semicolon query dropped during canonicalization: %q", a)
 	}
 }
