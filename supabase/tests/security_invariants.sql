@@ -395,10 +395,13 @@ END $$;
 -- sensitive column to the TABLE list) would re-open the leak while every other
 -- invariant stayed green. pg_get_function_result renders the RETURNS clause:
 -- 'TABLE(...)' for the explicit projection, 'SETOF articles' for the leak.
+--
+-- Also asserts statement_timeout = '3s' is pinned via proconfig (F1 from audit).
 DO $$
 DECLARE
-    fn_oid OID;
-    result TEXT;
+    fn_oid  OID;
+    result  TEXT;
+    has_timeout BOOLEAN;
 BEGIN
     SELECT p.oid INTO fn_oid
     FROM pg_catalog.pg_proc p
@@ -423,6 +426,16 @@ BEGIN
        OR result LIKE '%search_vector%'
        OR result LIKE '%backfill%' THEN
         RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles projection leaks a sensitive column: %', result;
+    END IF;
+
+    -- F1: Verify statement_timeout is still pinned (3s cap on search DoS surface).
+    SELECT EXISTS(
+        SELECT 1 FROM unnest(COALESCE(p.proconfig, ARRAY[]::text[])) AS cfg
+        WHERE cfg LIKE 'statement_timeout=%'
+    ) INTO has_timeout FROM pg_catalog.pg_proc p WHERE p.oid = fn_oid;
+
+    IF NOT has_timeout THEN
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles is missing statement_timeout pin (audit F1) — tsquery build could exhaust CPU without timeout';
     END IF;
 END $$;
 
