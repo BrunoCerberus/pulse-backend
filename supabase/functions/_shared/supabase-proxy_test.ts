@@ -11,6 +11,7 @@ import {
   isBooleanFilter,
   isCacheableResult,
   isLanguageFilter,
+  isSafeFilterValue,
   isSlugFilter,
   isUuidFilter,
   MAX_QUERY_STRING_LEN,
@@ -547,6 +548,51 @@ Deno.test("paramValidators drop invalid language from the upstream URL", () => {
       cfg,
     );
     assertStringIncludes(ok, "language=eq.en");
+  } finally {
+    if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
+    else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
+// --- F2: compound operator rejection on unvalidated params ---
+
+Deno.test("isSafeFilterValue rejects in/and/or compound operators", () => {
+  assert(!isSafeFilterValue("in.(a,b,c)"));
+  assert(!isSafeFilterValue("or=(eq.a,eq.b)"));
+  assert(!isSafeFilterValue("and=(eq.x,eq.y)"));
+  // Case-insensitive match on the operator keyword.
+  assert(!isSafeFilterValue("IN.(a,b)"));
+});
+
+Deno.test("isSafeFilterValue accepts simple filter values", () => {
+  assert(isSafeFilterValue("eq.bbc-news"));
+  assert(isSafeFilterValue("gte.2024-01-01"));
+  assert(isSafeFilterValue("plain-slug-value"));
+});
+
+Deno.test("buildProxyUrl drops compound operators on unvalidated params", () => {
+  const cfg: ProxyConfig = {
+    table: "articles",
+    allowedParams: ["id", "source_slug"],
+    defaultSelect: "id,title",
+    // No paramValidators — these params are unvalidated.
+  };
+  const prevUrl = Deno.env.get("SUPABASE_URL");
+  Deno.env.set("SUPABASE_URL", "https://t.supabase.co");
+  try {
+    const url = buildProxyUrl(
+      new Request("http://localhost/x?id=in.(uuid1,uuid2)&source_slug=eq.bbc-tech"),
+      cfg,
+    );
+    assert(!url.includes("id=in."), `in.(...) should be dropped: ${url}`);
+    assertStringIncludes(url, "source_slug=eq.bbc-tech");
+
+    // Safe eq. filter on unvalidated param still passes through.
+    const ok = buildProxyUrl(
+      new Request("http://localhost/x?id=eq.11111111-1111-1111-1111-111111111111&source_slug=eq.bbc-tech"),
+      cfg,
+    );
+    assertStringIncludes(ok, "id=eq.11111111-1111-1111-1111-111111111111");
   } finally {
     if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
     else Deno.env.delete("SUPABASE_URL");

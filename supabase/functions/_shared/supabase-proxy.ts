@@ -125,6 +125,22 @@ function filterValueOf(raw: string): string {
   return m ? m[2] : raw;
 }
 
+// F2: Reject compound PostgREST operators (in/and/or) on parameters without
+// explicit validators. These operators let clients bypass per-value length
+// caps — an `in.(v1,v2,...)` list can encode hundreds of items in a single
+// 256-char value — and construct arbitrary filter expressions the proxy
+// author never intended. Dropping them on unvalidated params keeps the proxy
+// as a narrowing surface, not an oracle.
+const COMPOUND_OP_RE = /^(in)\s*\.\(|^(or|and)\s*=/i;
+function rejectsCompoundOperators(raw: string): boolean {
+  return COMPOUND_OP_RE.test(raw);
+}
+
+/** Validates that an unvalidated filter value does not use compound operators. */
+export function isSafeFilterValue(raw: string): boolean {
+  return !rejectsCompoundOperators(raw);
+}
+
 /** Applies `ok` to each member of an `in.(a,b,c)` list, or to a single value. */
 function everyFilterValue(raw: string, ok: (v: string) => boolean): boolean {
   const val = filterValueOf(raw);
@@ -215,6 +231,11 @@ export function buildProxyUrl(req: Request, config: ProxyConfig): string {
     // invalid `order`) so it never reaches the upstream query or cache key.
     const validate = config.paramValidators?.[param];
     if (validate && !validate(raw)) continue;
+
+    // F2: On parameters without explicit validators, reject compound
+    // PostgREST operators (in/and/or) that let clients bypass per-value
+    // length caps and construct arbitrary filter expressions.
+    if (!validate && !isSafeFilterValue(raw)) continue;
 
     accepted.push([param, raw]);
   }
