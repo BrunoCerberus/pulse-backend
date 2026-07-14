@@ -296,6 +296,13 @@ column set on `articles_with_source`, `sources`, `categories`) — see
 [database-schema.md](./database-schema.md). Operational columns and the
 `source_health` view require the service-role key.
 
+> **Warning:** Direct `/rest/v1` access bypasses Edge Function request guards
+> (limit clamping, order validation, query-string length limits). It is provided
+> for debugging and monitoring tooling. Production iOS clients should use the
+> Edge Function endpoints: they enforce a 100-row limit, validate `order` columns
+> against an allow-list, and reject oversized query strings. The direct surface is
+> not rate-limited beyond Supabase's global Cloudflare tier limits.
+
 ---
 
 ## Error Responses
