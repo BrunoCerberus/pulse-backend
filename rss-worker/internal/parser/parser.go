@@ -656,8 +656,8 @@ func canonicalizeRawQuery(raw string) string {
 
 // splitQueryParams splits a raw query string into individual parameter segments.
 // RFC 3986 treats both '&' and ';' as parameter separators; feeds may use either.
-// The original separator character is preserved in each segment so that canonical
-// forms remain byte-identical for feeds that use ';' as a separator.
+// Both are normalized away — the output always uses '&' as the sole separator, so
+// canonical forms merge ';' and '&' into a consistent representation.
 func splitQueryParams(raw string) []string {
 	var segments []string
 	var current strings.Builder

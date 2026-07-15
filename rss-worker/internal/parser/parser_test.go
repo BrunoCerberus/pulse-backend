@@ -1624,9 +1624,10 @@ func TestCanonicalizeURL(t *testing.T) {
 	if canonicalizeURL(bad) != bad {
 		t.Errorf("canonicalizeURL should pass through on parse error")
 	}
-	// L2 regression: a ';' in the query must be PRESERVED, not dropped. The old
-	// url.Query().Encode() round-trip silently discarded the whole query on a
-	// ';', collapsing distinct articles to one url_hash.
+	// L2 regression: ';' and '&' are equivalent per RFC 3986 — both normalize to
+	// '&' in the canonical form. A ';' must not be lost entirely, which would
+	// collapse distinct articles to one url_hash (the old url.Query().Encode()
+	// round-trip silently dropped the query on ';').
 	a := canonicalizeURL("https://site.example/view?id=1;ref=rss")
 	b := canonicalizeURL("https://site.example/view?id=2;ref=rss")
 	if a == b {

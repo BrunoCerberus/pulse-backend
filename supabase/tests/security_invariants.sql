@@ -431,11 +431,11 @@ BEGIN
     -- F1: Verify statement_timeout is still pinned (3s cap on search DoS surface).
     SELECT EXISTS(
         SELECT 1 FROM unnest(COALESCE(p.proconfig, ARRAY[]::text[])) AS cfg
-        WHERE cfg LIKE 'statement_timeout=%'
+        WHERE cfg LIKE 'statement_timeout=3s'
     ) INTO has_timeout FROM pg_catalog.pg_proc p WHERE p.oid = fn_oid;
 
     IF NOT has_timeout THEN
-        RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles is missing statement_timeout pin (audit F1) — tsquery build could exhaust CPU without timeout';
+        RAISE EXCEPTION 'INVARIANT 10 FAILED: search_articles statement_timeout is not set to ''3s'' (audit F1) — tsquery build could exhaust CPU without timeout';
     END IF;
 END $$;
 

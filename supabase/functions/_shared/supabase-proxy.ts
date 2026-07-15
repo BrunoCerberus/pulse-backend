@@ -131,7 +131,7 @@ function filterValueOf(raw: string): string {
 // 256-char value — and construct arbitrary filter expressions the proxy
 // author never intended. Dropping them on unvalidated params keeps the proxy
 // as a narrowing surface, not an oracle.
-const COMPOUND_OP_RE = /^(in)\s*\.\(|^(or|and)\s*=/i;
+const COMPOUND_OP_RE = /^\s*(in)\s*\./;
 function rejectsCompoundOperators(raw: string): boolean {
   return COMPOUND_OP_RE.test(raw);
 }
