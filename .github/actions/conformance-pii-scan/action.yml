@@ -1,0 +1,121 @@
+name: Conformance PII scan (shared)
+description: >
+  PII guard rails shared by the GDPR and LGPD conformance workflows: US SSN
+  pattern ban, email allowlist enforcement, and the client-IP-handling ban in
+  rss-worker. Regulation-specific identifier bans (IBAN / EU phone for GDPR,
+  CPF / CNPJ for LGPD) stay inline in the calling workflow. The gitleaks
+  custom-rules history sweep lives in security.yml (one sweep per PR instead
+  of one per regulation). Requires the repository to already be checked out.
+
+inputs:
+  regulation:
+    description: Regulation label for error messages (e.g. GDPR, LGPD)
+    required: true
+  doc:
+    description: Path to the regulation's conformance doc
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # rg is NOT preinstalled on ubuntu runners, and a missing rg makes every
+    # `if rg …` guard below silently pass (exit 127 looks like "no match").
+    - name: Ensure ripgrep
+      uses: ./.github/actions/ensure-ripgrep
+
+    - name: US SSN pattern ban (CCPA / CPRA)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # XXX-XX-XXXX. Exclusion list mirrors the [allowlist] paths in
+        # .github/lgpd-gdpr-rules.toml so illustrative examples in the
+        # conformance docs (and the pattern definitions themselves) are
+        # permitted.
+        SSN_RE='\b\d{3}-\d{2}-\d{4}\b'
+
+        if rg --pcre2 \
+            -g '!docs/privacy.md' \
+            -g '!docs/lgpd-conformance.md' \
+            -g '!docs/gdpr-conformance.md' \
+            -g '!docs/ccpa-conformance.md' \
+            -g '!docs/ropa.md' \
+            -g '!docs/data-retention.md' \
+            -g '!.github/lgpd-gdpr-rules.toml' \
+            -g '!.github/pii-allowlist.txt' \
+            -g '!.github/workflows/lgpd-conformance.yml' \
+            -g '!.github/workflows/gdpr-conformance.yml' \
+            -g '!.github/actions/conformance-pii-scan/action.yml' \
+            -e "$SSN_RE" \
+            .; then
+          echo "::error::US SSN pattern found. CCPA / CPRA: no US Social Security Numbers may be stored in this repo. See docs/ccpa-conformance.md."
+          exit 1
+        fi
+        echo "OK: no US SSN patterns."
+
+    - name: Email allowlist enforcement
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Two negative lookbehinds:
+        #   (?<![A-Za-z0-9._%+-])  don't start mid-token — without it, PCRE
+        #                          backtracking matches the
+        #                          `reuters.com@evil.example` suffix of
+        #                          `https://www.reuters.com@evil.example/`.
+        #   (?<!//)                URL userinfo (`scheme://user@host`, the SSRF
+        #                          test-fixture shape) is not an email address.
+        #                          Deliberately `//`, not `/`: an email after a
+        #                          SINGLE slash (`/api/users/alice@example.com`)
+        #                          is a classic accidental-PII leak and must
+        #                          still be flagged.
+        EMAIL_RE='(?<![A-Za-z0-9._%+-])(?<!//)[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
+
+        # All email literals in the repo, excluding the allowlist itself.
+        # Both sides are lowercased before comparison: RFC 5321 specifies
+        # the domain as case-insensitive and the local part is conventionally
+        # treated as case-insensitive, so 'Bruno.Guitarpro@gmail.com' and
+        # 'bruno.guitarpro@gmail.com' must compare equal.
+        found=$(rg --pcre2 -o "$EMAIL_RE" \
+          -g '!.github/pii-allowlist.txt' \
+          --no-filename . 2>/dev/null \
+          | tr '[:upper:]' '[:lower:]' \
+          | sort -u || true)
+
+        # Allowed addresses (strip comments + blank lines, lowercased).
+        allowed=$(grep -vE '^[[:space:]]*(#|$)' .github/pii-allowlist.txt \
+          | tr '[:upper:]' '[:lower:]' \
+          | sort -u)
+
+        # Anything in `found` not in `allowed`.
+        bad=$(comm -23 <(printf '%s\n' "$found") <(printf '%s\n' "$allowed") || true)
+
+        if [ -n "${bad//[[:space:]]/}" ]; then
+          echo "::error::Disallowed email addresses found in source:"
+          printf '%s\n' "$bad" | sed 's/^/  /'
+          echo "If intentional, add to .github/pii-allowlist.txt with a justifying comment."
+          exit 1
+        fi
+        echo "OK: all emails are on the allowlist."
+
+    - name: IP-handling code path ban (rss-worker)
+      shell: bash
+      env:
+        REGULATION: ${{ inputs.regulation }}
+        DOC: ${{ inputs.doc }}
+      run: |
+        set -euo pipefail
+        # The Go RSS worker must not handle inbound user requests. The
+        # canonical Go ways to read a client IP are RemoteAddr and the
+        # X-Forwarded-For / X-Real-IP / CF-Connecting-IP headers. If any of
+        # these appear in production code, the no-PII invariant is broken
+        # and this document set must be revisited.
+        if rg -t go \
+            -g '!*_test.go' \
+            -e '\bRemoteAddr\b' \
+            -e 'X-Forwarded-For' \
+            -e 'X-Real-IP' \
+            -e 'CF-Connecting-IP' \
+            rss-worker/; then
+          echo "::error::Inbound-request / client-IP handling detected in rss-worker. ${REGULATION} posture requires no IP collection. Review ${DOC} before proceeding."
+          exit 1
+        fi
+        echo "OK: no client-IP handling code paths."

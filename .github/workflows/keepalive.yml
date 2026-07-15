@@ -1,0 +1,52 @@
+name: Workflow Keepalive
+
+# GitHub disables ALL `schedule:` triggers in a public repo after 60 days
+# without commit activity. fetch-rss.yml is the backbone of the product —
+# if this repo ever goes quiet for two months, ingestion, cleanup, backfill,
+# and the watchdog all silently stop.
+#
+# Re-enabling a workflow via the API resets that 60-day inactivity timer, so
+# this monthly job keeps every scheduled workflow (including itself) alive
+# with no dummy commits and no third-party action. Workflows that were
+# disabled MANUALLY are left alone — only `active` (timer reset) and
+# `disabled_inactivity` (resurrect) states are touched.
+
+on:
+  schedule:
+    # Monthly, 1st at 05:45 UTC — staggered from every other cron in the repo.
+    - cron: '45 5 1 * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    name: Keep scheduled workflows enabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-enable workflows
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          enabled=0
+          while IFS=$'\t' read -r id state path; do
+            gh api -X PUT "repos/${GH_REPO}/actions/workflows/${id}/enable"
+            echo "kept alive: ${path} (was ${state})"
+            enabled=$((enabled + 1))
+          done < <(gh api --paginate "repos/${GH_REPO}/actions/workflows" \
+            --jq '.workflows[] | select(.state == "active" or .state == "disabled_inactivity") | [.id, .state, .path] | @tsv')
+          echo "::notice title=Workflow Keepalive::reset the 60-day inactivity timer on ${enabled} workflows"
+          {
+            echo "## Workflow Keepalive ✅"
+            echo ""
+            echo "- Reset the 60-day scheduled-trigger inactivity timer on **${enabled}** workflows"
+            echo "- Manually disabled workflows were left untouched"
+          } >> "$GITHUB_STEP_SUMMARY"

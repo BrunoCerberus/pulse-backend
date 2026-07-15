@@ -1,0 +1,102 @@
+name: Conformance structural integrity (shared)
+description: >
+  Shared by the GDPR and LGPD conformance workflows: bans new tables outside
+  the conformance allowlist and PII-implying column names in migrations, and
+  asserts the ROPA subprocessor table + retention doc stay consistent.
+  Requires the repository to already be checked out.
+
+inputs:
+  regulation:
+    description: Regulation label for error messages (e.g. GDPR, LGPD)
+    required: true
+  doc:
+    description: Path to the regulation's conformance doc
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # rg is NOT preinstalled on ubuntu runners, and a missing rg makes every
+    # `if rg …` guard below silently pass (exit 127 looks like "no match").
+    # It also silently empties the `tables=$(rg … || true)` capture.
+    - name: Ensure ripgrep
+      uses: ./.github/actions/ensure-ripgrep
+
+    - name: No new tables outside the conformance allowlist
+      shell: bash
+      env:
+        DOC: ${{ inputs.doc }}
+      run: |
+        set -euo pipefail
+        # Exact set of tables declared in migrations as of the initial
+        # conformance review (2026-05-14). Any new table must be reviewed
+        # under GDPR/LGPD before this list is extended.
+        allowed=" categories sources articles fetch_logs "
+
+        # Optional `schema.` prefix is consumed and discarded so a future
+        # `CREATE TABLE public.user_profiles` extracts `user_profiles`,
+        # not `public` (which would either spuriously fail or — if the
+        # schema name collides with an allowlisted table — silently slip
+        # the real table past the check).
+        tables=$(rg --pcre2 -oNI '^[[:space:]]*CREATE TABLE[[:space:]]+(?:IF NOT EXISTS[[:space:]]+)?(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)' \
+          -r '$1' \
+          supabase/migrations/ 2>/dev/null | sort -u || true)
+
+        fail=0
+        for t in $tables; do
+          case "$allowed" in
+            *" $t "*) : ;;
+            *)
+              echo "::error::Migration declares a new table '$t' outside the conformance allowlist. Update ${DOC}, docs/ropa.md, and the allowlist in .github/actions/conformance-structural-integrity before re-running."
+              fail=1
+              ;;
+          esac
+        done
+        [ "$fail" -eq 0 ] || exit 1
+        echo "OK: only allowlisted tables exist."
+
+    - name: No suspicious PII column names in migrations
+      shell: bash
+      env:
+        DOC: ${{ inputs.doc }}
+      run: |
+        set -euo pipefail
+        # Two patterns, both catching PII-implying column declarations:
+        #   1. Block-style:   inside CREATE TABLE, columns start the line.
+        #   2. ALTER TABLE:   `ADD COLUMN <name> <TYPE>` is mid-statement.
+        # Anchored to a type-like token following the column name so we
+        # don't catch column references in WHERE clauses or function args.
+        if rg --pcre2 \
+            -g 'supabase/migrations/*.sql' \
+            -i \
+            -e '^\s*(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
+            -e 'ADD COLUMN\s+(email|phone|password|password_hash|user_id|client_ip|session_id|cpf|cnpj|rg_number|ssn|iban)\s+[A-Z]' \
+            .; then
+          echo "::error::A migration introduces a column name that implies PII storage. Review ${DOC} before continuing."
+          exit 1
+        fi
+        echo "OK: no PII-implying column names."
+
+    - name: ROPA subprocessor table lists GitHub and Supabase
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! grep -qE '^\|[[:space:]]*GitHub[[:space:]]' docs/ropa.md; then
+          echo "::error::docs/ropa.md no longer lists GitHub as a subprocessor."
+          exit 1
+        fi
+        if ! grep -qE '^\|[[:space:]]*Supabase[[:space:]]' docs/ropa.md; then
+          echo "::error::docs/ropa.md no longer lists Supabase as a subprocessor."
+          exit 1
+        fi
+        echo "OK: ROPA lists both subprocessors."
+
+    - name: Retention doc declares '7 days'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! grep -qE '\b7 days?\b' docs/data-retention.md; then
+          echo "::error::docs/data-retention.md no longer states '7 days'. Update to match ArticleRetentionDays in config.go."
+          exit 1
+        fi
+        echo "OK: retention doc matches config."
