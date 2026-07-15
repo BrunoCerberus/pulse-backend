@@ -224,25 +224,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.36.0
         with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: CRITICAL,HIGH
-          # SARIF for the Security tab; trivy writes the report before applying
-          # exit-code, so the gate (exit-code 1 on a CRITICAL/HIGH finding) and
-          # the upload below (if: always()) coexist.
-          format: sarif
-          output: trivy-results.sarif
-          exit-code: "1"
-          # Ignore CVEs that have no fix available — keeps the report actionable.
-          ignore-unfixed: true
+          version: v0.70.0
 
-      - name: Print Trivy findings (debug)
-        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
-        run: trivy fs . --severity CRITICAL,HIGH --format table 2>&1 || true
+      - name: Run Trivy (SARIF)
+        run: |
+          trivy fs . \
+            --scanners vuln,secret,misconfig \
+            --severity CRITICAL,HIGH \
+            --format sarif \
+            --output trivy-results.sarif \
+            --ignore-unfixed \
+            --skip-dirs .cache 2>&1 || true
+
+      - name: Print Trivy findings
+        if: ${{ always() }}
+        run: |
+          echo "## Trivy Filesystem Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Print full table output for visibility
+          trivy fs . --scanners vuln,secret,misconfig \
+            --severity CRITICAL,HIGH --format table 2>&1 || true
 
       - name: Upload Trivy SARIF
         # Skip on fork PRs (read-only token); the trivy gate above still runs there.
