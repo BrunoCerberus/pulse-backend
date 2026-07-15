@@ -589,7 +589,9 @@ Deno.test("buildProxyUrl drops compound operators on unvalidated params", () => 
 
     // Safe eq. filter on unvalidated param still passes through.
     const ok = buildProxyUrl(
-      new Request("http://localhost/x?id=eq.11111111-1111-1111-1111-111111111111&source_slug=eq.bbc-tech"),
+      new Request(
+        "http://localhost/x?id=eq.11111111-1111-1111-1111-111111111111&source_slug=eq.bbc-tech",
+      ),
       cfg,
     );
     assertStringIncludes(ok, "id=eq.11111111-1111-1111-1111-111111111111");
