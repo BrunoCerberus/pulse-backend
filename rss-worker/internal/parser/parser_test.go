@@ -1624,10 +1624,10 @@ func TestCanonicalizeURL(t *testing.T) {
 	if canonicalizeURL(bad) != bad {
 		t.Errorf("canonicalizeURL should pass through on parse error")
 	}
-	// L2 regression: ';' and '&' are equivalent per RFC 3986 — both normalize to
-	// '&' in the canonical form. A ';' must not be lost entirely, which would
-	// collapse distinct articles to one url_hash (the old url.Query().Encode()
-	// round-trip silently dropped the query on ';').
+	// L2 regression: ';' is preserved as a literal character, not treated as an
+	// '&' equivalent — Go's url.Query().Encode() silently drops the entire query
+	// on ';', which would collapse distinct articles to one url_hash. The semicolon
+	// must survive canonicalization so the full query byte-stream is hashed.
 	a := canonicalizeURL("https://site.example/view?id=1;ref=rss")
 	b := canonicalizeURL("https://site.example/view?id=2;ref=rss")
 	if a == b {
@@ -1635,6 +1635,19 @@ func TestCanonicalizeURL(t *testing.T) {
 	}
 	if !strings.Contains(a, "id=1") || !strings.Contains(a, "ref=rss") {
 		t.Errorf("semicolon query dropped during canonicalization: %q", a)
+	}
+
+	// P1 regression: '?'x=a;b=c' and '?x=a&b=c' are distinct resources — the
+	// semicolon is a literal query character, not an '&' equivalent. They must
+	// produce different canonical forms and url_hashes so one does not silently
+	// deduplicate the other.
+	xSemi := canonicalizeURL("https://example.com/article?x=a;b=c")
+	xAmp := canonicalizeURL("https://example.com/article?x=a&b=c")
+	if xSemi == xAmp {
+		t.Errorf("semicolon and ampersand treated as equivalent: semi=%q amp=%q", xSemi, xAmp)
+	}
+	if !strings.Contains(xSemi, "x=a;b=c") {
+		t.Errorf("semicolon-query not preserved: %q", xSemi)
 	}
 }
 

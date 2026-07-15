@@ -646,8 +646,8 @@ func canonicalizeURL(raw string) string {
 // entire query when it contains a ';' (Go 1.17+ rejects ';' as a separator),
 // which collapsed distinct articles like `?id=1;ref=x` and `?id=2;ref=x` to
 // one url_hash and silently suppressed all but the first. Sorting the raw
-// segments preserves every byte while keeping dedup canonical (RFC 3986 treats
-// ';' and '&' as equivalent parameter separators).
+// segments preserves every byte while keeping dedup canonical; semicolons are
+// treated as literal query characters, not parameter separators.
 func canonicalizeRawQuery(raw string) string {
 	params := splitQueryParams(raw)
 	sort.Strings(params)
@@ -655,14 +655,15 @@ func canonicalizeRawQuery(raw string) string {
 }
 
 // splitQueryParams splits a raw query string into individual parameter segments.
-// RFC 3986 treats both '&' and ';' as parameter separators; feeds may use either.
-// Both are normalized away — the output always uses '&' as the sole separator, so
-// canonical forms merge ';' and '&' into a consistent representation.
+// Only '&' is treated as a separator — ';' is preserved verbatim. This avoids
+// merging distinct resources like ?x=a;b=c and ?x=a&b=c into one url_hash.
+// Go's net/url discards semicolons during the standard url.Values round-trip,
+// so we split manually on '&' to keep raw segments intact before sorting.
 func splitQueryParams(raw string) []string {
 	var segments []string
 	var current strings.Builder
 	for _, c := range raw {
-		if c == ';' || c == '&' {
+		if c == '&' {
 			if current.Len() > 0 {
 				segments = append(segments, current.String())
 				current.Reset()

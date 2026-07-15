@@ -229,20 +229,28 @@ jobs:
         with:
           version: v0.70.0
 
-      - name: Run Trivy (SARIF + table output)
+      - name: Run Trivy (SARIF + gate on CRITICAL/HIGH)
         run: |
-          # First pass: generate SARIF for CodeQL upload (findings go to file, not stdout)
+          # Single pass: generate SARIF for CodeQL upload AND gate on findings.
+          # --exit-code 1 makes the job fail when CRITICAL/HIGH vulns/secrets/misconfigs are found.
+          # --skip-dirs .cache avoids scanning our trivy cache artifacts.
           trivy fs . \
             --scanners vuln,secret,misconfig \
             --severity CRITICAL,HIGH \
             --format sarif \
             --output trivy-results.sarif \
             --ignore-unfixed \
-            --skip-dirs .cache 2>&1 || true
-          # Second pass: print findings to stdout in table format for visibility
-          echo "=== TRIVY FINDINGS (table) ==="
+            --skip-dirs .cache \
+            --exit-code 1
+
+      - name: Print Trivy findings (on failure)
+        if: ${{ failure() && hashFiles('trivy-results.sarif') != '' }}
+        run: |
+          echo "## Trivy Filesystem Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Print table output for visibility when findings exist
           trivy fs . --scanners vuln,secret,misconfig \
-            --severity CRITICAL,HIGH --format table 2>&1 || exit $?
+            --severity CRITICAL,HIGH --format table 2>&1 || true
 
       - name: Upload Trivy SARIF
         # Skip on fork PRs (read-only token); the trivy gate above still runs there.

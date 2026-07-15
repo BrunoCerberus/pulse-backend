@@ -211,11 +211,11 @@ rather than line numbers so this stays accurate as code moves.
   `getaddrinfo` resolves, so a stored URL can't coerce a client into an internal
   probe. (The worker's own fetch is guarded at the dial layer; this guards the
   value that is *served to iOS*.)
-- **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
-  and sorts query parameters before SHA-256 hashing, so dedup can't be bypassed.
-  Sorting splits the raw query on `&` only (not the lossy `url.Values` round-trip,
-  which since Go 1.17 discards the whole query on a `;` — collapsing distinct
-  articles to one `url_hash`).
+ - **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
+   and sorts query parameters before SHA-256 hashing, so dedup can't be bypassed.
+   Sorting splits the raw query on `&` only — semicolons are preserved as literal
+   characters (Go's net/url silently drops the entire query on a `;`, which would
+   collapse distinct articles to one `url_hash`).
 - **C-CLAMP** — `clampPublishedDate` bounds `published_at` to `[now-10y, now+1h]`.
 - **C-RATELIMIT** — `RateLimitingTransport` applies a per-host token bucket
   (default 2 rps / burst 5) to all user-content clients.
