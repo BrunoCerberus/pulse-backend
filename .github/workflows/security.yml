@@ -224,27 +224,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.36.0
-        with:
-          version: v0.70.0
-
-      - name: Run Trivy (SARIF)
+      - name: Run Trivy (SARIF + table output)
         run: |
+          set -eo pipefail
+          # First pass: generate SARIF for CodeQL upload (findings go to file, not stdout)
           trivy fs . \
             --scanners vuln,secret,misconfig \
             --severity CRITICAL,HIGH \
             --format sarif \
             --output trivy-results.sarif \
             --ignore-unfixed \
-            --skip-dirs .cache 2>&1 || true
-
-      - name: Print Trivy findings
-        if: ${{ always() }}
-        run: |
-          echo "## Trivy Filesystem Scan Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          # Print full table output for visibility
+            --skip-dirs .cache 2>&1 || trivy_exit=$?; :
+          # Second pass: print findings to stdout in table format for visibility
+          echo "=== TRIVY FINDINGS (table) ===" && \
           trivy fs . --scanners vuln,secret,misconfig \
             --severity CRITICAL,HIGH --format table 2>&1 || true
 
