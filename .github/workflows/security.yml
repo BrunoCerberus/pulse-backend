@@ -226,7 +226,6 @@ jobs:
 
       - name: Run Trivy (SARIF + table output)
         run: |
-          set -eo pipefail
           # First pass: generate SARIF for CodeQL upload (findings go to file, not stdout)
           trivy fs . \
             --scanners vuln,secret,misconfig \
@@ -234,11 +233,11 @@ jobs:
             --format sarif \
             --output trivy-results.sarif \
             --ignore-unfixed \
-            --skip-dirs .cache 2>&1 || trivy_exit=$?; :
+            --skip-dirs .cache 2>&1 || true
           # Second pass: print findings to stdout in table format for visibility
-          echo "=== TRIVY FINDINGS (table) ===" && \
+          echo "=== TRIVY FINDINGS (table) ==="
           trivy fs . --scanners vuln,secret,misconfig \
-            --severity CRITICAL,HIGH --format table 2>&1 || true
+            --severity CRITICAL,HIGH --format table 2>&1 || exit $?
 
       - name: Upload Trivy SARIF
         # Skip on fork PRs (read-only token); the trivy gate above still runs there.
