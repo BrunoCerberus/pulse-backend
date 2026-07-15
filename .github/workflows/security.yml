@@ -240,6 +240,10 @@ jobs:
           # Ignore CVEs that have no fix available — keeps the report actionable.
           ignore-unfixed: true
 
+      - name: Print Trivy findings (debug)
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
+        run: trivy fs . --severity CRITICAL,HIGH --format table 2>&1 || true
+
       - name: Upload Trivy SARIF
         # Skip on fork PRs (read-only token); the trivy gate above still runs there.
         if: ${{ always() && hashFiles('trivy-results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
