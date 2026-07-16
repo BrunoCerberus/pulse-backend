@@ -1644,8 +1644,9 @@ func TestCanonicalizeURL(t *testing.T) {
 	// sorted params so that ?x=a;b=c and ?x=b&a=c (same keys, different structure)
 	// remain distinguishable.
 	xSemi := canonicalizeURL("https://example.com/article?x=a;b=c")
-	if !strings.Contains(xSemi, "b=c") {
-		t.Errorf("semicolon-query param dropped: %q", xSemi)
+	xAmp := canonicalizeURL("https://example.com/article?x=a&b=c")
+	if xSemi == xAmp {
+		t.Errorf("semicolon and ampersand treated as equivalent: semi=%q amp=%q", xSemi, xAmp)
 	}
 
 	// P2 regression: consecutive '&' separators must not collapse — using
