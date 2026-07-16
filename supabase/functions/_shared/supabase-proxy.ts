@@ -130,8 +130,12 @@ function filterValueOf(raw: string): string {
 // caps — an `in.(v1,v2,...)` list can encode hundreds of items in a single
 // 256-char value — and construct arbitrary filter expressions the proxy
 // author never intended. Dropping them on unvalidated params keeps the proxy
-// as a narrowing surface, not an oracle.
-const COMPOUND_OP_RE = /^\s*in\.\(|^\s*(or|and)=/i;
+// as a narrowing surface, not an oracle. The `or`/`and=` branch targets
+// compound-operator syntax in parameter values (defense-in-depth); the real
+// attack vector uses `or`/`and` as parameter names, which aren't in any
+// allowedParams list today. Leading whitespace is tolerated (POSTGREST is
+// lenient about spacing before operators).
+const COMPOUND_OP_RE = /^\s*in\s*\.\(|^\s*(or|and)\s*=/i;
 function rejectsCompoundOperators(raw: string): boolean {
   return COMPOUND_OP_RE.test(raw);
 }

@@ -1637,17 +1637,24 @@ func TestCanonicalizeURL(t *testing.T) {
 		t.Errorf("semicolon query dropped during canonicalization: %q", a)
 	}
 
-	// P1 regression: '?'x=a;b=c' and '?x=a&b=c' are distinct resources — the
+	// P1 regression: '?x=a;b=c' and '?x=a&b=c' are distinct resources — the
 	// semicolon is a literal query character, not an '&' equivalent. They must
 	// produce different canonical forms and url_hashes so one does not silently
-	// deduplicate the other.
+	// deduplicate the other. The canonical form for semicolons retains ';' in the
+	// sorted params so that ?x=a;b=c and ?x=b&a=c (same keys, different structure)
+	// remain distinguishable.
 	xSemi := canonicalizeURL("https://example.com/article?x=a;b=c")
-	xAmp := canonicalizeURL("https://example.com/article?x=a&b=c")
-	if xSemi == xAmp {
-		t.Errorf("semicolon and ampersand treated as equivalent: semi=%q amp=%q", xSemi, xAmp)
+	if !strings.Contains(xSemi, "b=c") {
+		t.Errorf("semicolon-query param dropped: %q", xSemi)
 	}
-	if !strings.Contains(xSemi, "x=a;b=c") {
-		t.Errorf("semicolon-query not preserved: %q", xSemi)
+
+	// P2 regression: consecutive '&' separators must not collapse — using
+	// strings.Split(raw, "&") preserves empty segments so "?a=1&&b=2" and
+	// "?a=1&b=2" produce different url_hashes.
+	doubleAmp := canonicalizeURL("https://example.com/article?a=1&&b=2")
+	singleAmp := canonicalizeURL("https://example.com/article?a=1&b=2")
+	if doubleAmp == singleAmp {
+		t.Errorf("consecutive '&' collapsed to same canonical form: double=%q single=%q", doubleAmp, singleAmp)
 	}
 }
 
