@@ -73,7 +73,7 @@ jobs:
         run: gitleaks detect --source . --verbose --redact --no-banner --config .github/lgpd-gdpr-rules.toml
 
       - name: Run TruffleHog
-        uses: trufflesecurity/trufflehog@00155c9dc586f34d189adc83d3ac2698c2ec551f # v3.95.8
+        uses: trufflesecurity/trufflehog@27b0417c16317ca9a472a9a8092acce143b49c55 # v3.95.9
         with:
           # The action injects --fail automatically; adding it to extra_args
           # causes "flag 'fail' cannot be repeated".
@@ -151,7 +151,7 @@ jobs:
         # Skip on fork PRs (read-only token can't write security-events); the
         # gosec gate above still runs there. Same-repo PRs + push + schedule upload.
         if: ${{ always() && hashFiles('rss-worker/results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: rss-worker/results.sarif
           category: gosec
@@ -185,7 +185,7 @@ jobs:
         uses: ./.github/actions/setup-go-worker
 
       - name: Run govulncheck
-        uses: golang/govulncheck-action@b625fbe08f3bccbe446d94fbf87fcc875a4f50ee # v1.0.4
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
           # Pin govulncheck's Go to go.mod (not the action's default "stable",
           # which resolves to an unpatched runner Go) so it reports against the
@@ -243,7 +243,7 @@ jobs:
       - name: Upload Trivy SARIF
         # Skip on fork PRs (read-only token); the trivy gate above still runs there.
         if: ${{ always() && hashFiles('trivy-results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           sarif_file: trivy-results.sarif
           category: trivy-fs
