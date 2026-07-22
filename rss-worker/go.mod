@@ -1,6 +1,6 @@
 module github.com/pulsefeed/rss-worker
 
-go 1.25.11
+go 1.25.12
 
 require (
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
@@ -15,5 +15,5 @@ require (
 	github.com/gogs/chardet v0.0.0-20211120154057-b7413eaefb8f // indirect
 	github.com/mmcdole/goxpp/v2 v2.0.0 // indirect
 	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 )

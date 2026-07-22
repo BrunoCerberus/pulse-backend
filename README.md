@@ -104,7 +104,7 @@ pulse-backend/
 ├── rss-worker/     # Go RSS fetcher + enrichment (internal/ packages)
 ├── supabase/       # migrations, Edge Functions, SQL invariant tests
 ├── docs/           # all documentation (see index above)
-└── .github/        # 15 workflows + governance
+└── .github/        # 18 workflows + governance
 ```
 
 → Full annotated layout in **[docs/development.md](docs/development.md#repository-layout)**.
