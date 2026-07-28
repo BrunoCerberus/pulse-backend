@@ -1,4 +1,4 @@
-import { assertEquals, assertStringIncludes } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { handler, MAX_QUERY_LEN } from "./index.ts";
 
 function setupEnv() {

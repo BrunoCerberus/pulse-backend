@@ -3,6 +3,13 @@
     "strict": true,
     "lib": ["deno.window"]
   },
+  // Test-only dependencies. Declared here (rather than as bare URLs in each
+  // test file) so there is exactly ONE version to bump and so `deno outdated`
+  // can see them — that is what deno-deps.yml polls weekly. Dependabot has no
+  // Deno ecosystem, so this import map is the whole update surface.
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1.0.16"
+  },
   "lint": {
     "rules": {
       "tags": ["recommended"]

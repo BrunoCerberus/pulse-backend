@@ -1,9 +1,4 @@
-import {
-  assert,
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-} from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   buildCacheKey,
   buildProxyUrl,

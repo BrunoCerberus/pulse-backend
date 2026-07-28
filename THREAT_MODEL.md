@@ -141,6 +141,8 @@ the vulnerability classes worth targeting during discovery.
 | Fork PR coerces a review bot into auto-approving via prompt injection | **Supply chain** | C-FORKGATE |
 | Mutable action ref (`@main`) is repointed to malicious code | **Supply chain** | C-PIN |
 | Over-broad workflow token is abused after a step is compromised | **Supply chain** | C-LEASTPRIV |
+| Job token left in `.git/config` is read by a later step or by code it runs | **Supply chain** | C-NOCRED |
+| A new workflow reintroduces template injection or an unpinned action | **Supply chain** | C-WFLINT |
 | A vulnerable transitive dependency ships to production | **Supply chain** | C-DEPSCAN |
 | A leaked secret lands in git history | **Secret exposure** | C-SECRETSCAN |
 | A PR silently introduces PII processing | **Privacy** | C-CONFORMANCE |
@@ -255,11 +257,19 @@ rather than line numbers so this stays accurate as code moves.
 - **C-FORKGATE** — review bots run only for `OWNER`/`MEMBER`/`COLLABORATOR`
   PRs; SARIF-upload steps skip on fork PRs.
 - **C-PIN** — third-party actions are pinned to commit SHAs; scanner versions
-  pinned via env.
+  pinned via env; curl-installed binaries are SHA256-verified before extraction.
+- **C-NOCRED** — every `actions/checkout` sets `persist-credentials: false`, so
+  the job token is not left in `.git/config` for later steps (or the code they
+  execute) to read.
+- **C-WFLINT** — `zizmor` (in `lint-meta.yml`, a required check) audits every
+  workflow and composite action for template injection, credential persistence,
+  over-broad permissions, and unpinned actions.
 - **C-LEASTPRIV** — workflows default to `contents: read`; jobs widen only as
   needed.
 - **C-DEPSCAN** — govulncheck (PR + weekly), Trivy (vuln/secret/misconfig),
-  Dependency Review on PRs, CodeQL (Go + TS), Dependabot, SBOM.
+  Dependency Review on PRs, CodeQL (Go + TS, `security-extended` suite),
+  Dependabot (Go + Actions), `deno-deps.yml` (Deno deps, which Dependabot does
+  not cover), SBOM.
 - **C-SECRETSCAN** — gitleaks (full history) + TruffleHog (verified).
 - **C-CONFORMANCE** — LGPD/GDPR/CCPA workflows ban PII patterns, enforce the
   table/column allowlists, retention literal, and RLS-still-on invariant.
