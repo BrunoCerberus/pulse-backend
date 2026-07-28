@@ -11,13 +11,13 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
 | `backfill.yml` | Daily 04:30 UTC + manual (`kind: both\|images\|content`) | og:image + content backfill (two parallel jobs) |
-| `test.yml` | Push/PR to `master` | Go tests (race + coverage), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, govulncheck, Deno tests |
+| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. govulncheck lives in `security.yml`, not here. |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `codeql.yml` | Push/PR to `master` + weekly Mon 00:00 UTC | GitHub CodeQL static analysis; uploads SARIF to the Security tab |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
-| `migrations-ci.yml` | Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` | Boots the local Supabase stack, applies all migrations from scratch (`supabase db reset --no-seed`), `supabase db lint --fail-on error`, then runs `supabase/tests/security_invariants.sql` |
-| `lint-meta.yml` | Push/PR | `actionlint` (+ shellcheck on run-blocks) over all workflows |
-| `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | Gated by the `production` Environment (required-reviewer approval). Ordered steps under `set -e`: apply migrations (`supabase db push`; no-ops if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → api-health smoke test. Concurrency group `deploy-production`, no cancel-in-progress. |
+| `migrations-ci.yml` | Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` | Boots the local Supabase stack, applies all migrations from scratch (`supabase db reset --no-seed`), replays this PR's new migrations **incrementally** on top of the base-branch schema (`supabase migration up`, the path production takes), `supabase db lint --fail-on error`, then runs `supabase/tests/security_invariants.sql` |
+| `lint-meta.yml` | Push/PR | `actionlint` (+ shellcheck on run-blocks) for correctness and `zizmor` for workflow security (template injection, credential persistence, permissions, action pinning) over all workflows and composite actions |
+| `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | Gated by the `production` Environment (required-reviewer approval). Ordered steps under `set -e`: apply migrations (`supabase db push --dry-run` to log pending + surface drift, then the real push; **fails** if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → wait for `api-health` → smoke-test **all six endpoints** (status, response shape, `Cache-Control`). Concurrency group `deploy-production`, no cancel-in-progress. |
 | `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure/DB-quota threshold breach |
 | `lgpd-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, required privacy docs, retention + RLS + no-PII-redaction invariant, structural integrity on migrations |
 | `gdpr-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU-phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |
@@ -25,6 +25,7 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Automated Claude Code review of PR diffs |
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
+| `deno-deps.yml` | Weekly Mon 06:30 UTC + manual | Runs `deno outdated` over `supabase/functions` and keeps a single tracking issue in sync (opens/updates/closes it). Dependabot has no Deno ecosystem, so this is the Edge Functions' only dependency-update path. |
 | `keepalive.yml` | Monthly (1st, 05:45 UTC) + manual | Resets GitHub's 60-day scheduled-trigger inactivity timer so crons (fetch, cleanup, watchdog, …) survive commit-quiet periods |
 
 ## Branch Protection
@@ -52,14 +53,20 @@ Trivy, uploads SARIF to the GitHub Security tab.
 |-----|------|-----------------|
 | Secret Scan | gitleaks + TruffleHog | Leaked API keys, tokens, and credentials in code and full git history (TruffleHog validates against live APIs to cut false positives) |
 | Go SAST | gosec | SQL injection, hardcoded credentials, weak crypto, unsafe HTTP clients, and other insecure Go patterns |
-| Go Vulnerabilities | govulncheck | Known CVEs in Go module dependencies |
+| Go Vulnerabilities | govulncheck | Known CVEs in Go module dependencies (the repo's single govulncheck run) |
 | Trivy Filesystem | Trivy | Dependency CVEs (all ecosystems), additional secret patterns, and misconfigurations in Dockerfiles / GitHub workflows / IaC |
 | SBOM | Trivy (CycloneDX) | Generates a Software Bill of Materials as a workflow artifact for supply-chain audits |
 
 All jobs run in parallel and fail the build on any finding. The weekly schedule
 ensures that vulnerabilities disclosed after merge still surface. Dependabot
 (weekly) handles automated dependency bumps for both Go modules and GitHub
-Actions.
+Actions; Deno dependencies are outside Dependabot's ecosystem support and are
+covered by `deno-deps.yml` instead.
+
+Every `actions/checkout` in the repo sets `persist-credentials: false`, so the
+job token is never left behind in `.git/config` for later steps (or any code
+they execute) to read. `zizmor`'s `artipacked` audit in `lint-meta.yml` enforces
+this on new workflows.
 
 ## Secrets
 

@@ -150,16 +150,17 @@ pulse-backend/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily 3 AM UTC)
     │   ├── backfill.yml              # og:image + content backfill (daily 04:30 UTC)
-    │   ├── test.yml                   # Unit tests + lint + govulncheck (push/PR)
+    │   ├── test.yml                   # Unit tests (race+coverage) + lint + Deno tests (push/PR)
     │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
     │   ├── codeql.yml                 # CodeQL static analysis (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title, go.mod sync, migration format
-    │   ├── deploy.yml                 # Gated deploy: migrations → functions → api-health smoke test
-    │   ├── migrations-ci.yml          # db reset from scratch + db lint + SQL security invariants
-    │   ├── lint-meta.yml              # actionlint (+ shellcheck) over all workflows
+    │   ├── deploy.yml                 # Gated deploy: migrations → functions → 6-endpoint smoke test
+    │   ├── migrations-ci.yml          # db reset from scratch + incremental apply + db lint + SQL invariants
+    │   ├── lint-meta.yml              # actionlint (+ shellcheck) + zizmor over all workflows
     │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
     │   ├── lgpd-conformance.yml       # LGPD guard rails
     │   ├── gdpr-conformance.yml       # GDPR + CCPA guard rails
+    │   ├── deno-deps.yml             # Weekly `deno outdated` → tracking issue (no Dependabot for Deno)
     │   ├── claude.yml                 # On-demand Claude Code agent (owner/members/collaborators)
     │   └── claude-code-review.yml     # Automated Claude PR review (trusted authors)
     ├── ISSUE_TEMPLATE/                # Bug + feature issue forms + config

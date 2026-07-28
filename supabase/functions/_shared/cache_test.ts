@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assertEquals } from "@std/assert";
 import { CacheDurations, cacheHeaders } from "./cache.ts";
 
 Deno.test("CacheDurations.CATEGORIES is 24 hours", () => {

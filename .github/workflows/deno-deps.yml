@@ -1,0 +1,171 @@
+name: Deno Dependency Check
+
+# Dependabot has no Deno ecosystem, and Trivy does not parse `deno.lock`, so
+# the Edge Functions' dependencies have no automated update path at all — they
+# can rot silently for years (they did: the tree sat on deno.land/std@0.208.0,
+# a November 2023 release, on a registry that has since been superseded by JSR).
+#
+# This workflow closes that gap the only way that needs no new secret: it polls
+# `deno outdated` weekly and keeps a single tracking ISSUE in sync with the
+# result. It deliberately does NOT open a PR — a PR pushed with GITHUB_TOKEN
+# does not trigger other workflows (GitHub's loop-prevention), so it would land
+# with no tests, no lint, and no CodeQL run against it. A tracking issue that
+# tells you to run one command locally is worth more than a green-by-default PR.
+#
+# It also deliberately does NOT fail the job. A perpetually red weekly workflow
+# trains you to ignore it; the watchdog's fail-to-email pattern is right for
+# "production is degrading now" and wrong for "a patch release exists".
+#
+# Dependencies are declared in supabase/functions/deno.json's import map, which
+# is what makes them visible to `deno outdated` in the first place. Bare URL
+# imports in individual .ts files are invisible to it — keep new deps in the map.
+
+on:
+  schedule:
+    # Weekly, Mondays 06:30 UTC — after security.yml (06:00) and before the
+    # conformance workflows (07:00), so the whole Monday sweep lands together.
+    - cron: '30 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deno-deps
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check Deno dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Needed to open / edit / close the tracking issue and to ensure its label
+      # exists. No `pull-requests: write` — this workflow never touches PRs.
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          # Keep in step with test.yml's pin.
+          deno-version: v2.9.4
+          cache: true
+
+      - name: Check for outdated dependencies
+        id: outdated
+        working-directory: ./supabase/functions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # `deno outdated` exits 0 whether or not anything is outdated, so the
+          # exit code carries no signal — the table it prints is the signal.
+          # Strip ANSI colour first (the runner is not a TTY, but the box-drawing
+          # table is emitted either way) and look for the package rows, which are
+          # the only lines starting with "│ jsr:" or "│ npm:".
+          report=$(deno outdated --latest 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')
+          echo "$report"
+
+          rows=$(printf '%s\n' "$report" | grep -cE '^│ (jsr|npm):' || true)
+
+          {
+            echo "count=${rows}"
+            echo "report<<REPORT_EOF"
+            printf '%s\n' "$report"
+            echo "REPORT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sync tracking issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COUNT: ${{ steps.outdated.outputs.count }}
+          REPORT: ${{ steps.outdated.outputs.report }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          label="deno-deps"
+          title="Outdated Deno dependencies in supabase/functions"
+
+          # Idempotent: `gh label create` fails if the label already exists, and
+          # that is the steady state on every run after the first.
+          gh label create "$label" \
+            --description "Automated Deno dependency drift report" \
+            --color "0B7285" >/dev/null 2>&1 || true
+
+          existing=$(gh issue list --label "$label" --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::notice title=Deno Dependency Check::all Deno dependencies are at their latest versions"
+            {
+              echo "## Deno Dependency Check ✅"
+              echo ""
+              echo "- \`deno outdated --latest\`: no outdated dependencies"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" \
+                --comment "All Deno dependencies are back at their latest versions as of ${RUN_URL}. Closing automatically."
+              echo "Closed stale tracking issue #${existing}"
+            fi
+            exit 0
+          fi
+
+          # Built into a file rather than a heredoc: the body embeds fenced code
+          # blocks and the report's box-drawing characters, and --body-file keeps
+          # both out of reach of shell quoting entirely.
+          {
+            echo "\`deno outdated --latest\` found **${COUNT}** outdated dependency/dependencies in \`supabase/functions\`."
+            echo ""
+            echo '```'
+            printf '%s\n' "$REPORT"
+            echo '```'
+            echo ""
+            echo "### How to update"
+            echo ""
+            echo '```bash'
+            echo "cd supabase/functions"
+            echo "deno outdated --update --latest"
+            echo "deno fmt && deno lint"
+            echo "deno test --frozen --allow-env --allow-net \\"
+            echo "  _shared/ api-articles/ api-categories/ api-sources/ \\"
+            echo "  api-search/ api-health/ api-source-health/"
+            echo '```'
+            echo ""
+            echo "Commit both \`deno.json\` and \`deno.lock\`, then open a PR so the change"
+            echo "goes through the normal checks. This issue closes itself once the"
+            echo "weekly run sees everything back at latest."
+            echo ""
+            echo "<sub>Generated by [Deno Dependency Check](${RUN_URL}) — Dependabot has no Deno ecosystem, so this is the update path.</sub>"
+          } > /tmp/issue-body.md
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file /tmp/issue-body.md >/dev/null
+            issue_url=$(gh issue view "$existing" --json url --jq '.url')
+            echo "Updated tracking issue #${existing}"
+          else
+            issue_url=$(gh issue create --title "$title" --label "$label" --body-file /tmp/issue-body.md)
+            echo "Opened tracking issue ${issue_url}"
+          fi
+
+          echo "::notice title=Deno Dependency Check::${COUNT} outdated dependency/dependencies — tracked in ${issue_url}"
+          {
+            echo "## Deno Dependency Check ⚠️"
+            echo ""
+            echo "- **${COUNT}** outdated dependency/dependencies"
+            echo "- Tracking issue: ${issue_url}"
+            echo ""
+            echo '```'
+            printf '%s\n' "$REPORT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

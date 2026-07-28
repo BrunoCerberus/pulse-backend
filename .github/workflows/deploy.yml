@@ -57,6 +57,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
@@ -79,6 +81,17 @@ jobs:
           # `db push` applies pending migrations to the linked project. A failure
           # here aborts the job (set -e) before functions deploy.
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+          # Dry run first. Migrations CI proves the set applies from SCRATCH;
+          # only this sees production's actual migration history, so it is the
+          # first point at which unexpected drift (a migration applied by hand,
+          # a gap, a file whose checksum no longer matches what was recorded)
+          # becomes visible. It also puts the exact list of migrations about to
+          # run into the log — which, given there is no rollback, is the record
+          # you want when diagnosing a bad release.
+          echo "Pending migrations:"
+          supabase db push --dry-run
+
           supabase db push
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -91,13 +104,17 @@ jobs:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
 
-      - name: Smoke test (api-health)
+      # Wait for api-health before the full sweep: freshly deployed functions
+      # take a few seconds to go live, and there is no point failing five
+      # endpoints when the real answer is "not up yet". Once this returns
+      # healthy the deploy has landed and the remaining endpoints are expected
+      # to answer immediately.
+      - name: Wait for deploy to go live (api-health)
         shell: bash
         run: |
           set -euo pipefail
 
           # api-health is verify_jwt = false and returns exactly {"status":"ok"}.
-          # Functions need a few seconds to go live, so retry with backoff.
           url="${SUPABASE_URL}/functions/v1/api-health"
           attempts=5
           for i in $(seq 1 "$attempts"); do
@@ -124,6 +141,103 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
 
+      # api-health touches almost nothing — it is a liveness probe, not a
+      # contract test. On its own it would go green while a broken migration
+      # took out `articles_with_source`, or a syntax error shipped in
+      # api-search. Since this deploy is deliberately fix-forward with NO
+      # rollback, the smoke test is the only signal that the release is good,
+      # so it exercises every endpoint the iOS app actually calls: status,
+      # response shape, and the documented Cache-Control.
+      #
+      # All six functions are verify_jwt = false (supabase/config.toml), so no
+      # auth header is needed. Every endpoint is a plain GET with no side
+      # effects — running this against production is a read-only operation.
+      - name: Smoke test (all endpoints)
+        id: smoke
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # name ^ path+query ^ jq assertion on the body ^ expected Cache-Control
+          #
+          # Field separator is `^`, NOT `|` — jq expressions use `|` as their own
+          # pipe operator, and using it here silently truncates the assertion and
+          # the expected header.
+          #
+          # The jq expressions assert SHAPE, not data: the DB may legitimately be
+          # empty on a fresh project, so `type == "array"` is the right assertion
+          # for list endpoints. A PostgREST error body is an object, not an array,
+          # so this still catches a broken view or a revoked grant.
+          checks=$(cat <<'CHECKS'
+          api-categories^api-categories?limit=1^type == "array"^public, max-age=86400
+          api-sources^api-sources?limit=1^type == "array"^public, max-age=3600
+          api-articles^api-articles?limit=1^type == "array"^public, max-age=900, stale-while-revalidate=1800
+          api-search^api-search?q=test&limit=1^type == "array"^private, max-age=60
+          api-health^api-health^.status == "ok"^no-store
+          api-source-health^api-source-health^has("summary") and (.summary | has("total"))^public, max-age=60
+          CHECKS
+          )
+
+          failed=0
+          results=""
+
+          while IFS='^' read -r name path assertion want_cc; do
+            [ -z "$name" ] && continue
+
+            hdr=$(mktemp)
+
+            # No -f: a non-2xx must be reported as a status mismatch, not
+            # swallowed as a curl error. Body goes to a file so stdout carries
+            # only the status code. "000" means curl never got a response.
+            status=$(curl -sS --max-time 20 -D "$hdr" -w '%{http_code}' \
+                       -o /tmp/smoke-body.json \
+                       "${SUPABASE_URL}/functions/v1/${path}" 2>/dev/null || echo "000")
+            body=$(cat /tmp/smoke-body.json 2>/dev/null || true)
+
+            # Header names are case-insensitive; normalise, then collapse the
+            # header's internal whitespace so ", " vs "," never fails a match.
+            got_cc=$(grep -i '^cache-control:' "$hdr" | tail -1 \
+              | cut -d: -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/,[[:space:]]*/, /g')
+            rm -f "$hdr"
+
+            problems=""
+            [ "$status" != "200" ] && problems="${problems} status=${status} (want 200);"
+
+            if ! printf '%s' "$body" | jq -e "$assertion" >/dev/null 2>&1; then
+              problems="${problems} body failed assertion \`${assertion}\`;"
+            fi
+
+            if [ "$got_cc" != "$want_cc" ]; then
+              problems="${problems} Cache-Control='${got_cc}' (want '${want_cc}');"
+            fi
+
+            if [ -n "$problems" ]; then
+              failed=1
+              echo "::error title=Smoke test::${name} —${problems}"
+              # Body may contain an upstream error message; cap it so a large
+              # payload can't flood the log.
+              echo "  body (first 300 chars): $(printf '%s' "$body" | head -c 300)"
+              results="${results}| \`${name}\` | ❌ |${problems} |"$'\n'
+            else
+              echo "${name}: OK (200, shape ok, Cache-Control ok)"
+              results="${results}| \`${name}\` | ✅ | 200 · shape ok · \`${want_cc}\` |"$'\n'
+            fi
+          done <<< "$checks"
+
+          {
+            echo "smoke_results<<RESULTS_EOF"
+            printf '%s' "$results"
+            echo "RESULTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error title=Deploy::one or more endpoints failed the post-deploy smoke test"
+            exit 1
+          fi
+          echo "All 6 endpoints passed the smoke test."
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+
       # if: always() so we annotate on both paths. Branch on job.status: green
       # when every prior step passed, red otherwise. No secrets in the output.
       - name: Annotate deploy
@@ -131,6 +245,7 @@ jobs:
         shell: bash
         env:
           JOB_STATUS: ${{ job.status }}
+          SMOKE_RESULTS: ${{ steps.smoke.outputs.smoke_results }}
         run: |
           set -euo pipefail
 
@@ -138,14 +253,26 @@ jobs:
           # secret or a failed push aborts the job before this annotation).
           migrate_line="Migrations applied via \`supabase db push\`"
 
+          # Rendered on both paths. Empty when the job died before the smoke
+          # step ran (e.g. a failed migration), which is itself informative.
+          smoke_table() {
+            if [ -n "${SMOKE_RESULTS:-}" ]; then
+              echo ""
+              echo "| Endpoint | Result | Detail |"
+              echo "|----------|--------|--------|"
+              printf '%s\n' "$SMOKE_RESULTS"
+            fi
+          }
+
           if [ "$JOB_STATUS" = "success" ]; then
-            echo "::notice title=Deploy::${migrate_line}; functions deployed; api-health OK"
+            echo "::notice title=Deploy::${migrate_line}; functions deployed; all 6 endpoints passed the smoke test"
             {
               echo "## Deploy ✅"
               echo ""
               echo "- ${migrate_line}"
               echo "- Edge Functions deployed to the production project"
-              echo "- \`api-health\` smoke test returned healthy"
+              echo "- Smoke test: all 6 endpoints returned 200 with the expected shape and \`Cache-Control\`"
+              smoke_table
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "::error title=Deploy::deploy failed — see the step annotations above"
@@ -153,5 +280,9 @@ jobs:
               echo "## Deploy ❌"
               echo ""
               echo "Deploy failed — see the step annotations above."
+              echo ""
+              echo "> This deploy is fix-forward: migrations and functions that already"
+              echo "> applied are still live. Fix and re-deploy; do not expect a rollback."
+              smoke_table
             } >> "$GITHUB_STEP_SUMMARY"
           fi

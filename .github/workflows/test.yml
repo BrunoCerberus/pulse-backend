@@ -25,17 +25,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go-worker
 
-      - name: Run tests with race detector
+      # One pass, not two: the race detector and the coverage profile are
+      # independent instrumentation and compose fine, so running the suite
+      # twice only bought a second compile of the same test binaries.
+      - name: Run tests with race detector + coverage
         working-directory: ./rss-worker
-        run: go test -v -race ./...
-
-      - name: Run tests with coverage
-        working-directory: ./rss-worker
-        run: go test -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Display coverage summary
         working-directory: ./rss-worker
@@ -70,19 +71,10 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run govulncheck
-        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
-        with:
-          # Analyse with the SAME Go the worker builds with (go.mod's pinned
-          # 1.25.x), NOT the action's default `go-version-input: stable`.
-          # "stable" resolves to whatever the runner has (e.g. an unpatched
-          # go1.26.3), so govulncheck would report stdlib CVEs already fixed in
-          # the project's pinned toolchain. Empty go-version-input lets
-          # go-version-file win (setup-go prefers go-version only when non-empty).
-          go-version-input: ""
-          go-version-file: rss-worker/go.mod
-          work-dir: ./rss-worker
-          repo-checkout: false
+      # govulncheck deliberately does NOT run here. It runs in security.yml's
+      # `Go Vulnerabilities (govulncheck)` job, on the same push/PR triggers
+      # plus a weekly cron — running it in both places was the same scan, with
+      # the same action pin and the same inputs, billed twice per PR.
 
   lint:
     name: Go Lint
@@ -92,6 +84,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go-worker
@@ -126,6 +120,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Deno
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
@@ -133,8 +129,10 @@ jobs:
           # Pin to a concrete release so a compromise of Deno's release
           # channel can't push a malicious binary into CI on the next run.
           # Must be a 2.x release because deno.lock is on lockfile version 5
-          # (Deno 1.x only handles v3/4).
-          deno-version: v2.7.14
+          # (Deno 1.x only handles v3/4). Keep this in step with the version
+          # developers run locally: `deno fmt` output can shift between minor
+          # releases, so a drift here shows up as a CI-only format failure.
+          deno-version: v2.9.4
           # Cache the dependency download (DENO_DIR), keyed on deno.lock, so
           # repeat runs don't re-fetch every imported std module.
           cache: true

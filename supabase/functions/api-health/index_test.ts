@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.208.0/assert/mod.ts";
+import { assertEquals } from "@std/assert";
 import { handler } from "./index.ts";
 
 Deno.test("GET returns 200 with status only (no timestamp fingerprint)", async () => {

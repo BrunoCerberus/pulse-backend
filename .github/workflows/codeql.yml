@@ -38,12 +38,23 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # security-extended over the default suite. The default trades recall
+          # for precision, which is the wrong trade for this codebase: the whole
+          # threat model is hostile attacker-controlled input flowing through
+          # feed parsing, HTML extraction, and URL handling (see THREAT_MODEL.md),
+          # and the extra queries are largely the deeper taint-tracking ones.
+          # Expect a somewhat higher false-positive rate — findings land in the
+          # Security tab, and CodeQL does not fail the build on alerts, so the
+          # cost of a noisy query is triage, not a blocked merge.
+          queries: security-extended
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3

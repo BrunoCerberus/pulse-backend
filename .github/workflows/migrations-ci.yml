@@ -36,6 +36,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history so the incremental-apply step below can diff this PR's
+          # migrations against the base branch.
+          fetch-depth: 0
 
       # Detect whether anything that affects the schema changed. Skipped on
       # workflow_dispatch (which always force-runs the full validation below).
@@ -88,6 +93,67 @@ jobs:
           # migration fails the build here.
           supabase db reset --no-seed
 
+      # `db reset` above proves the set applies from SCRATCH. Production never
+      # does that — it applies migration N on top of a live schema, which is a
+      # materially different operation: a migration can be valid against an
+      # empty database and still fail against one that already holds data and
+      # objects (a NOT NULL added to a populated column, a UNIQUE index over
+      # existing duplicates, a DROP of something an earlier migration renamed).
+      #
+      # This step reproduces the production path: rewind to the base branch's
+      # migrations, apply those, then apply ONLY this PR's new migrations on
+      # top. It runs on pull_request events, where the base is well defined —
+      # a push to master has already been through this on the PR.
+      - name: Apply new migrations incrementally
+        id: incremental
+        if: steps.decide.outputs.run == 'true' && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          dir=supabase/migrations
+          staging=$(mktemp -d)
+
+          # Only ADDED files: a PR that edits an already-applied migration is a
+          # different (and worse) problem, and the from-scratch reset above is
+          # what catches that.
+          mapfile -t new_files < <(git diff --name-only --diff-filter=A \
+            "$BASE_SHA" HEAD -- "$dir" | grep -E '\.sql$' || true)
+
+          if [ "${#new_files[@]}" -eq 0 ]; then
+            echo "::notice title=Migrations CI::no new migrations in this PR — incremental apply not applicable"
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "New migrations in this PR:"
+          printf '  %s\n' "${new_files[@]}"
+
+          # Rewind: park the new files outside the migrations directory so the
+          # reset below reconstructs exactly the base branch's schema.
+          for f in "${new_files[@]}"; do
+            mv "$f" "$staging/"
+          done
+
+          echo "--- Applying base-branch migrations only ---"
+          supabase db reset --no-seed
+
+          # Restore and apply just the new ones, the way production will.
+          for f in "${new_files[@]}"; do
+            mv "$staging/$(basename "$f")" "$f"
+          done
+
+          echo "--- Applying this PR's migrations on top ---"
+          supabase migration up --local
+
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "count=${#new_files[@]}"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice title=Migrations CI::${#new_files[@]} new migration(s) applied incrementally on top of the base-branch schema"
+
       - name: Lint plpgsql
         if: steps.decide.outputs.run == 'true'
         shell: bash
@@ -121,6 +187,8 @@ jobs:
         env:
           RUN_VALIDATION: ${{ steps.decide.outputs.run }}
           INVARIANTS_OUTCOME: ${{ steps.invariants.outcome }}
+          INCREMENTAL_RAN: ${{ steps.incremental.outputs.ran }}
+          INCREMENTAL_COUNT: ${{ steps.incremental.outputs.count }}
         run: |
           set -euo pipefail
           if [ "$RUN_VALIDATION" != "true" ]; then
@@ -134,11 +202,19 @@ jobs:
             # Count migrations from the tree rather than hardcoding a number
             # that rots every time a migration lands.
             migration_count=$(find supabase/migrations -name '*.sql' | wc -l | tr -d ' ')
+
+            if [ "${INCREMENTAL_RAN:-}" = "true" ]; then
+              incremental_line="- Incremental apply: ${INCREMENTAL_COUNT} new migration(s) applied on top of the base-branch schema (\`supabase migration up\`) — the path production takes"
+            else
+              incremental_line="- Incremental apply: not applicable (no migrations added in this change)"
+            fi
+
             echo "::notice title=Migrations CI::${migration_count} migrations applied from scratch · db lint clean · security invariants passed"
             {
               echo "## Migrations CI ✅"
               echo ""
               echo "- Apply-from-scratch: all ${migration_count} migrations (\`supabase db reset --no-seed\`) applied with no SQL error"
+              echo "${incremental_line}"
               echo "- plpgsql lint: no error-level findings (\`supabase db lint --fail-on error\`)"
               echo "- Security invariants (supabase/tests/security_invariants.sql): RLS on articles + fetch_logs + sources + categories · SECURITY DEFINER funcs pin empty search_path · write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap + bounded projection · articles_with_source hides url_hash · base-table articles column grant hides url_hash/backfill · sources/categories writes revoked · sources operational columns revoked · security_invoker on views"
             } >> "$GITHUB_STEP_SUMMARY"

@@ -40,6 +40,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # Full git history is required so gitleaks can scan all commits.
           fetch-depth: 0
 
@@ -108,6 +109,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go-worker
@@ -180,6 +183,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
         uses: ./.github/actions/setup-go-worker
@@ -187,9 +192,15 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
-          # Pin govulncheck's Go to go.mod (not the action's default "stable",
-          # which resolves to an unpatched runner Go) so it reports against the
-          # project's actual patched toolchain. See test.yml for the rationale.
+          # Analyse with the SAME Go the worker builds with (go.mod's pinned
+          # 1.25.x), NOT the action's default `go-version-input: stable`.
+          # "stable" resolves to whatever the runner has (e.g. an unpatched
+          # go1.26.3), so govulncheck would report stdlib CVEs already fixed in
+          # the project's pinned toolchain. Empty go-version-input lets
+          # go-version-file win (setup-go prefers go-version only when non-empty).
+          #
+          # This is the ONLY govulncheck run in the repo — test.yml used to
+          # carry an identical copy.
           go-version-input: ""
           go-version-file: rss-worker/go.mod
           work-dir: ./rss-worker
@@ -223,6 +234,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run Trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -273,6 +286,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Generate CycloneDX SBOM
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0

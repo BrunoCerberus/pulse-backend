@@ -4,6 +4,18 @@ name: Meta Lint
 # their `run:` blocks) so CI definitions can't silently rot. No path filter —
 # workflow/shell mistakes can hide anywhere a `run:` block lives, and the job
 # is fast — so it runs on every push/PR against master.
+#
+# Two complementary tools:
+#   - actionlint  correctness: invalid syntax, bad `uses:` refs, expression
+#                 typos, and (via shellcheck) bugs in embedded `run:` shell.
+#   - zizmor      security: template injection into `run:`, over-broad
+#                 permissions, credential persistence (artipacked), unpinned
+#                 actions, cache poisoning. actionlint has no security rules,
+#                 so without this the repo's hardening is discipline only —
+#                 nothing stops the next workflow from regressing it.
+#
+# Scorecard (scorecard.yml) grades some of the same properties, but it is
+# advisory, repo-wide, and coarse; zizmor fails the build with a file:line.
 
 on:
   pull_request:
@@ -33,6 +45,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install actionlint
         env:
@@ -58,17 +72,44 @@ jobs:
           set -euo pipefail
           actionlint -color
 
+      - name: Install zizmor
+        env:
+          # Bump both together (see https://github.com/zizmorcore/zizmor/releases;
+          # sha256 of the x86_64-unknown-linux-gnu tarball).
+          ZIZMOR_VERSION: "1.28.0"
+          ZIZMOR_SHA256: "e87b67160194884e375a46a12c57ccc904f762b53845f254fab7f17d98809c09"
+        run: |
+          set -euo pipefail
+          # Same checksum-before-extract discipline as actionlint/gitleaks above.
+          curl -sSL -o /tmp/zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  /tmp/zizmor.tar.gz" | sha256sum -c -
+          sudo tar -xz -C /usr/local/bin -f /tmp/zizmor.tar.gz zizmor
+          zizmor --version
+
+      - name: Run zizmor
+        # --no-online-audits keeps this hermetic and token-free: the online
+        # audits only add checks that need the GitHub API (e.g. resolving
+        # whether a pinned tag moved), and this job intentionally holds no
+        # token beyond the default read-only one.
+        # Exits 13 when any finding is at or above the severity threshold.
+        run: |
+          set -euo pipefail
+          zizmor --no-online-audits --format plain .github/workflows .github/actions
+
       - name: Annotate meta lint result
         if: success()
         shell: bash
         env:
           ACTIONLINT_VERSION: "1.7.7"
+          ZIZMOR_VERSION: "1.28.0"
         run: |
           set -euo pipefail
-          echo "::notice title=Meta Lint::actionlint + shellcheck passed — no findings across all workflows"
+          echo "::notice title=Meta Lint::actionlint + shellcheck + zizmor passed — no findings across all workflows"
           {
             echo "## Meta Lint ✅"
             echo ""
             echo "- actionlint v${ACTIONLINT_VERSION}: no findings across all workflows"
             echo "- shellcheck: ran on embedded \`run:\` blocks — no findings"
+            echo "- zizmor v${ZIZMOR_VERSION}: no security findings (template injection, credential persistence, permissions, action pinning)"
           } >> "$GITHUB_STEP_SUMMARY"
