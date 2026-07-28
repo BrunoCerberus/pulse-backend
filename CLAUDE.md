@@ -101,6 +101,9 @@ Full request/response contracts: `docs/api-reference.md`.
 are exercised via package-level function vars (`jsonMarshal`, `randRead`) swapped in tests. Follow
 this pattern for new similar code.
 
+Edge Functions have a **90% line-coverage floor** (currently ~98%), enforced in the same workflow.
+Go runs as a single `go test -race -coverprofile` pass — don't split it back into two runs.
+
 | Package | Key Tests |
 |---------|-----------|
 | `internal/models` | HashURL, NewArticle, ShouldFetch, CategoryName |
@@ -122,10 +125,31 @@ Commands: `make test` · `make test-go-cover` · `make test-deno`.
   `NewRateLimitedClient`** (preferred for external hosts) — never `http.DefaultClient`.
 - `logger.With(key, val)` for per-source/article structured logs; `logger.Infof` for one-off summaries.
 - No comments unless the WHY is non-obvious.
+- **New Deno dependencies go in `supabase/functions/deno.json`'s `imports` map** (JSR specifiers,
+  e.g. `jsr:@std/assert`) — never a bare URL import in a `.ts` file. Dependabot has no Deno
+  ecosystem, so `deno-deps.yml`'s weekly `deno outdated` sweep is the only thing watching these,
+  and it can only see what the import map declares. A bare URL still compiles and still passes
+  tests — it just silently stops being monitored, which is how the tree ended up pinned to a
+  2023 `deno.land/std` for years.
+- Keep the local Deno version in step with `test.yml`'s pin (currently **v2.9.4**). `deno fmt`
+  output shifts between minor releases, so drift shows up only as a CI format failure.
 
 ## GitHub Actions / CI
 
 Full workflow list, branch protection, and the security-scanning pipeline: `docs/ci-cd.md`.
+
+When editing any workflow, two things are enforced by `lint-meta.yml` (a required check) —
+`actionlint` + shellcheck for correctness, `zizmor` for security:
+
+- **Every `actions/checkout` must set `persist-credentials: false`** (C-NOCRED), so the job token
+  isn't left in `.git/config` for later steps, or the code they execute, to read.
+- Pin third-party actions to a commit SHA; verify curl-installed binaries against a pinned SHA256
+  before extracting.
+
+`claude-code-review.yml` and `security-review.yml` are **self-locking**: `claude-code-action`
+refuses to run from a workflow file that differs from the one on `master`, so a PR that edits
+either shows a failed `claude-review` until it merges. Expected, documented in `docs/ci-cd.md`,
+and needs an admin bypass to merge — don't "fix" it by reverting the edit.
 
 ## Data Protection Conformance
 
