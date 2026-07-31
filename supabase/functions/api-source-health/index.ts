@@ -182,7 +182,7 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
 
 async function fetchSourceHealth(
   req: Request,
-): Promise<{ status: number; data: string } | null> {
+): Promise<{ status: number; data: string; contentRange: string | null } | null> {
   const priv = privilegedHeaders();
   if (!priv) return null;
   const targetUrl = buildProxyUrl(req, config);
@@ -191,12 +191,18 @@ async function fetchSourceHealth(
     headers: priv.headers,
   });
   const data = await response.text();
-  return { status: response.status, data };
+  return {
+    status: response.status,
+    data,
+    contentRange: response.headers.get("content-range"),
+  };
 }
 
 async function buildPayload(
   req: Request,
-): Promise<{ status: number; body: string; cacheable: boolean }> {
+): Promise<
+  { status: number; body: string; cacheable: boolean; contentRange?: string | null }
+> {
   const [result, database] = await Promise.all([
     fetchSourceHealth(req),
     fetchDatabaseSize(),
@@ -220,6 +226,20 @@ async function buildPayload(
       cacheable: false,
     };
   }
+  // A 206 means PostgREST truncated the rows. `summarize` over a subset
+  // undercounts every field, and this endpoint feeds the watchdog — handing
+  // back numbers that look complete invites a silent false "healthy" exactly
+  // when the fleet has grown past the row cap. Refuse instead: no summary is
+  // safer than a wrong one.
+  if (result.status === 206) {
+    return {
+      status: 206,
+      body: JSON.stringify({ error: "partial upstream result" }),
+      cacheable: false,
+      contentRange: result.contentRange,
+    };
+  }
+
   const rows: SourceHealthRow[] = JSON.parse(result.data);
   const payload = {
     fetched_at: new Date().toISOString(),
@@ -235,12 +255,7 @@ async function buildPayload(
   // is computed over a subset and describes less than the whole fleet —
   // caching that would serve a wrong total as if it were complete. The status
   // is propagated rather than flattened to 200 so callers can tell.
-  const partial = result.status === 206;
-  return {
-    status: result.status,
-    body: JSON.stringify(payload),
-    cacheable: rows.length > 0 && !partial,
-  };
+  return { status: 200, body: JSON.stringify(payload), cacheable: rows.length > 0 };
 }
 
 export async function handler(req: Request): Promise<Response> {
@@ -270,20 +285,21 @@ export async function handler(req: Request): Promise<Response> {
         },
       });
     }
-    const { status, body, cacheable } = await buildPayload(req);
-    // 200 only: the cache keeps the body alone, so a cached 206 would replay
-    // as a complete result stripped of its `Content-Range`.
+    const { status, body, cacheable, contentRange } = await buildPayload(req);
+    // 200 only: the cache keeps the body alone, so a cached partial result
+    // would replay stripped of its status and `Content-Range`.
     if (status === 200 && cacheable) {
       setCached(cacheKey, body, CACHE_TTL_MS);
     }
-    return new Response(body, {
-      status,
-      headers: {
-        ...corsHeaders,
-        "Cache-Control": CACHE_CONTROL,
-        "Content-Type": "application/json",
-      },
-    });
+    const headers: Record<string, string> = {
+      ...corsHeaders,
+      "Cache-Control": CACHE_CONTROL,
+      "Content-Type": "application/json",
+    };
+    if (contentRange) {
+      headers["Content-Range"] = contentRange;
+    }
+    return new Response(body, { status, headers });
   } catch (error) {
     console.error("Error fetching source health:", error);
     return new Response(

@@ -438,7 +438,7 @@ Deno.test("summarize counts categories correctly", () => {
   assertEquals(s.high_failure_count, 1);
 });
 
-Deno.test("partial (206) fleet view keeps its status and is not cached", async () => {
+Deno.test("partial (206) fleet view is refused, not summarised, and not cached", async () => {
   clearCache();
   const origUrl = Deno.env.get("SUPABASE_URL");
   const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -457,8 +457,8 @@ Deno.test("partial (206) fleet view keeps its status and is not cached", async (
         return Promise.resolve(new Response("1000", { status: 200 }));
       }
       healthCalls++;
-      // PostgREST truncated the rows: `summary` describes a subset, so it must
-      // not be flattened to 200 nor cached as the complete fleet.
+      // PostgREST truncated the rows. Summarising a subset would undercount
+      // every field and the watchdog would read it as a healthy fleet.
       return Promise.resolve(
         new Response(JSON.stringify(rows), {
           status: 206,
@@ -469,7 +469,12 @@ Deno.test("partial (206) fleet view keeps its status and is not cached", async (
 
     const res = await handler(new Request("http://localhost/api-source-health"));
     assertEquals(res.status, 206);
-    assertEquals((await res.json()).summary.total, 2);
+    assertEquals(res.headers.get("Content-Range"), "0-1/500");
+    const body = await res.json();
+    assertEquals(body.error, "partial upstream result");
+    // No numbers at all beats wrong numbers a consumer would trust.
+    assertEquals(body.summary, undefined);
+    assertEquals(body.sources, undefined);
 
     const res2 = await handler(new Request("http://localhost/api-source-health"));
     assertEquals(res2.status, 206);

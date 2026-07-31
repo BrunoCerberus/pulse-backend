@@ -85,13 +85,15 @@ export async function handler(req: Request): Promise<Response> {
     } else {
       const result = await fetchFromSupabase(req, config);
       status = result.status;
-      contentRange = result.contentRange;
       if (!isUpstreamSuccess(result.status)) {
         // Mask any unsuccessful upstream response (PostgREST errors, gateway
         // HTML) with a generic JSON body.
         data = JSON.stringify({ error: "upstream error" });
       } else {
         data = result.data;
+        // Only on success: a masked error body must not carry a range header
+        // describing rows it no longer contains.
+        contentRange = result.contentRange;
         // Cache 200 only. The cache stores the body alone, so replaying a
         // cached 206 would drop its status and `Content-Range` and present a
         // truncated page as the complete catalogue.
