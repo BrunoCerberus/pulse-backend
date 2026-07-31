@@ -21,6 +21,7 @@ import {
   buildCacheKey,
   fetchFromSupabase,
   isCacheableResult,
+  isUpstreamSuccess,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -59,7 +60,7 @@ export async function handler(req: Request): Promise<Response> {
 
     const data = cached ?? (await (async () => {
       const result = await fetchFromSupabase(req, config);
-      if (result.status === 200 && isCacheableResult(result.data)) {
+      if (isUpstreamSuccess(result.status) && isCacheableResult(result.data)) {
         setCached(cacheKey, result.data, CACHE_TTL_MS);
       }
       return result.data;

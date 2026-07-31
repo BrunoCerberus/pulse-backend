@@ -37,6 +37,7 @@ import {
   buildProxyUrl,
   isBooleanFilter,
   isSlugFilter,
+  isUpstreamSuccess,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -207,7 +208,7 @@ async function buildPayload(
       cacheable: false,
     };
   }
-  if (result.status !== 200) {
+  if (!isUpstreamSuccess(result.status)) {
     // Do NOT echo the upstream body. This query runs as service_role against
     // source_health (revoked from anon by migration 027), so its raw PostgREST
     // error text / SQLSTATE would disclose internals an anonymous caller can't
@@ -260,7 +261,7 @@ export async function handler(req: Request): Promise<Response> {
       });
     }
     const { status, body, cacheable } = await buildPayload(req);
-    if (status === 200 && cacheable) {
+    if (isUpstreamSuccess(status) && cacheable) {
       setCached(cacheKey, body, CACHE_TTL_MS);
     }
     return new Response(body, {

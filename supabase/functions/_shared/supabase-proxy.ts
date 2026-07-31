@@ -169,6 +169,19 @@ export function isLanguageFilter(raw: string): boolean {
 }
 
 /**
+ * Whether an upstream PostgREST status counts as success.
+ *
+ * PostgREST answers **206 Partial Content** whenever the response is a subset
+ * of the matching rows — which, with `Prefer: count=estimated` and a `limit`
+ * always applied by `buildProxyUrl`, is the normal case for a paged list. A
+ * strict `=== 200` check therefore masks every healthy list response as an
+ * upstream error.
+ */
+export function isUpstreamSuccess(status: number): boolean {
+  return status === 200 || status === 206;
+}
+
+/**
  * Reports whether an upstream JSON body is worth caching. Empty result sets
  * ("[]") are NOT cached: an attacker rotating non-matching filter values
  * (e.g. `?slug=eq.nonexistent-N`) would otherwise mint a unique cache key per

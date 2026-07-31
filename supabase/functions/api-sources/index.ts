@@ -30,6 +30,7 @@ import {
   isBooleanFilter,
   isCacheableResult,
   isLanguageFilter,
+  isUpstreamSuccess,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -83,13 +84,16 @@ export async function handler(req: Request): Promise<Response> {
     } else {
       const result = await fetchFromSupabase(req, config);
       status = result.status;
-      if (result.status === 200 && isCacheableResult(result.data)) {
+      if (isUpstreamSuccess(result.status) && isCacheableResult(result.data)) {
         data = result.data;
         setCached(cacheKey, data, CACHE_TTL_MS);
       } else {
-        // Mask any non-200 upstream response (PostgREST errors, gateway HTML)
-        // with a generic JSON body. Only cache successful, non-empty results.
-        data = result.status === 200 ? result.data : JSON.stringify({ error: "upstream error" });
+        // Mask any unsuccessful upstream response (PostgREST errors, gateway
+        // HTML) with a generic JSON body. Only cache successful, non-empty
+        // results. 206 counts as success — see isUpstreamSuccess.
+        data = isUpstreamSuccess(result.status)
+          ? result.data
+          : JSON.stringify({ error: "upstream error" });
       }
     }
 
