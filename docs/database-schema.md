@@ -191,12 +191,18 @@ SECURITY DEFINER, batched in 5,000-row chunks, `statement_timeout = '5min'`.
 
 **Granted to:** `service_role` only.
 
-### search_articles(search_query TEXT, result_limit INT)
+### search_articles(search_query TEXT, result_limit INT, search_language TEXT, result_offset INT)
 
 Full-text search RPC. Returns an explicit projection (no `SETOF
 articles`), capped at `result_limit = 100`. Rejects empty / whitespace /
 > 200-char queries. SECURITY DEFINER (bypasses anon column grants on
 `articles`), `statement_timeout = '3s'`.
+
+`search_language` (migration 036) restricts results to one ISO 639-1
+`articles.language`; NULL (the default) matches all languages. It filters
+the corpus only — ranking still uses the `english` text-search config,
+because `articles.search_vector` is a GENERATED column built with it.
+`result_offset` (also 036, default 0) paginates.
 
 **Granted to:** `anon, authenticated, service_role`.
 

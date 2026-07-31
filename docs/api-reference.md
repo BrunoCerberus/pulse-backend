@@ -51,7 +51,7 @@ Returns a paginated list of articles with source and category information.
 |-----------|------|-------------|---------|
 | `limit` | integer | Articles to return. Clamped to **[0, 100]**; default 100. | `limit=20` |
 | `offset` | integer | Pagination offset (non-negative). | `offset=40` |
-| `id` | string | Article ID, PostgREST syntax. Must be a canonical UUID; any other value yields `[]` rather than an unfiltered list. Switches the response to the **detail projection** (see below). | `id=eq.<uuid>` |
+| `id` | string | Article ID, PostgREST syntax. Values must be canonical UUIDs; anything else yields `[]` rather than an unfiltered list. Only `eq.<uuid>` switches the response to the **detail projection** (see below). | `id=eq.<uuid>` |
 | `source_slug` | string | Filter by source slug. | `source_slug=eq.bbc-tech` |
 | `category_slug` | string | Filter by category slug. | `category_slug=eq.technology` |
 | `language` | string | ISO 639-1 language. | `language=eq.en` |
@@ -64,9 +64,14 @@ Returns a paginated list of articles with source and category information.
 
 #### List vs. detail projection
 
-A request carrying a valid `id=eq.<uuid>` is a single-article lookup and
-additionally returns `content`, `thumbnail_url` and `author`. Every other
-request gets the list projection, which omits them.
+A request carrying `id=eq.<uuid>` — exactly one row, by equality — is a
+single-article lookup and additionally returns `content`, `thumbnail_url` and
+`author`. Every other request gets the list projection, which omits them.
+
+That includes other operators on `id`: `id=in.(<uuid>,<uuid>)` and
+`id=neq.<uuid>` are valid filters and are forwarded as-is, but they can match
+many rows, so they get the list projection. The detail columns are never
+returned for a request that can produce more than one row.
 
 `content` is the full extracted article body (up to 200K runes before
 compression), so shipping it on a 100-row feed response would dominate the

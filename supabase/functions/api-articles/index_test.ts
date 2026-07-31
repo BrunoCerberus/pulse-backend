@@ -390,3 +390,55 @@ Deno.test("malformed id returns empty array instead of an unfiltered list", asyn
     tearDownEnv(originalUrl, originalKey);
   }
 });
+
+Deno.test("multi-id `in.(...)` gets the list projection, not the detail one", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    const a = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const b = "3f2504e0-4f89-11d3-9a0c-0305e82c3302";
+    const req = new Request(`http://localhost/api-articles?id=in.(${a},${b})&limit=100`);
+    await handler(req);
+    const params = new URL(capturedUrl).searchParams;
+    const select = params.get("select")!.split(",");
+    // The whole point of the split: content must never ride a multi-row response.
+    assertEquals(select.includes("content"), false);
+    // Still a legitimate filter — it's forwarded, just without the heavy columns.
+    assertEquals(params.get("id"), `in.(${a},${b})`);
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("non-eq operators on id get the list projection", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  try {
+    setupEnv();
+    globalThis.fetch = (input: string | URL | Request, _init?: RequestInit) => {
+      capturedUrl = input.toString();
+      return Promise.resolve(new Response("[]", { status: 200 }));
+    };
+    const uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    // `neq.` matches nearly the whole table; `gt.`/`lt.` match broad ranges.
+    for (const op of ["neq", "gt", "gte", "lt", "lte"]) {
+      const req = new Request(`http://localhost/api-articles?id=${op}.${uuid}`);
+      await handler(req);
+      const select = new URL(capturedUrl).searchParams.get("select")!.split(",");
+      assertEquals(select.includes("content"), false, `${op} leaked content`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});

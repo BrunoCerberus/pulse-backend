@@ -36,6 +36,7 @@ import { checkConditionalRequest, generateETag } from "../_shared/etag.ts";
 import {
   fetchFromSupabase,
   isLanguageFilter,
+  isSingleUuidEqFilter,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -81,10 +82,18 @@ const config: ProxyConfig = {
 
 const detailConfig: ProxyConfig = { ...config, defaultSelect: DETAIL_SELECT };
 
-/** A well-formed `id` filter means "fetch one article" → detail projection. */
+/**
+ * Only `id=eq.<uuid>` means "fetch one article" → detail projection.
+ *
+ * Deliberately stricter than `paramValidators.id`: `isUuidFilter` accepts any
+ * operator, so `id=in.(…100 uuids)` or `id=neq.<uuid>` would otherwise return
+ * the full `content` body for up to `limit` rows — the multi-row heavy payload
+ * this split exists to prevent. Those shapes stay valid filters; they just get
+ * the list projection.
+ */
 function configFor(req: Request): ProxyConfig {
   const id = new URL(req.url).searchParams.get("id");
-  return id !== null && isUuidFilter(id) ? detailConfig : config;
+  return id !== null && isSingleUuidEqFilter(id) ? detailConfig : config;
 }
 
 export async function handler(req: Request): Promise<Response> {
@@ -104,6 +113,10 @@ export async function handler(req: Request): Promise<Response> {
   // A malformed `id` is dropped by the proxy's validator, which would turn a
   // single-article lookup into an unfiltered list — and the client takes the
   // first row, i.e. silently the wrong article. Answer with an empty set.
+  // Uses the permissive `isUuidFilter` on purpose: it mirrors exactly what
+  // `paramValidators.id` will accept, so this fires for the values that would
+  // actually be dropped. Shapes like `in.(…)` survive validation and stay
+  // honest filters — they just don't get the detail projection.
   const rawId = new URL(req.url).searchParams.get("id");
   if (rawId !== null && rawId !== "" && !isUuidFilter(rawId)) {
     return new Response(JSON.stringify([]), {
