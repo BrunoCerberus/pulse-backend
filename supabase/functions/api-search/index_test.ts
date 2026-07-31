@@ -184,3 +184,81 @@ Deno.test("missing env returns 500", async () => {
     if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
   }
 });
+
+Deno.test("valid language is forwarded to the RPC", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedBody: string | undefined;
+  try {
+    setupEnv();
+    globalThis.fetch = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      if (init?.body) capturedBody = init.body as string;
+      else if (input instanceof Request) capturedBody = await input.text();
+      return new Response("[]", { status: 200 });
+    };
+    const req = new Request("http://localhost/api-search?q=test&language=pt");
+    await handler(req);
+    assertEquals(JSON.parse(capturedBody!).search_language, "pt");
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("malformed language falls back to all languages", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedBody: string | undefined;
+  try {
+    setupEnv();
+    globalThis.fetch = async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      if (init?.body) capturedBody = init.body as string;
+      else if (input instanceof Request) capturedBody = await input.text();
+      return new Response("[]", { status: 200 });
+    };
+    const req = new Request("http://localhost/api-search?q=test&language=pt-BR");
+    await handler(req);
+    assertEquals(JSON.parse(capturedBody!).search_language, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("offset is forwarded and negatives clamp to 0", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let capturedBody: string | undefined;
+  const capture = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    if (init?.body) capturedBody = init.body as string;
+    else if (input instanceof Request) capturedBody = await input.text();
+    return new Response("[]", { status: 200 });
+  };
+  try {
+    setupEnv();
+    globalThis.fetch = capture;
+    await handler(new Request("http://localhost/api-search?q=test&offset=40"));
+    assertEquals(JSON.parse(capturedBody!).result_offset, 40);
+
+    await handler(new Request("http://localhost/api-search?q=test&offset=-5"));
+    assertEquals(JSON.parse(capturedBody!).result_offset, 0);
+
+    await handler(new Request("http://localhost/api-search?q=test"));
+    assertEquals(JSON.parse(capturedBody!).result_offset, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});

@@ -215,9 +215,11 @@ END $$;
 -- INVARIANT 5: search_articles input validation returns ZERO rows for empty and
 --              over-length (>200 char) queries.
 -- -----------------------------------------------------------------------------
--- Guards migrations 027 (introduced the length cap) and 028 (current form). The
--- function signature is public.search_articles(search_query TEXT, result_limit
--- INT DEFAULT 20).
+-- Guards migrations 027 (introduced the length cap), 028, and 036 (current
+-- form). The function signature is public.search_articles(search_query TEXT,
+-- result_limit INT DEFAULT 20, search_language TEXT DEFAULT NULL,
+-- result_offset INT DEFAULT 0). The two-argument calls below still resolve
+-- because the added parameters are defaulted.
 --
 -- IMPORTANT — this is a ROW-COUNT check, not an exception check. The guard in
 -- the function body is:

@@ -40,6 +40,25 @@ still work, but a few things changed:
   chars. Pagination via `range(from:to:)` or `limit/offset` continues to
   work normally.
 
+## Article body + search language (2026-07-31)
+
+Two follow-ups to the hardening above, both of which the iOS app depends on:
+
+- **`content` is a detail-only column.** Forcing the server-side `select`
+  (the column-leak guard) also dropped `content` from every `api-articles`
+  response, because the list projection never listed it — so article detail
+  had nothing but `summary` to render. A request with a valid
+  `id=eq.<uuid>` now returns `content`, `thumbnail_url` and `author`; list
+  requests still don't, since the full body on a 100-row page would dwarf
+  the rest of the payload. **The client must fetch the body by id** when
+  opening an article, and fall back to `summary` when `content` is `NULL`
+  (articles past the prune window — migration 032).
+- **`api-search` takes a `language`.** Search previously matched the whole
+  corpus regardless of the user's content-language setting. Pass the app's
+  selected language as a bare ISO 639-1 code (`?language=pt`) — *not* the
+  `eq.pt` filter syntax `api-articles` uses. `offset` is now honored too;
+  it used to be ignored, so "load more" re-fetched page 1.
+
 The anon key is, by design, public (it ships inside the iOS bundle). All
 the protections that matter come from the DB-layer grants + RLS, which
 this section covers via the view above. Treat any operational column not

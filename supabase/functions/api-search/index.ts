@@ -7,6 +7,9 @@
  * ## Query Parameters
  * - `q` - search query (required; length-capped at MAX_QUERY_LEN)
  * - `limit` - results to return (default 20, max 100, min 1)
+ * - `offset` - results to skip, for pagination (default 0)
+ * - `language` - ISO 639-1 content language (e.g. `en`); omitted or
+ *   malformed means "all languages"
  *
  * ## Response
  * JSON array of matching articles ranked by relevance. Empty array for
@@ -26,10 +29,28 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const MIN_LIMIT = 1;
 
+const ISO6391_RE = /^[a-z]{2}$/;
+
 function parseLimit(raw: string | null): number {
   const parsed = parseInt(raw ?? "", 10);
   if (!Number.isFinite(parsed)) return DEFAULT_LIMIT;
   return Math.min(Math.max(parsed, MIN_LIMIT), MAX_LIMIT);
+}
+
+function parseOffset(raw: string | null): number {
+  const parsed = parseInt(raw ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+/**
+ * Content-language filter. Anything that isn't a bare ISO 639-1 code is
+ * dropped to `null` (= all languages) rather than rejected: the value also
+ * lands in the response cache key, so free-form junk here would let a caller
+ * mint unlimited distinct entries.
+ */
+function parseLanguage(raw: string | null): string | null {
+  return raw !== null && ISO6391_RE.test(raw) ? raw : null;
 }
 
 export async function handler(req: Request): Promise<Response> {
@@ -53,6 +74,8 @@ export async function handler(req: Request): Promise<Response> {
     const requestUrl = new URL(req.url);
     const query = (requestUrl.searchParams.get("q") || "").trim();
     const limit = parseLimit(requestUrl.searchParams.get("limit"));
+    const offset = parseOffset(requestUrl.searchParams.get("offset"));
+    const language = parseLanguage(requestUrl.searchParams.get("language"));
 
     // Reject empty AND oversized queries with an empty result set — same
     // shape as the iOS app already handles, no error path needed.
@@ -78,6 +101,8 @@ export async function handler(req: Request): Promise<Response> {
       body: JSON.stringify({
         search_query: query,
         result_limit: limit,
+        search_language: language,
+        result_offset: offset,
       }),
     });
 

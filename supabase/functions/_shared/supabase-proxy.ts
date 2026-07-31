@@ -138,6 +138,21 @@ export function isUuidFilter(raw: string): boolean {
   return everyFilterValue(raw, (v) => UUID_RE.test(v));
 }
 
+/**
+ * Accepts only `eq.<uuid>` — one row, by equality.
+ *
+ * Distinct from `isUuidFilter`, which validates the filter *value* and
+ * deliberately tolerates any operator (`in.(a,b)`, `neq.`, `gt.`, …) because
+ * it serves the generic `paramValidators` role. Use this one wherever a
+ * caller must mean "exactly one row": `neq.<uuid>` matches nearly the whole
+ * table and `in.(…)` matches up to `limit` rows, both of which pass
+ * `isUuidFilter` and would otherwise be mistaken for a single-row lookup.
+ */
+export function isSingleUuidEqFilter(raw: string): boolean {
+  const m = /^eq\.(.*)$/is.exec(raw);
+  return m !== null && UUID_RE.test(m[1]);
+}
+
 /** Accepts only kebab-case slug value(s) up to 128 chars. */
 export function isSlugFilter(raw: string): boolean {
   return everyFilterValue(raw, (v) => v.length <= 128 && SLUG_RE.test(v));
