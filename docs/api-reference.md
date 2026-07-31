@@ -51,7 +51,7 @@ Returns a paginated list of articles with source and category information.
 |-----------|------|-------------|---------|
 | `limit` | integer | Articles to return. Clamped to **[0, 100]**; default 100. | `limit=20` |
 | `offset` | integer | Pagination offset (non-negative). | `offset=40` |
-| `id` | string | Article ID, PostgREST syntax. | `id=eq.<uuid>` |
+| `id` | string | Article ID, PostgREST syntax. Must be a canonical UUID; any other value yields `[]` rather than an unfiltered list. Switches the response to the **detail projection** (see below). | `id=eq.<uuid>` |
 | `source_slug` | string | Filter by source slug. | `source_slug=eq.bbc-tech` |
 | `category_slug` | string | Filter by category slug. | `category_slug=eq.technology` |
 | `language` | string | ISO 639-1 language. | `language=eq.en` |
@@ -61,6 +61,20 @@ Returns a paginated list of articles with source and category information.
 
 > `select` is *not* honored — the server always returns the canonical column
 > set below.
+
+#### List vs. detail projection
+
+A request carrying a valid `id=eq.<uuid>` is a single-article lookup and
+additionally returns `content`, `thumbnail_url` and `author`. Every other
+request gets the list projection, which omits them.
+
+`content` is the full extracted article body (up to 200K runes before
+compression), so shipping it on a 100-row feed response would dominate the
+payload — that is the whole reason for the split. Clients that render an
+article body must fetch it by id.
+
+`content` is `NULL` for articles older than the prune window
+(migration 032); fall back to `summary`.
 
 #### Response
 
@@ -186,6 +200,8 @@ Full-text search across articles via the `search_articles` RPC.
 |-----------|------|-------------|---------|
 | `q` | string | Search query. **Max 200 characters.** Empty / whitespace / oversized queries return `[]` without a DB call. | `q=artificial intelligence` |
 | `limit` | integer | Max results. Default 20, clamped to **[1, 100]**. | `limit=50` |
+| `offset` | integer | Pagination offset. Negative / NaN values fall back to 0. | `offset=20` |
+| `language` | string | Bare ISO 639-1 content language — **not** PostgREST `eq.` syntax. Omitted or malformed means all languages. | `language=pt` |
 
 #### Response
 
@@ -201,7 +217,15 @@ Returns `[]` if the query is empty, whitespace, or > 200 characters.
 
 ```bash
 curl "https://<project>.supabase.co/functions/v1/api-search?q=artificial%20intelligence&limit=20"
+
+# Second page, Portuguese articles only
+curl "https://<project>.supabase.co/functions/v1/api-search?q=eleicoes&language=pt&limit=20&offset=20"
 ```
+
+> Ranking still uses the `english` text-search configuration: `search_vector`
+> is a generated column built with that config (migration 001), so querying it
+> with another one would simply stop matching. `language` filters the corpus;
+> it does not change stemming.
 
 ---
 
