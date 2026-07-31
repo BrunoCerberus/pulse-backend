@@ -129,3 +129,27 @@ Deno.test("oversized request URI returns 414", async () => {
   const res = await handler(req);
   assertEquals(res.status, 414);
 });
+
+Deno.test("upstream error is masked and the real status is reported", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    clearCache();
+    setupEnv();
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response('{"message":"column "x" does not exist","code":"42703"}', { status: 400 }),
+      );
+    const res = await handler(new Request("http://localhost/api-categories?nocache=mask"));
+    assertEquals(res.status, 400);
+    const body = await res.json();
+    assertEquals(body.error, "upstream error");
+    assertEquals(body.code, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    clearCache();
+  }
+});

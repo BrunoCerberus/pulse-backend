@@ -84,16 +84,18 @@ export async function handler(req: Request): Promise<Response> {
     } else {
       const result = await fetchFromSupabase(req, config);
       status = result.status;
-      if (isUpstreamSuccess(result.status) && isCacheableResult(result.data)) {
-        data = result.data;
-        setCached(cacheKey, data, CACHE_TTL_MS);
-      } else {
+      if (!isUpstreamSuccess(result.status)) {
         // Mask any unsuccessful upstream response (PostgREST errors, gateway
-        // HTML) with a generic JSON body. Only cache successful, non-empty
-        // results. 206 counts as success — see isUpstreamSuccess.
-        data = isUpstreamSuccess(result.status)
-          ? result.data
-          : JSON.stringify({ error: "upstream error" });
+        // HTML) with a generic JSON body.
+        data = JSON.stringify({ error: "upstream error" });
+      } else {
+        data = result.data;
+        // Cache 200 only. The cache stores the body alone, so replaying a
+        // cached 206 would drop its status and `Content-Range` and present a
+        // truncated page as the complete catalogue.
+        if (result.status === 200 && isCacheableResult(result.data)) {
+          setCached(cacheKey, data, CACHE_TTL_MS);
+        }
       }
     }
 

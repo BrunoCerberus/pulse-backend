@@ -57,23 +57,34 @@ export async function handler(req: Request): Promise<Response> {
   try {
     const cacheKey = buildCacheKey("categories", req, config);
     const cached = getCached(cacheKey);
+    const ok = {
+      ...corsHeaders,
+      ...cacheHeaders(CacheDurations.CATEGORIES),
+      "Content-Type": "application/json",
+    };
 
-    const data = cached ?? (await (async () => {
-      const result = await fetchFromSupabase(req, config);
-      if (isUpstreamSuccess(result.status) && isCacheableResult(result.data)) {
-        setCached(cacheKey, result.data, CACHE_TTL_MS);
-      }
-      return result.data;
-    })());
+    if (cached !== null) {
+      return new Response(cached, { status: 200, headers: ok });
+    }
 
-    return new Response(data, {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        ...cacheHeaders(CacheDurations.CATEGORIES),
-        "Content-Type": "application/json",
-      },
-    });
+    const result = await fetchFromSupabase(req, config);
+
+    // Mask unsuccessful upstream responses instead of echoing the raw
+    // PostgREST body (SQLSTATE, column/table hints) under a hardcoded 200.
+    if (!isUpstreamSuccess(result.status)) {
+      return new Response(JSON.stringify({ error: "upstream error" }), {
+        status: result.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Cache 200 only — see the note in api-sources: a cached 206 would replay
+    // as a complete result without its `Content-Range`.
+    if (result.status === 200 && isCacheableResult(result.data)) {
+      setCached(cacheKey, result.data, CACHE_TTL_MS);
+    }
+
+    return new Response(result.data, { status: result.status, headers: ok });
   } catch (error) {
     console.error("Error fetching categories:", error);
     return new Response(

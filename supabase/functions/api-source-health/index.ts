@@ -261,7 +261,9 @@ export async function handler(req: Request): Promise<Response> {
       });
     }
     const { status, body, cacheable } = await buildPayload(req);
-    if (isUpstreamSuccess(status) && cacheable) {
+    // 200 only: the cache keeps the body alone, so a cached 206 would replay
+    // as a complete result stripped of its `Content-Range`.
+    if (status === 200 && cacheable) {
       setCached(cacheKey, body, CACHE_TTL_MS);
     }
     return new Response(body, {

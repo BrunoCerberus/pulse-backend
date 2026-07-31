@@ -7,6 +7,7 @@ import {
   isCacheableResult,
   isLanguageFilter,
   isSlugFilter,
+  isUpstreamSuccess,
   isUuidFilter,
   MAX_QUERY_STRING_LEN,
   type ProxyConfig,
@@ -545,5 +546,16 @@ Deno.test("paramValidators drop invalid language from the upstream URL", () => {
   } finally {
     if (prevUrl) Deno.env.set("SUPABASE_URL", prevUrl);
     else Deno.env.delete("SUPABASE_URL");
+  }
+});
+
+Deno.test("isUpstreamSuccess accepts 200 and 206 only", () => {
+  // 206 is PostgREST's answer whenever a `limit` makes the response a subset
+  // of the matching rows — the normal case for every paged list.
+  for (const ok of [200, 206]) {
+    assert(isUpstreamSuccess(ok), `${ok} should be success`);
+  }
+  for (const bad of [201, 204, 301, 304, 400, 401, 403, 404, 414, 500, 502, 503]) {
+    assert(!isUpstreamSuccess(bad), `${bad} should not be success`);
   }
 });
