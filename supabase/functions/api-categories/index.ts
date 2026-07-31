@@ -84,7 +84,14 @@ export async function handler(req: Request): Promise<Response> {
       setCached(cacheKey, result.data, CACHE_TTL_MS);
     }
 
-    return new Response(result.data, { status: result.status, headers: ok });
+    const headers: Record<string, string> = { ...ok };
+    if (result.contentRange) {
+      // Tells the caller how much of the collection this page covers; without
+      // it a 206 is indistinguishable from a complete result.
+      headers["Content-Range"] = result.contentRange;
+    }
+
+    return new Response(result.data, { status: result.status, headers });
   } catch (error) {
     console.error("Error fetching categories:", error);
     return new Response(

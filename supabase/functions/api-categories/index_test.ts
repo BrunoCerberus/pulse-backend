@@ -153,3 +153,36 @@ Deno.test("upstream error is masked and the real status is reported", async () =
     clearCache();
   }
 });
+
+Deno.test("206 forwards Content-Range and is not cached", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  try {
+    clearCache();
+    setupEnv();
+    globalThis.fetch = () => {
+      upstreamCalls++;
+      return Promise.resolve(
+        new Response('[{"id":"1","name":"World","slug":"world"}]', {
+          status: 206,
+          headers: { "Content-Range": "0-0/42" },
+        }),
+      );
+    };
+    const res = await handler(new Request("http://localhost/api-categories?limit=1"));
+    assertEquals(res.status, 206);
+    assertEquals(res.headers.get("Content-Range"), "0-0/42");
+
+    // A partial page must not be replayed from cache as a complete 200.
+    const res2 = await handler(new Request("http://localhost/api-categories?limit=1"));
+    assertEquals(res2.status, 206);
+    assertEquals(upstreamCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    clearCache();
+  }
+});

@@ -77,6 +77,7 @@ export async function handler(req: Request): Promise<Response> {
 
     let data: string;
     let status = 200;
+    let contentRange: string | null = null;
 
     const cached = getCached(cacheKey);
     if (cached !== null) {
@@ -84,6 +85,7 @@ export async function handler(req: Request): Promise<Response> {
     } else {
       const result = await fetchFromSupabase(req, config);
       status = result.status;
+      contentRange = result.contentRange;
       if (!isUpstreamSuccess(result.status)) {
         // Mask any unsuccessful upstream response (PostgREST errors, gateway
         // HTML) with a generic JSON body.
@@ -99,14 +101,18 @@ export async function handler(req: Request): Promise<Response> {
       }
     }
 
-    return new Response(data, {
-      status,
-      headers: {
-        ...corsHeaders,
-        ...cacheHeaders(CacheDurations.SOURCES),
-        "Content-Type": "application/json",
-      },
-    });
+    const headers: Record<string, string> = {
+      ...corsHeaders,
+      ...cacheHeaders(CacheDurations.SOURCES),
+      "Content-Type": "application/json",
+    };
+    if (contentRange) {
+      // Tells the caller how much of the collection this page covers; without
+      // it a 206 is indistinguishable from a complete result.
+      headers["Content-Range"] = contentRange;
+    }
+
+    return new Response(data, { status, headers });
   } catch (error) {
     console.error("Error fetching sources:", error);
     return new Response(

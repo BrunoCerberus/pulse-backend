@@ -230,7 +230,17 @@ async function buildPayload(
   // Don't cache an empty fleet view: a caller rotating a valid-but-nonexistent
   // id/slug would otherwise mint a unique cache key per request and evict the
   // hot (unfiltered) watchdog entry from the bounded LRU.
-  return { status: 200, body: JSON.stringify(payload), cacheable: rows.length > 0 };
+  //
+  // Nor a partial one. A 206 means PostgREST truncated the rows, so `summary`
+  // is computed over a subset and describes less than the whole fleet —
+  // caching that would serve a wrong total as if it were complete. The status
+  // is propagated rather than flattened to 200 so callers can tell.
+  const partial = result.status === 206;
+  return {
+    status: result.status,
+    body: JSON.stringify(payload),
+    cacheable: rows.length > 0 && !partial,
+  };
 }
 
 export async function handler(req: Request): Promise<Response> {
