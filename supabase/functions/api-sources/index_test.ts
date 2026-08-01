@@ -365,3 +365,63 @@ Deno.test("upstream 502 returns status, not 200", async () => {
     else Deno.env.delete("SUPABASE_ANON_KEY");
   }
 });
+
+Deno.test("206 forwards Content-Range and is not cached", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  try {
+    setupEnv();
+    globalThis.fetch = () => {
+      upstreamCalls++;
+      return Promise.resolve(
+        new Response('[{"id":"1","name":"BBC","slug":"bbc"}]', {
+          status: 206,
+          headers: { "Content-Range": "0-0/900" },
+        }),
+      );
+    };
+    const res = await handler(new Request("http://localhost/api-sources"));
+    assertEquals(res.status, 206);
+    assertEquals(res.headers.get("Content-Range"), "0-0/900");
+
+    // A partial page must not be replayed from cache as a complete 200.
+    const res2 = await handler(new Request("http://localhost/api-sources"));
+    assertEquals(res2.status, 206);
+    assertEquals(upstreamCalls, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    clearCache();
+  }
+});
+
+Deno.test("masked error response carries no Content-Range", async () => {
+  clearCache();
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    globalThis.fetch = () =>
+      Promise.resolve(
+        new Response('{"message":"boom"}', {
+          status: 500,
+          headers: { "Content-Range": "0-0/900" },
+        }),
+      );
+    const res = await handler(new Request("http://localhost/api-sources"));
+    assertEquals(res.status, 500);
+    assertEquals((await res.json()).error, "upstream error");
+    // The body no longer contains those rows, so the range must not survive.
+    assertEquals(res.headers.get("Content-Range"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalUrl) Deno.env.set("SUPABASE_URL", originalUrl);
+    if (originalKey) Deno.env.set("SUPABASE_ANON_KEY", originalKey);
+    clearCache();
+  }
+});

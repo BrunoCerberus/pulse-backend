@@ -442,3 +442,44 @@ Deno.test("non-eq operators on id get the list projection", async () => {
     tearDownEnv(originalUrl, originalKey);
   }
 });
+
+Deno.test("206 Partial Content is passed through, not masked as an error", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    // PostgREST answers 206 whenever a `limit` makes the response a subset of
+    // the matching rows — i.e. every paged list request this endpoint makes.
+    globalThis.fetch = makeMockFetch('[{"id":"1","title":"Test"}]', 206, {
+      "Content-Range": "0-0/1234",
+    });
+    const res = await handler(new Request("http://localhost/api-articles?limit=1"));
+    assertEquals(res.status, 206);
+    assertEquals(res.headers.get("Content-Range"), "0-0/1234");
+    const body = await res.json();
+    assertEquals(body[0].title, "Test");
+    assert(res.headers.get("ETag") !== null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});
+
+Deno.test("genuine upstream errors are still masked", async () => {
+  const originalUrl = Deno.env.get("SUPABASE_URL");
+  const originalKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const originalFetch = globalThis.fetch;
+  try {
+    setupEnv();
+    for (const status of [400, 401, 500, 502]) {
+      globalThis.fetch = makeMockFetch('{"message":"column x does not exist"}', status);
+      const res = await handler(new Request("http://localhost/api-articles?limit=1"));
+      assertEquals(res.status, status);
+      assertEquals((await res.json()).error, "upstream error");
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    tearDownEnv(originalUrl, originalKey);
+  }
+});

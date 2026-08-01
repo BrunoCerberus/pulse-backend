@@ -37,6 +37,7 @@ import {
   fetchFromSupabase,
   isLanguageFilter,
   isSingleUuidEqFilter,
+  isUpstreamSuccess,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -134,9 +135,9 @@ export async function handler(req: Request): Promise<Response> {
 
     // ETag/304 only on success — never cache or echo error bodies (which would
     // pin clients to a stale error state on `If-None-Match` replay, and may
-    // leak PostgREST schema details). All non-200 upstream responses are
+    // leak PostgREST schema details). All unsuccessful upstream responses are
     // returned with a generic JSON error body.
-    if (result.status !== 200) {
+    if (!isUpstreamSuccess(result.status)) {
       return new Response(
         JSON.stringify({ error: "upstream error" }),
         {

@@ -437,3 +437,51 @@ Deno.test("summarize counts categories correctly", () => {
   assertEquals(s.circuit_open_count, 1);
   assertEquals(s.high_failure_count, 1);
 });
+
+Deno.test("partial (206) fleet view is refused, not summarised, and not cached", async () => {
+  clearCache();
+  const origUrl = Deno.env.get("SUPABASE_URL");
+  const origKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const origFetch = globalThis.fetch;
+  let healthCalls = 0;
+  try {
+    setupEnv();
+    const rows = [row({ name: "One" }), row({ name: "Two" })];
+    globalThis.fetch = (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+        ? input.toString()
+        : input.url;
+      if (url.includes("/rpc/get_db_size_bytes")) {
+        return Promise.resolve(new Response("1000", { status: 200 }));
+      }
+      healthCalls++;
+      // PostgREST truncated the rows. Summarising a subset would undercount
+      // every field and the watchdog would read it as a healthy fleet.
+      return Promise.resolve(
+        new Response(JSON.stringify(rows), {
+          status: 206,
+          headers: { "Content-Range": "0-1/500" },
+        }),
+      );
+    };
+
+    const res = await handler(new Request("http://localhost/api-source-health"));
+    assertEquals(res.status, 206);
+    assertEquals(res.headers.get("Content-Range"), "0-1/500");
+    const body = await res.json();
+    assertEquals(body.error, "partial upstream result");
+    // No numbers at all beats wrong numbers a consumer would trust.
+    assertEquals(body.summary, undefined);
+    assertEquals(body.sources, undefined);
+
+    const res2 = await handler(new Request("http://localhost/api-source-health"));
+    assertEquals(res2.status, 206);
+    assertEquals(healthCalls, 2);
+  } finally {
+    globalThis.fetch = origFetch;
+    restoreEnv(origUrl, origKey);
+    clearCache();
+  }
+});

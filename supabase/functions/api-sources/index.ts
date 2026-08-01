@@ -30,6 +30,7 @@ import {
   isBooleanFilter,
   isCacheableResult,
   isLanguageFilter,
+  isUpstreamSuccess,
   isUuidFilter,
   type ProxyConfig,
   tooLong,
@@ -76,6 +77,7 @@ export async function handler(req: Request): Promise<Response> {
 
     let data: string;
     let status = 200;
+    let contentRange: string | null = null;
 
     const cached = getCached(cacheKey);
     if (cached !== null) {
@@ -83,24 +85,36 @@ export async function handler(req: Request): Promise<Response> {
     } else {
       const result = await fetchFromSupabase(req, config);
       status = result.status;
-      if (result.status === 200 && isCacheableResult(result.data)) {
-        data = result.data;
-        setCached(cacheKey, data, CACHE_TTL_MS);
+      if (!isUpstreamSuccess(result.status)) {
+        // Mask any unsuccessful upstream response (PostgREST errors, gateway
+        // HTML) with a generic JSON body.
+        data = JSON.stringify({ error: "upstream error" });
       } else {
-        // Mask any non-200 upstream response (PostgREST errors, gateway HTML)
-        // with a generic JSON body. Only cache successful, non-empty results.
-        data = result.status === 200 ? result.data : JSON.stringify({ error: "upstream error" });
+        data = result.data;
+        // Only on success: a masked error body must not carry a range header
+        // describing rows it no longer contains.
+        contentRange = result.contentRange;
+        // Cache 200 only. The cache stores the body alone, so replaying a
+        // cached 206 would drop its status and `Content-Range` and present a
+        // truncated page as the complete catalogue.
+        if (result.status === 200 && isCacheableResult(result.data)) {
+          setCached(cacheKey, data, CACHE_TTL_MS);
+        }
       }
     }
 
-    return new Response(data, {
-      status,
-      headers: {
-        ...corsHeaders,
-        ...cacheHeaders(CacheDurations.SOURCES),
-        "Content-Type": "application/json",
-      },
-    });
+    const headers: Record<string, string> = {
+      ...corsHeaders,
+      ...cacheHeaders(CacheDurations.SOURCES),
+      "Content-Type": "application/json",
+    };
+    if (contentRange) {
+      // Tells the caller how much of the collection this page covers; without
+      // it a 206 is indistinguishable from a complete result.
+      headers["Content-Range"] = contentRange;
+    }
+
+    return new Response(data, { status, headers });
   } catch (error) {
     console.error("Error fetching sources:", error);
     return new Response(
