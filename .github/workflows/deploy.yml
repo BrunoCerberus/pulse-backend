@@ -204,9 +204,6 @@ jobs:
             # 206 is a success here: PostgREST answers Partial Content whenever
             # a `limit` makes the response a subset of the matching rows, which
             # is every paged list (see isUpstreamSuccess in supabase-proxy.ts).
-            # Written as an `if` to match the assertion checks below; the
-            # previous `&&` list was fine under `set -e` (a non-final command
-            # in an AND list is exempt), just less symmetric with two clauses.
             if [ "$status" != "200" ] && [ "$status" != "206" ]; then
               problems="${problems} status=${status} (want 200 or 206);"
             fi
