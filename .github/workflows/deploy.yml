@@ -201,7 +201,14 @@ jobs:
             rm -f "$hdr"
 
             problems=""
-            [ "$status" != "200" ] && problems="${problems} status=${status} (want 200);"
+            # 206 is a success here: PostgREST answers Partial Content whenever
+            # a `limit` makes the response a subset of the matching rows, which
+            # is every paged list (see isUpstreamSuccess in supabase-proxy.ts).
+            # An `if` rather than an `&&` list so a passing check can't return
+            # non-zero and trip `set -e` mid-loop.
+            if [ "$status" != "200" ] && [ "$status" != "206" ]; then
+              problems="${problems} status=${status} (want 200 or 206);"
+            fi
 
             if ! printf '%s' "$body" | jq -e "$assertion" >/dev/null 2>&1; then
               problems="${problems} body failed assertion \`${assertion}\`;"
