@@ -56,7 +56,7 @@ cd rss-worker && go test -v ./...
 **Every RSS feed, article page, and media enclosure is hostile, attacker-controlled input.**
 `THREAT_MODEL.md` documents every control by ID (C-SSRF, C-URLSAFE, C-SANITIZE, C-LIMITS, C-CANON,
 C-CLAMP, C-RATELIMIT, C-CIRCUIT, C-GRANT, C-VIEW, C-DEFINER, C-CALLERGATE, C-SEARCHCAP, C-BATCHCAP,
-C-WRITEREVOKE) across:
+C-WRITEREVOKE, C-FUZZ) across:
 
 - `internal/httputil` — SSRF resolve-once, forbidden-IP rejection, redirect re-validation
 - `internal/parser` — body-size caps, URL safety/canonicalization, bidi/control stripping, date
@@ -104,6 +104,14 @@ this pattern for new similar code.
 Edge Functions have a **90% line-coverage floor** (currently ~98%), enforced in the same workflow.
 Go runs as a single `go test -race -coverprofile` pass — don't split it back into two runs.
 
+**Coverage is not the same as robustness.** 100% statement coverage proves each line ran once, not
+that hostile bytes leave it intact — so the hostile-input surfaces also carry **fuzz targets**
+(control C-FUZZ) in `internal/parser/fuzz_test.go` and `internal/httputil/fuzz_test.go`. Assert
+control invariants there, not just absence of panics. Both fuzz workflows discover targets by
+grepping for `func FuzzXxx`, so a new target needs no workflow edit. When a target finds a crasher,
+commit the minimized `testdata/fuzz/` input as a seed in the same PR as the fix — seeds replay as
+ordinary subtests on every `go test`.
+
 | Package | Key Tests |
 |---------|-----------|
 | `internal/models` | HashURL, NewArticle, ShouldFetch, CategoryName |
@@ -113,9 +121,10 @@ Go runs as a single `go test -race -coverprofile` pass — don't split it back i
 | `internal/database` | Batch inserts/images/content/state, circuit filter, retry, error branches |
 | `internal/logger` | Level filtering, text+JSON, With(), nil fallbacks, Fatalf |
 | `main` | processSource (panic recovery), runFetch, circuit helpers, runBackfill, every main() command |
+| fuzz (`internal/{parser,httputil}`) | cleanHTML, sanitizeText, canonicalizeURL, URL safety, parseDuration, truncateToFirstParagraph, IsForbiddenIP, ValidateSSRFTarget |
 | `_shared/*.ts` | cache, cors, etag utilities |
 
-Commands: `make test` · `make test-go-cover` · `make test-deno`.
+Commands: `make test` · `make test-go-cover` · `make test-deno` · `make fuzz` (all targets, 30s each).
 
 ## Code Style Guidelines
 

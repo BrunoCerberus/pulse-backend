@@ -787,10 +787,47 @@ var brToNewline = strings.NewReplacer(
 // regex pass — replaces the previous O(n²) loop.
 var multiNewline = regexp.MustCompile(`\n{3,}`)
 
+// asciiEqualFold reports whether s equals lowerNeedle, folding ASCII A-Z only.
+// Callers pass an already-lowercase needle; len(s) must be len(lowerNeedle).
+func asciiEqualFold(s, lowerNeedle string) bool {
+	for j := 0; j < len(lowerNeedle); j++ {
+		c := s[j]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != lowerNeedle[j] {
+			return false
+		}
+	}
+	return true
+}
+
+// asciiIndexFold returns the byte offset of the first ASCII-case-insensitive
+// occurrence of lowerNeedle in s, or -1.
+//
+// This exists instead of `strings.Index(strings.ToLower(s), needle)` because
+// ToLower does NOT preserve byte length: every invalid UTF-8 byte becomes
+// U+FFFD (1 byte -> 3) and 'Ⱥ'/'Ⱦ' (U+023A/U+023E) lowercase 2 bytes -> 3. An
+// offset found in the lowercased copy therefore does not address the same
+// character in s. removeTagWithContent used to mix the two spaces, which let a
+// feed carrying malformed UTF-8 before a <script>/<style> tag either panic
+// (slice bounds out of range) or desync the scan so the tag body leaked into
+// article text — a C-SANITIZE bypass. Matching ASCII-only is also the correct
+// rule for HTML tag names: 'K' (U+212A) must not match the 'k' in a tag.
+func asciiIndexFold(s, lowerNeedle string) int {
+	for i := 0; i+len(lowerNeedle) <= len(s); i++ {
+		if asciiEqualFold(s[i:i+len(lowerNeedle)], lowerNeedle) {
+			return i
+		}
+	}
+	return -1
+}
+
 // removeTagWithContent strips a given HTML tag and its contents (case-insensitive).
 // For example, removeTagWithContent(s, "script") removes <script>...</script> blocks.
+// Every offset below is in s's own byte space — see asciiIndexFold for why that
+// matters.
 func removeTagWithContent(s, tagName string) string {
-	lower := strings.ToLower(s)
 	tag := strings.ToLower(tagName)
 	openTag := "<" + tag
 	closeTag := "</" + tag + ">"
@@ -799,8 +836,7 @@ func removeTagWithContent(s, tagName string) string {
 	result.Grow(len(s))
 	i := 0
 	for i < len(s) {
-		lowerRest := lower[i:]
-		idx := strings.Index(lowerRest, openTag)
+		idx := asciiIndexFold(s[i:], openTag)
 		if idx == -1 {
 			result.WriteString(s[i:])
 			break
@@ -814,7 +850,7 @@ func removeTagWithContent(s, tagName string) string {
 		}
 		result.WriteString(s[i : i+idx])
 		// Find closing tag
-		closeIdx := strings.Index(lower[i+idx:], closeTag)
+		closeIdx := asciiIndexFold(s[i+idx:], closeTag)
 		if closeIdx == -1 {
 			// No closing tag found, skip to end
 			break

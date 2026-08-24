@@ -8,12 +8,30 @@ linters:
     - unused
     - ineffassign
     - misspell
+    # bodyclose: a response body left unclosed leaks a connection from the
+    # shared transport pool — this worker holds one pool across 136 sources.
+    # errorlint: %v-formatted or ==-compared errors silently break the
+    # errors.Is/As chains ErrBlockedByPolicy and the retry classifier rely on.
+    - bodyclose
+    - errorlint
+    # noctx is NOT enabled yet, deliberately. It reports three real findings in
+    # internal/database/supabase.go (CreateFetchLog, CompleteFetchLog,
+    # CleanupOldArticles build requests with http.NewRequest, so they ignore
+    # the worker's shutdown deadline and hang until the client timeout). Giving
+    # those methods a ctx parameter changes the Client API plus the interfaces
+    # and fakes in main.go/main_test.go, so it belongs in its own PR — enable
+    # this linter in that PR rather than adding a nolint here.
 
   exclusions:
     rules:
       - path: _test\.go
         linters:
           - errcheck
+          # Both target production hygiene. In tests, an unclosed httptest
+          # response body dies with the server, and a type assertion on an
+          # *exec.ExitError the test itself produced cannot be wrapped.
+          - bodyclose
+          - errorlint
 
 # Formatting is enforced by `golangci-lint run` (the Go Lint CI job): gofmt
 # canonicalizes whitespace/comment alignment, goimports additionally groups and

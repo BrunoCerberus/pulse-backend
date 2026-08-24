@@ -117,6 +117,7 @@ the vulnerability classes worth targeting during discovery.
 | Feed-supplied MIME type smuggles CRLF / extra headers | **Injection** | C-SANITIZE |
 | Oversized/overflowing media duration corrupts numeric fields | **DoS** | C-SANITIZE |
 | Control / bidi-override codepoints spoof rendering on iOS | **Injection** | C-SANITIZE |
+| Malformed UTF-8 desyncs case-folded tag offsets → `<script>` body leaks or parse panics | **Injection**, **DoS** | C-SANITIZE, C-FUZZ |
 | `javascript:`/`data:`/`file:` URLs propagate to clients | **Injection** | C-URLSAFE |
 | Query-reorder / fragment tricks bypass dedup → duplicate flooding | **DoS** | C-CANON |
 | Far-future `published_at` pins an article to the top forever | **Logic** | C-CLAMP |
@@ -201,7 +202,17 @@ rather than line numbers so this stays accurate as code moves.
   control + bidi-override codepoints; `sanitizeMIMEType` enforces a tight MIME
   regex (no CRLF); `parseDuration` bounds each part before combining (so the
   `hours*3600` multiply can't wrap to a bogus positive value) and `parseSafeInt`
-  guards per-part overflow; duration capped at 24 h.
+  guards per-part overflow; duration capped at 24 h. `cleanHTML` →
+  `removeTagWithContent` drops `<script>`/`<style>` blocks *with their
+  contents*, matching tag names with `asciiIndexFold` — an ASCII-only,
+  same-string scan. It must not locate tags in a `strings.ToLower` copy and
+  then slice the original with those offsets: `ToLower` does not preserve byte
+  length (invalid UTF-8 → U+FFFD is 1→3 bytes; U+023A/U+023E lowercase 2→3),
+  so the two byte-spaces desync. That desync was a live bug — a feed carrying
+  malformed UTF-8 before a `<style`/`<script` token either panicked the parse
+  (slice bounds out of range) or let the tag body leak into article text.
+  ASCII-only folding is also the correct tag-name rule: U+212A KELVIN SIGN must
+  not fold into the `k` of a tag.
 - **C-URLSAFE** — `isSafeArticleURL` is the single storage guard shared by all
   four publisher-URL sinks (article link, thumbnail, media via `isSafeMediaURL`,
   og:image via `isAcceptableOGImage`). It rejects non-`http(s)` schemes, empty
@@ -271,6 +282,21 @@ rather than line numbers so this stays accurate as code moves.
   Dependabot (Go + Actions), `deno-deps.yml` (Deno deps, which Dependabot does
   not cover), SBOM.
 - **C-SECRETSCAN** — gitleaks (full history) + TruffleHog (verified).
+- **C-FUZZ** — Go fuzz targets cover the hostile-input surfaces the controls
+  above are implemented in: `cleanHTML`, `sanitizeText`, `canonicalizeURL`,
+  `isSafeArticleURL`/`isSafeMediaURL`, `parseDuration`,
+  `truncateToFirstParagraph` (C-SANITIZE, C-URLSAFE, C-CANON) and
+  `IsForbiddenIP`, `ValidateSSRFTarget` (C-SSRF). Targets assert control
+  invariants, not merely absence of panics — e.g. no tag survives `cleanHTML`,
+  no control/bidi codepoint survives `sanitizeText`, `canonicalizeURL` is a
+  fixed point (dedup depends on it), and a malformed-length IP is refused
+  rather than treated as routable. `test.yml`'s `Go Fuzz` job runs a short
+  bounded pass per target on every PR; `fuzz.yml` runs a long nightly pass per
+  target with a cached, compounding corpus. Minimized failing inputs are
+  committed under `testdata/fuzz/` so they replay forever as ordinary tests.
+  This exists because the 100% statement-coverage gate proves only that each
+  line ran once — it does not prove hostile bytes leave it intact, and the
+  first target written here found a C-SANITIZE bypass in 16 seconds.
 - **C-CONFORMANCE** — LGPD/GDPR/CCPA workflows ban PII patterns, enforce the
   table/column allowlists, retention literal, and RLS-still-on invariant.
 

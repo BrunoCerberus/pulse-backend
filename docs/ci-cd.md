@@ -11,7 +11,7 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
 | `backfill.yml` | Daily 04:30 UTC + manual (`kind: both\|images\|content`) | og:image + content backfill (two parallel jobs) |
-| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), **100% coverage gate** (fails if total `< 100.0%`), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. govulncheck lives in `security.yml`, not here. |
+| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), **100% coverage gate** (fails if total `< 100.0%`), **`Go Fuzz`** (20s per discovered target), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. govulncheck lives in `security.yml`, not here. |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
 | `codeql.yml` | Push/PR to `master` + weekly Mon 00:00 UTC | GitHub CodeQL static analysis; uploads SARIF to the Security tab |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
@@ -26,12 +26,13 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
 | `deno-deps.yml` | Weekly Mon 06:30 UTC + manual | Runs `deno outdated` over `supabase/functions` and keeps a single tracking issue in sync (opens/updates/closes it). Dependabot has no Deno ecosystem, so this is the Edge Functions' only dependency-update path. |
+| `fuzz.yml` | Daily 02:00 UTC + manual (`fuzztime`, default `10m`) | Extended fuzzing: one matrix job per discovered `func FuzzXxx`, each with its own cached corpus (`~/.cache/go-build/fuzz`) so coverage compounds night over night. Failing inputs upload as `fuzz-crashers-<Target>`; commit them under `testdata/fuzz/<Target>/` as permanent seeds. |
 | `keepalive.yml` | Monthly (1st, 05:45 UTC) + manual | Resets GitHub's 60-day scheduled-trigger inactivity timer so crons (fetch, cleanup, watchdog, …) survive commit-quiet periods |
 
 ## Branch Protection
 
-Protection on `master` is a repository **ruleset** ("Master") requiring **25
-status checks** before merge: `test.yml` (3), `security.yml` (5), `pr-checks.yml`
+Protection on `master` is a repository **ruleset** ("Master") requiring **26
+status checks** before merge: `test.yml` (4, incl. `Go Fuzz`), `security.yml` (5), `pr-checks.yml`
 (4, incl. Dependency Review), `lgpd-conformance.yml` (4), `gdpr-conformance.yml`
 (4), `codeql.yml` (2), `migrations-ci.yml` (1), `lint-meta.yml` (1), and
 `claude-code-review.yml` (`claude-review`, 1). Direct pushes to `master` are
@@ -41,6 +42,29 @@ required review-thread resolution. Repository admins can bypass via PR — neede
 e.g. when a PR edits `claude-code-review.yml` itself, since `claude-code-action`
 refuses to run from a workflow file that differs from the default branch,
 leaving the required `claude-review` check red until the edit merges.
+
+## Fuzzing
+
+The 100% statement-coverage gate proves every line executed at least once. It
+does not prove that hostile bytes leave those lines intact — and per
+`THREAT_MODEL.md`, every feed, article page, and enclosure is attacker
+controlled. Fuzzing (control **C-FUZZ**) closes that gap.
+
+Targets live next to the code they exercise (`internal/parser/fuzz_test.go`,
+`internal/httputil/fuzz_test.go`) and assert control invariants rather than
+merely absence of panics. Both workflows **discover** targets by grepping for
+`func FuzzXxx`, so a new target enrols itself with no workflow edit; each job
+fails loudly if discovery matches nothing, so it can never pass vacuously.
+
+| Where | Budget | Purpose |
+|-------|--------|---------|
+| `test.yml` → `Go Fuzz` (required check) | 20s × target | Replay the committed corpus and catch obvious regressions without slowing a PR |
+| `fuzz.yml` (nightly, one job per target) | 10m × target | The actual hunt, with a cached corpus that compounds across nights |
+
+Seed corpora under `testdata/fuzz/` also replay as ordinary subtests in the
+`Go Tests` job, so a fixed crasher stays fixed even if both fuzz jobs are
+skipped. When a nightly run fails, download its `fuzz-crashers-<Target>`
+artifact and commit the minimized input as a seed in the same PR as the fix.
 
 ## Security
 

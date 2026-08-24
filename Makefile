@@ -1,4 +1,4 @@
-.PHONY: help test test-go test-go-cover test-go-race test-deno build run clean deploy deploy-all deploy-categories deploy-sources deploy-articles deploy-search deploy-health functions-serve cleanup backfill-images backfill-content
+.PHONY: help test test-go test-go-cover test-go-race test-deno fuzz build run clean deploy deploy-all deploy-categories deploy-sources deploy-articles deploy-search deploy-health functions-serve cleanup backfill-images backfill-content
 
 # Default target
 help:
@@ -10,6 +10,7 @@ help:
 	@echo "  make test-go-cover   Run Go tests with coverage"
 	@echo "  make test-go-race    Run Go tests with race detector"
 	@echo "  make test-deno       Run Deno Edge Function tests"
+	@echo "  make fuzz            Fuzz every target (30s each; FUZZTIME=5m to extend)"
 	@echo ""
 	@echo "Build & Run:"
 	@echo "  make build           Build the RSS worker binary"
@@ -45,6 +46,24 @@ test-go-cover:
 
 test-go-race:
 	cd rss-worker && go test -v -race ./...
+
+# Mirrors test.yml's Go Fuzz job: discover every `func FuzzXxx` and run it, since
+# `go test` accepts only one -fuzz target per invocation. Override the budget with
+# `make fuzz FUZZTIME=5m`.
+FUZZTIME ?= 30s
+fuzz:
+	@cd rss-worker && \
+	found=0; \
+	for file in $$(grep -rl --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(' .); do \
+		pkg=$$(dirname "$$file"); pkg=$${pkg#./}; \
+		for target in $$(grep -oE '^func Fuzz[A-Za-z0-9_]*' "$$file" | sed -E 's/^func //'); do \
+			found=$$((found + 1)); \
+			echo "==> $$target ($$pkg, $(FUZZTIME))"; \
+			go test -run '^$$' -fuzz "^$$target$$" -fuzztime $(FUZZTIME) "./$$pkg" || exit 1; \
+		done; \
+	done; \
+	[ "$$found" -gt 0 ] || { echo "no fuzz targets found"; exit 1; }; \
+	echo "$$found fuzz target(s) passed."
 
 test-deno:
 	cd supabase/functions && deno test --allow-env --allow-net _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/
