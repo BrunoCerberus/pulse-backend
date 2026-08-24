@@ -103,6 +103,49 @@ func TestCleanHTML(t *testing.T) {
 	}
 }
 
+// TestCleanHTML_CaseFoldOffsets pins the fix for a slice-bounds panic and a
+// C-SANITIZE bypass in removeTagWithContent, which used to locate tags in
+// strings.ToLower(s) and then slice s with the offsets it found. ToLower does
+// not preserve byte length — invalid UTF-8 becomes U+FFFD (1 byte -> 3) and
+// U+023A/U+023E lowercase 2 bytes -> 3 — so the two spaces desynced. Malformed
+// UTF-8 is routine in real feeds (Latin-1 bodies mislabeled as UTF-8), which
+// made this reachable from any hostile or merely sloppy publisher.
+func TestCleanHTML_CaseFoldOffsets(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "invalid utf-8 before a tag does not panic",
+			input:    "\x90\x90\x90\x90<STYLE",
+			expected: "\uFFFD\uFFFD\uFFFD\uFFFD",
+		},
+		{
+			name:     "case-growing runes do not leak the script body",
+			input:    strings.Repeat("\u023A", 20) + "<script>x</script>tail",
+			expected: strings.Repeat("\u023A", 20) + "tail",
+		},
+		{
+			name:     "kelvin sign is not folded into a tag name",
+			input:    "\u212A<script>a</script>b",
+			expected: "\u212Ab",
+		},
+		{
+			name:     "ascii case folding still matches",
+			input:    "<ScRiPt>bad</ScRiPt>ok",
+			expected: "ok",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cleanHTML(tt.input); got != tt.expected {
+				t.Errorf("cleanHTML(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCleanHTML_PreservesText(t *testing.T) {
 	// Ensure regular text is not modified
 	text := "This is a normal paragraph with no HTML."

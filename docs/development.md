@@ -53,6 +53,7 @@ make test-go           # Run Go tests
 make test-go-cover     # Run Go tests with coverage
 make test-go-race      # Run Go tests with race detector
 make test-deno         # Run Deno Edge Function tests
+make fuzz              # Fuzz every target (30s each; FUZZTIME=5m to extend)
 
 # Build & Run
 make build             # Build the RSS worker binary
@@ -86,7 +87,18 @@ tests swap — follow that pattern when adding similar code.
 make test           # All tests
 make test-go-cover  # Go with coverage report
 make test-deno      # Deno Edge Function tests
+make fuzz           # Every fuzz target, 30s each
 ```
+
+Coverage is not robustness: 100% proves each line ran once, not that hostile
+bytes leave it intact. The parsing and SSRF surfaces therefore carry **fuzz
+targets** (`internal/parser/fuzz_test.go`, `internal/httputil/fuzz_test.go`)
+that assert control invariants — no tag survives `cleanHTML`, `canonicalizeURL`
+is a fixed point, a malformed-length IP is refused rather than treated as
+routable. Add a target alongside any new code that consumes feed input; both
+fuzz workflows discover `func FuzzXxx` by grep, so no workflow edit is needed.
+Seeds in `testdata/fuzz/` replay as ordinary subtests on every `go test`, so
+commit a crasher as a seed in the same PR that fixes it.
 
 CI runs the same suite plus golangci-lint and govulncheck on every push/PR —
 see [ci-cd.md](ci-cd.md).
@@ -140,9 +152,9 @@ pulse-backend/
 │   └── internal/
 │       ├── config/                    # Configuration + tests
 │       ├── models/                    # Data models + tests
-│       ├── parser/                    # RSS parsing + enrichment + tests
+│       ├── parser/                    # RSS parsing + enrichment + tests + fuzz targets
 │       ├── database/                  # Supabase client + tests (with retry logic)
-│       ├── httputil/                  # HTTP transports: Shared + SSRF-safe + per-host rate limiting
+│       ├── httputil/                  # HTTP transports: Shared + SSRF-safe + per-host rate limiting + fuzz targets
 │       └── logger/                    # Structured logging with level support
 ├── tasks/                             # Working notes / scratch (todo.md)
 └── .github/
@@ -150,7 +162,8 @@ pulse-backend/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily 3 AM UTC)
     │   ├── backfill.yml              # og:image + content backfill (daily 04:30 UTC)
-    │   ├── test.yml                   # Unit tests (race+coverage) + lint + Deno tests (push/PR)
+    │   ├── test.yml                   # Unit tests (race+coverage) + fuzz smoke + lint + Deno tests (push/PR)
+    │   ├── fuzz.yml                   # Extended nightly fuzzing, one matrix job per target
     │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
     │   ├── codeql.yml                 # CodeQL static analysis (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title, go.mod sync, migration format

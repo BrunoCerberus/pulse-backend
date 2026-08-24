@@ -76,6 +76,85 @@ jobs:
       # plus a weekly cron — running it in both places was the same scan, with
       # the same action pin and the same inputs, billed twice per PR.
 
+  fuzz:
+    name: Go Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-worker
+
+      # Short, bounded smoke run on every PR. The seed corpora in
+      # testdata/fuzz/ already replay as ordinary subtests in the Go Tests job;
+      # this job spends a fixed budget looking for NEW inputs. The long hunt
+      # lives in fuzz.yml (nightly), so keep FUZZTIME small enough that a PR
+      # never waits on it.
+      #
+      # Targets are discovered, not listed: adding a func FuzzXxx anywhere in
+      # the module enrolls it here automatically. `go test` requires one -fuzz
+      # target per invocation, hence the loop.
+      - name: Fuzz hostile-input surfaces
+        id: fuzz
+        working-directory: ./rss-worker
+        env:
+          FUZZTIME: 20s
+        run: |
+          set -uo pipefail
+          fuzz_status=0
+          {
+            echo "## Go Fuzz"
+            echo ""
+            echo "| Target | Package | Result |"
+            echo "|--------|---------|--------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          found=0
+          while IFS= read -r file; do
+            pkg=$(dirname "$file")
+            # GNU grep -r (the runner) prefixes paths with "./", BSD
+            # grep (macOS) does not; strip it so the go test path is
+            # well-formed on both.
+            pkg=${pkg#./}
+            while IFS= read -r target; do
+              found=$((found + 1))
+              echo "::group::${target} (${pkg}, ${FUZZTIME})"
+              if go test -run '^$' -fuzz "^${target}\$" -fuzztime "$FUZZTIME" "./${pkg}"; then
+                echo "| \`${target}\` | ${pkg} | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::error title=Go Fuzz::${target} found a failing input — the minimized crasher is in ${pkg}/testdata/fuzz/${target}/"
+                echo "| \`${target}\` | ${pkg} | ❌ |" >> "$GITHUB_STEP_SUMMARY"
+                fuzz_status=1
+              fi
+              echo "::endgroup::"
+            done < <(grep -oE '^func Fuzz[A-Za-z0-9_]*' "$file" | sed -E 's/^func //')
+          done < <(grep -rl --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(' .)
+          if [ "$found" -eq 0 ]; then
+            echo "::error title=Go Fuzz::no fuzz targets found — the discovery grep matched nothing, so this job was silently vacuous"
+            exit 1
+          fi
+          echo "Ran $found fuzz target(s) for $FUZZTIME each."
+          if [ "$fuzz_status" -eq 0 ]; then
+            echo "::notice title=Go Fuzz::$found target(s) × $FUZZTIME — no failing inputs"
+          fi
+          exit "$fuzz_status"
+
+      # A crasher is only actionable with the input that produced it. Go writes
+      # the minimized case under testdata/fuzz/<Target>/; publish it so the fix
+      # can start by committing that file as a permanent seed.
+      - name: Upload failing fuzz inputs
+        if: failure() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers
+          path: rss-worker/**/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 30
+
   lint:
     name: Go Lint
     runs-on: ubuntu-latest

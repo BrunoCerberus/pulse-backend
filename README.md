@@ -59,7 +59,7 @@ cache-and-guard proxy that the iOS app reads.
 | **[API Reference](docs/api-reference.md)** | Edge Function endpoints, parameters, and request guards |
 | **[Database Schema](docs/database-schema.md)** | Tables, views, RPCs, indexes, and RLS |
 | **[iOS Integration](docs/ios-integration.md)** | Wiring the Pulse iOS app to this backend |
-| **[CI/CD & Security](docs/ci-cd.md)** | All workflows, branch protection, and the security pipeline |
+| **[CI/CD & Security](docs/ci-cd.md)** | All workflows, branch protection, fuzzing, and the security pipeline |
 | **[Operations Runbook](docs/operations-runbook.md)** | Monitoring, troubleshooting, and on-call procedures |
 | **[Data Protection](docs/privacy.md)** | Privacy posture + [LGPD](docs/lgpd-conformance.md) / [GDPR](docs/gdpr-conformance.md) / [CCPA](docs/ccpa-conformance.md) / [ROPA](docs/ropa.md) / [retention](docs/data-retention.md) |
 
@@ -79,7 +79,7 @@ cache-and-guard proxy that the iOS app reads.
 | Supabase DB | 500 MB | ~90 MB | ✅ |
 | Supabase API | 500K req/mo | ~200K | ✅ |
 | Supabase Edge Functions | 500K invocations/mo | Varies | ✅ |
-| GitHub Actions | 2,000 min/mo | ~720 min | ✅ |
+| GitHub Actions | Unlimited (public repo) | ~3,300 min | ✅ |
 
 ## API at a Glance
 
@@ -104,7 +104,7 @@ pulse-backend/
 ├── rss-worker/     # Go RSS fetcher + enrichment (internal/ packages)
 ├── supabase/       # migrations, Edge Functions, SQL invariant tests
 ├── docs/           # all documentation (see index above)
-└── .github/        # 19 workflows + governance
+└── .github/        # 20 workflows + governance
 ```
 
 → Full annotated layout in **[docs/development.md](docs/development.md#repository-layout)**.
@@ -121,6 +121,11 @@ guard rails — PRs that would erode the posture fail CI. See
 
 **Monthly cost: $0** (within free tiers). GitHub Actions is free for public
 repositories; the 2,000-min/mo allowance applies to private repos.
+
+> **If you fork this private**, Actions minutes start counting and the nightly
+> `fuzz.yml` run dominates the bill: one job per fuzz target × 10 min each is
+> roughly 2,600 min/mo on its own. Cut its `cron` to weekly, or lower the
+> per-target budget, before the repo leaves public visibility.
 
 If you outgrow the free tier:
 

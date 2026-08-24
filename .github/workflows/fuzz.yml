@@ -1,0 +1,146 @@
+name: Extended Fuzz
+
+# The `Go Fuzz` job in test.yml spends 20s per target so PRs stay fast — enough
+# to replay the corpus and catch an obvious new regression, not enough to find
+# anything deep. This workflow is the actual hunt: every target gets its own
+# runner and a much larger budget, nightly, off the PR critical path.
+#
+# Rationale for fuzzing at all: THREAT_MODEL.md treats every feed, article page,
+# and enclosure as attacker-controlled, and the repo's 100% statement-coverage
+# gate proves only that each line executed once — not that hostile bytes leave
+# it intact. The first target written here found a slice-bounds panic and a
+# C-SANITIZE bypass in cleanHTML within 16 seconds.
+
+on:
+  schedule:
+    # 02:00 UTC daily — an otherwise-empty slot (see docs/ci-cd.md's cron table).
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: 'Per-target fuzz budget (Go duration, e.g. 10m)'
+        required: false
+        default: '10m'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Discover Targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.find.outputs.matrix }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Build the matrix from the source rather than a hand-maintained list, so
+      # a new func FuzzXxx gets a nightly runner without touching this file.
+      - name: Find fuzz targets
+        id: find
+        working-directory: ./rss-worker
+        run: |
+          set -euo pipefail
+          # Walk files, then targets within each file. Deliberately NOT a
+          # `grep -rn | sed` one-liner over "path:line:func Name(": whether
+          # grep -r prefixes results with "./" differs between GNU (runner) and
+          # BSD (macOS) grep, so a pattern anchored on that prefix parses
+          # cleanly on one and silently yields garbage target names on the
+          # other. ${pkg#./} normalises the prefix for the same reason.
+          matrix=$(
+            while IFS= read -r file; do
+              pkg=$(dirname "$file")
+              grep -oE '^func Fuzz[A-Za-z0-9_]*' "$file" \
+                | sed -E 's/^func //' \
+                | while IFS= read -r target; do
+                    printf '{"pkg":"%s","target":"%s"}\n' "${pkg#./}" "$target"
+                  done
+            done < <(grep -rl --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(' .) \
+              | jq -c -s 'unique_by(.target) | {include: .}'
+          )
+          count=$(echo "$matrix" | jq '.include | length')
+          if [ "$count" -eq 0 ]; then
+            echo "::error title=Extended Fuzz::no fuzz targets found — discovery matched nothing"
+            exit 1
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Extended Fuzz::dispatching $count target(s)"
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: ./.github/actions/setup-go-worker
+
+      # Go keeps the inputs it deems interesting in $GOCACHE/fuzz, NOT in the
+      # repo (only minimized crashers land in testdata/). Without this cache
+      # every night restarts from the committed seeds and re-derives the same
+      # shallow coverage; with it, each run resumes where the last left off and
+      # the corpus compounds. restore-keys makes a cold start degrade to "no
+      # cache" rather than fail.
+      - name: Restore fuzz corpus
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run ${{ matrix.target }}
+        id: fuzz
+        working-directory: ./rss-worker
+        env:
+          TARGET: ${{ matrix.target }}
+          PKG: ${{ matrix.pkg }}
+          FUZZTIME: ${{ github.event.inputs.fuzztime || '10m' }}
+        run: |
+          set -uo pipefail
+          if go test -run '^$' -fuzz "^${TARGET}\$" -fuzztime "$FUZZTIME" "./${PKG}"; then
+            echo "::notice title=${TARGET}::no failing inputs in ${FUZZTIME}"
+            {
+              echo "## ${TARGET} ✅"
+              echo ""
+              echo "- Package: \`${PKG}\`"
+              echo "- Budget: ${FUZZTIME}"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error title=${TARGET}::failing input found — download the fuzz-crashers-${TARGET} artifact and commit it under ${PKG}/testdata/fuzz/${TARGET}/ as a regression seed"
+          {
+            echo "## ${TARGET} ❌"
+            echo ""
+            echo "- Package: \`${PKG}\`"
+            echo "- A minimized failing input is attached as artifact \`fuzz-crashers-${TARGET}\`."
+            echo "- Commit it under \`${PKG}/testdata/fuzz/${TARGET}/\` so it replays forever."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Upload failing input
+        if: failure() && steps.fuzz.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashers-${{ matrix.target }}
+          path: rss-worker/**/testdata/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 30
