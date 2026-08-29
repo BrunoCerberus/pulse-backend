@@ -165,84 +165,23 @@ jobs:
         run: |
           set -uo pipefail
 
-          # name ^ path+query ^ jq assertion on the body ^ expected Cache-Control
-          #
-          # Field separator is `^`, NOT `|` — jq expressions use `|` as their own
-          # pipe operator, and using it here silently truncates the assertion and
-          # the expected header.
-          #
-          # The jq expressions assert SHAPE, not data: the DB may legitimately be
-          # empty on a fresh project, so `type == "array"` is the right assertion
-          # for list endpoints. A PostgREST error body is an object, not an array,
-          # so this still catches a broken view or a revoked grant.
-          checks=$(cat <<'CHECKS'
-          api-categories^api-categories?limit=1^type == "array"^public, max-age=86400
-          api-sources^api-sources?limit=1^type == "array"^public, max-age=3600
-          api-articles^api-articles?limit=1^type == "array"^public, max-age=900, stale-while-revalidate=1800
-          api-search^api-search?q=test&limit=1^type == "array"^private, max-age=60
-          api-health^api-health^.status == "ok"^no-store
-          api-source-health^api-source-health^has("summary") and (.summary | has("total"))^public, max-age=60
-          CHECKS
-          )
-
-          failed=0
-          results=""
-
-          while IFS='^' read -r name path assertion want_cc; do
-            [ -z "$name" ] && continue
-
-            hdr=$(mktemp)
-
-            # No -f: a non-2xx must be reported as a status mismatch, not
-            # swallowed as a curl error. Body goes to a file so stdout carries
-            # only the status code. "000" means curl never got a response.
-            status=$(curl -sS --max-time 20 -D "$hdr" -w '%{http_code}' \
-                       -o /tmp/smoke-body.json \
-                       "${SUPABASE_URL}/functions/v1/${path}" 2>/dev/null || echo "000")
-            body=$(cat /tmp/smoke-body.json 2>/dev/null || true)
-
-            # Header names are case-insensitive; normalise, then collapse the
-            # header's internal whitespace so ", " vs "," never fails a match.
-            got_cc=$(grep -i '^cache-control:' "$hdr" | tail -1 \
-              | cut -d: -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/,[[:space:]]*/, /g')
-            rm -f "$hdr"
-
-            problems=""
-            # 206 is a success here: PostgREST answers Partial Content whenever
-            # a `limit` makes the response a subset of the matching rows, which
-            # is every paged list (see isUpstreamSuccess in supabase-proxy.ts).
-            if [ "$status" != "200" ] && [ "$status" != "206" ]; then
-              problems="${problems} status=${status} (want 200 or 206);"
-            fi
-
-            if ! printf '%s' "$body" | jq -e "$assertion" >/dev/null 2>&1; then
-              problems="${problems} body failed assertion \`${assertion}\`;"
-            fi
-
-            if [ "$got_cc" != "$want_cc" ]; then
-              problems="${problems} Cache-Control='${got_cc}' (want '${want_cc}');"
-            fi
-
-            if [ -n "$problems" ]; then
-              failed=1
-              echo "::error title=Smoke test::${name} —${problems}"
-              # Body may contain an upstream error message; cap it so a large
-              # payload can't flood the log.
-              echo "  body (first 300 chars): $(printf '%s' "$body" | head -c 300)"
-              results="${results}| \`${name}\` | ❌ |${problems} |"$'\n'
-            else
-              echo "${name}: OK (200, shape ok, Cache-Control ok)"
-              results="${results}| \`${name}\` | ✅ | 200 · shape ok · \`${want_cc}\` |"$'\n'
-            fi
-          done <<< "$checks"
+          # The six-endpoint contract suite (status, body shape, Cache-Control)
+          # lives in scripts/check-endpoints.sh — the SAME file the PR contract
+          # test in migrations-ci.yml runs against the local stack, so "same
+          # assertions as the PR check" is structural, not a copy. The suite
+          # emits its own ::error annotations and results table; this step
+          # captures the table for the annotate step below and propagates the
+          # suite's exit code.
+          rc=0
+          bash scripts/check-endpoints.sh "${SUPABASE_URL}/functions/v1" "Smoke test" /tmp/smoke-results.md || rc=$?
 
           {
             echo "smoke_results<<RESULTS_EOF"
-            printf '%s' "$results"
+            cat /tmp/smoke-results.md 2>/dev/null || true
             echo "RESULTS_EOF"
           } >> "$GITHUB_OUTPUT"
 
-          if [ "$failed" -ne 0 ]; then
+          if [ "$rc" -ne 0 ]; then
             echo "::error title=Deploy::one or more endpoints failed the post-deploy smoke test"
             exit 1
           fi

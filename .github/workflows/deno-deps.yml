@@ -61,11 +61,17 @@ jobs:
           # and this job's `deno outdated` results must match the version
           # that runs the Edge Function tests. The grep's output is strictly
           # "v" + digits/dots, so it is safe to feed to setup-deno.
-          ver=$(grep -oE 'deno-version: v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/test.yml | head -n 1 | awk '{print $2}')
-          if [ -z "$ver" ]; then
-            echo "::error title=Deno Dependency Check::could not read the Deno version pin from test.yml — if that pin's format changed, update this grep"
+          #
+          # Exactly one distinct value, like the toolchain-freshness job:
+          # silently taking the first of several would let a drifted pin (two
+          # different versions in test.yml) go unreported.
+          pins=$(grep -oE 'deno-version: v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/test.yml | sort -u)
+          count=$(printf '%s\n' "$pins" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error title=Deno Dependency Check::expected exactly one deno-version pin in test.yml, found ${count} — if the pin's format changed, update this grep"
             exit 1
           fi
+          ver=$(printf '%s\n' "$pins" | awk '{print $2}')
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "Using Deno ${ver} (read from test.yml)"
 

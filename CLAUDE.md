@@ -42,6 +42,8 @@ Pulse iOS App
   `internal/{config,models,parser,database,httputil,logger}`
 - `supabase/migrations/001–036_*.sql` (applied in order, annotated history in `docs/setup.md`) ·
   `supabase/functions/` — Edge Functions + `_shared/` · `supabase/tests/security_invariants.sql`
+- `scripts/check-endpoints.sh` — the shared six-endpoint contract suite run by the
+  migrations-ci contract job AND the production deploy smoke test (one file, two callers)
 - `docs/` — full reference docs (annotated repo tree: `docs/development.md`)
 
 Full command list + env vars: `docs/development.md`. First-time setup: `docs/setup.md`.

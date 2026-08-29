@@ -133,7 +133,7 @@ pulse-backend/
 ├── supabase/
 │   ├── config.toml                    # Edge Functions config
 │   ├── migrations/
-│   │   └── 001_*.sql … 033_*.sql      # 33 ordered migrations — see setup.md for the annotated list
+│   │   └── 001_*.sql … 036_*.sql      # 36 ordered migrations — see setup.md for the annotated list
 │   ├── functions/                     # Edge Functions (caching proxy)
 │   │   ├── deno.json                  # Deno config (imports/tasks)
 │   │   ├── deno.lock                  # Deno dependency lockfile
@@ -158,8 +158,10 @@ pulse-backend/
 │       ├── database/                  # Supabase client + tests (with retry logic)
 │       ├── httputil/                  # HTTP transports: Shared + SSRF-safe + per-host rate limiting + fuzz targets
 │       └── logger/                    # Structured logging with level support
-├── tasks/                             # Working notes / scratch (todo.md)
-└── .github/
+ ├── scripts/
+ │   └── check-endpoints.sh             # Shared 6-endpoint contract suite (migrations-ci contract job + deploy smoke test)
+ ├── tasks/                             # Working notes / scratch (todo.md)
+ └── .github/
     ├── workflows/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily 3 AM UTC)

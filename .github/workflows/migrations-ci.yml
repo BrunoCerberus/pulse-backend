@@ -72,6 +72,9 @@ jobs:
             functions:
               - 'supabase/functions/**'
               - 'supabase/config.toml'
+              # The shared six-endpoint contract suite — the contract job's
+              # assertions live here, so an edit to it re-runs the contract.
+              - 'scripts/check-endpoints.sh'
               - '.github/workflows/migrations-ci.yml'
 
       - name: Decide which jobs run
@@ -101,10 +104,30 @@ jobs:
     name: Apply migrations + invariants
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # always(): if the shared change-detection job FAILED (not the normal
+    # unrelated-PR path, where it succeeds with run=false), the default
+    # needs: gate would skip this whole job — and a SKIPPED required status
+    # check counts as satisfied, letting a broken detector green two checks.
+    # With always() the job still starts, and the guard below fails it.
+    if: always()
     needs: changes
 
     steps:
+      # Fail loudly when change detection failed, BEFORE anything else: a
+      # broken detector must not let migrations merge unverified.
+      - name: "Guard: change detection succeeded"
+        id: guard
+        if: always() && needs.changes.result != 'success'
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          set -euo pipefail
+          echo "::error title=Migrations CI::the shared change-detection job failed (result: ${CHANGES_RESULT}) — failing this job on purpose; a skipped required check would otherwise count as satisfied"
+          exit 1
+
       - name: Checkout code
+        if: needs.changes.result == 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -234,12 +257,27 @@ jobs:
         if: always()
         shell: bash
         env:
+          GUARD_OUTCOME: ${{ steps.guard.outcome }}
           RUN_VALIDATION: ${{ needs.changes.outputs.run }}
           INVARIANTS_OUTCOME: ${{ steps.invariants.outcome }}
           INCREMENTAL_RAN: ${{ steps.incremental.outputs.ran }}
           INCREMENTAL_COUNT: ${{ steps.incremental.outputs.count }}
         run: |
           set -euo pipefail
+          if [ "$GUARD_OUTCOME" = "failure" ]; then
+            # Change detection failed: the suite never ran, and the guard
+            # step already failed the job on purpose (a skipped required
+            # check would count as satisfied). Explain that in the summary —
+            # do NOT render the "nothing to verify" skip message. On the
+            # normal path the guard is "skipped", never "failure".
+            echo "::error title=Migrations CI::change detection failed — validation did not run; failing on purpose"
+            {
+              echo "## Migrations CI ❌"
+              echo ""
+              echo "- The shared change-detection job failed, so the apply-from-scratch + lint + invariants suite could not be gated safely. This check fails on purpose — a broken detector must not let unverified migrations through."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ "$RUN_VALIDATION" != "true" ]; then
             echo "::notice title=Migrations CI::no schema/config/test changes — full validation skipped"
             {
@@ -293,10 +331,25 @@ jobs:
     name: Edge Function contract tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # always() + guard: same rationale as the validate job — a failed change
+    # detector must fail this required check, never skip it into a green.
+    if: always()
     needs: changes
 
     steps:
+      - name: "Guard: change detection succeeded"
+        id: guard
+        if: always() && needs.changes.result != 'success'
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+        run: |
+          set -euo pipefail
+          echo "::error title=Functions Contract::the shared change-detection job failed (result: ${CHANGES_RESULT}) — failing this job on purpose; a skipped required check would otherwise count as satisfied"
+          exit 1
+
       - name: Checkout code
+        if: needs.changes.result == 'success'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -362,82 +415,14 @@ jobs:
         run: |
           set -uo pipefail
 
-          # Same six endpoints, same assertions as the production deploy smoke
-          # test in deploy.yml (status, body shape, Cache-Control) — run
-          # against the local stack with the real schema, so cross-layer
-          # drift fails the PR instead of the release.
-          checks=$(cat <<'CHECKS'
-          api-categories^api-categories?limit=1^type == "array"^public, max-age=86400
-          api-sources^api-sources?limit=1^type == "array"^public, max-age=3600
-          api-articles^api-articles?limit=1^type == "array"^public, max-age=900, stale-while-revalidate=1800
-          api-search^api-search?q=test&limit=1^type == "array"^private, max-age=60
-          api-health^api-health^.status == "ok"^no-store
-          api-source-health^api-source-health^has("summary") and (.summary | has("total"))^public, max-age=60
-          CHECKS
-          )
-
-          failed=0
-          results=""
-
-          while IFS='^' read -r name path assertion want_cc; do
-            [ -z "$name" ] && continue
-
-            hdr=$(mktemp)
-
-            # No -f: a non-2xx must be reported as a status mismatch, not
-            # swallowed as a curl error. Body goes to a file so stdout carries
-            # only the status code. "000" means curl never got a response.
-            status=$(curl -sS --max-time 20 -D "$hdr" -w '%{http_code}' \
-                       -o /tmp/contract-body.json \
-                       "http://localhost:54321/functions/v1/${path}" 2>/dev/null || echo "000")
-            body=$(cat /tmp/contract-body.json 2>/dev/null || true)
-
-            # Header names are case-insensitive; normalise, then collapse the
-            # header's internal whitespace so ", " vs "," never fails a match.
-            got_cc=$(grep -i '^cache-control:' "$hdr" | tail -1 \
-              | cut -d: -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/,[[:space:]]*/, /g')
-            rm -f "$hdr"
-
-            problems=""
-            # 206 is a success here: PostgREST answers Partial Content whenever
-            # a `limit` makes the response a subset of the matching rows.
-            if [ "$status" != "200" ] && [ "$status" != "206" ]; then
-              problems="${problems} status=${status} (want 200 or 206);"
-            fi
-
-            if ! printf '%s' "$body" | jq -e "$assertion" >/dev/null 2>&1; then
-              problems="${problems} body failed assertion \`${assertion}\`;"
-            fi
-
-            if [ "$got_cc" != "$want_cc" ]; then
-              problems="${problems} Cache-Control='${got_cc}' (want '${want_cc}');"
-            fi
-
-            if [ -n "$problems" ]; then
-              failed=1
-              echo "::error title=Functions Contract::${name} —${problems}"
-              echo "  body (first 300 chars): $(printf '%s' "$body" | head -c 300)"
-              results="${results}| \`${name}\` | ❌ |${problems} |"$'\n'
-            else
-              echo "${name}: OK (${status}, shape ok, Cache-Control ok)"
-              results="${results}| \`${name}\` | ✅ | ${status} · shape ok · \`${want_cc}\` |"$'\n'
-            fi
-          done <<< "$checks"
-
-          # Written to a file (not GITHUB_OUTPUT) so the Annotate step below
-          # can render it on BOTH paths; an empty file means the step never
-          # got far enough to check anything.
-          {
-            echo "| Endpoint | Result | Detail |"
-            echo "|----------|--------|--------|"
-            printf '%s' "$results"
-          } > /tmp/contract-results.md
-
-          if [ "$failed" -ne 0 ]; then
-            echo "::error title=Functions Contract::one or more endpoints failed against the local stack"
-            exit 1
-          fi
-          echo "All 6 endpoints passed the local contract check."
+          # The six-endpoint suite (status, body shape, Cache-Control) lives
+          # in scripts/check-endpoints.sh — the SAME file the production
+          # deploy smoke test runs, so "same assertions as deploy" is
+          # structural, not a copy. It runs against the local stack with the
+          # real schema, so cross-layer drift fails the PR instead of the
+          # release. The results table lands in /tmp/contract-results.md for
+          # the annotate step below; the script's exit code is the step's.
+          bash scripts/check-endpoints.sh "http://localhost:54321/functions/v1" "Functions Contract" /tmp/contract-results.md
 
       # Branch on the contract step's outcome so a red run never shows a green
       # check; always() so a failed EARLIER step (stack, reset, wait) still
@@ -446,16 +431,31 @@ jobs:
         if: always()
         shell: bash
         env:
+          GUARD_OUTCOME: ${{ steps.guard.outcome }}
           RUN_CONTRACT: ${{ needs.changes.outputs.run-contract }}
           CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
         run: |
           set -euo pipefail
+          if [ "$GUARD_OUTCOME" = "failure" ]; then
+            # Change detection failed: the suite never ran, and the guard
+            # step already failed the job on purpose (a skipped required
+            # check would count as satisfied). Explain that in the summary —
+            # do NOT render the "nothing to verify" skip message. On the
+            # normal path the guard is "skipped", never "failure".
+            echo "::error title=Functions Contract::change detection failed — contract tests did not run; failing on purpose"
+            {
+              echo "## Edge Function contract tests ❌"
+              echo ""
+              echo "- The shared change-detection job failed, so the endpoint contract suite could not be gated safely. This check fails on purpose — a broken detector must not let unverified changes through."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           if [ "$RUN_CONTRACT" != "true" ]; then
             echo "::notice title=Functions Contract::no schema/config/function changes — contract tests skipped"
             {
               echo "## Edge Function contract tests ⏭️"
               echo ""
-              echo "- No changes under \`supabase/migrations\`, \`supabase/functions\`, \`supabase/config.toml\`, or \`supabase/tests\` — the local-stack endpoint contract suite was skipped (nothing to verify)."
+              echo "- No changes under \`supabase/migrations\`, \`supabase/functions\`, \`supabase/config.toml\`, \`supabase/tests\`, or \`scripts/check-endpoints.sh\` — the local-stack endpoint contract suite was skipped (nothing to verify)."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
