@@ -78,8 +78,10 @@ make clean             # Remove build artifacts
 ## Testing
 
 Unit tests cover the Go packages and the Deno Edge Functions. All Go packages are
-held at **100% statement coverage**; `test.yml` fails the build if total coverage
-drops below 100.0%. Defensive branches that can't fail with real inputs are made
+held at **100% statement coverage**; `test.yml` fails the build if ANY statement is uncovered
+(it sums the cover profile's own counts — the rounded `go tool cover -func` display is not
+trusted, because 99.95%+ rounds up to "100.0%"). Defensive branches that can't fail with real
+inputs are made
 reachable via package-level function vars (e.g. `jsonMarshal`, `randRead`) that
 tests swap — follow that pattern when adding similar code.
 
@@ -168,14 +170,18 @@ pulse-backend/
     │   ├── codeql.yml                 # CodeQL static analysis (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title, go.mod sync, migration format
     │   ├── deploy.yml                 # Gated deploy: migrations → functions → 6-endpoint smoke test
-    │   ├── migrations-ci.yml          # db reset from scratch + incremental apply + db lint + SQL invariants
+    │   ├── migrations-ci.yml          # Migrations from scratch + incremental + invariants; Edge Function contract tests
     │   ├── lint-meta.yml              # actionlint (+ shellcheck) + zizmor over all workflows
     │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
     │   ├── lgpd-conformance.yml       # LGPD guard rails
     │   ├── gdpr-conformance.yml       # GDPR + CCPA guard rails
     │   ├── deno-deps.yml             # Weekly `deno outdated` → tracking issue (no Dependabot for Deno)
+    │   ├── toolchain-freshness.yml   # Weekly pin freshness (gitleaks/gosec/actionlint/zizmor/Supabase CLI) → tracking issue
     │   ├── claude.yml                 # On-demand Claude Code agent (owner/members/collaborators)
-    │   └── claude-code-review.yml     # Automated Claude PR review (trusted authors)
+    │   ├── claude-code-review.yml     # Automated Claude PR review (trusted authors)
+    │   ├── security-review.yml        # Advisory AI security review anchored to THREAT_MODEL.md
+    │   ├── scorecard.yml              # OpenSSF Scorecard posture score (push/weekly)
+    │   └── keepalive.yml              # Monthly: resets the 60-day inactivity timer on scheduled workflows
     ├── ISSUE_TEMPLATE/                # Bug + feature issue forms + config
     ├── pull_request_template.md       # Default PR description template
     ├── CODEOWNERS                     # Review ownership

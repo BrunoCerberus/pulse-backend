@@ -6,11 +6,20 @@ name: Migrations CI
 # authenticator) and the `request.jwt.claims` request GUC, so they can only be
 # applied via the local stack — a bare Postgres lacks those roles.
 #
-# This workflow runs on EVERY PR/push to master (no path filter) so its
-# "Apply migrations + invariants" context always reports and can be a required
-# status check without deadlocking unrelated PRs. The expensive Supabase-stack
-# validation is gated internally: it runs only when migrations / config / tests
-# (or this workflow) changed, and is skipped-but-green otherwise.
+# Two jobs:
+#   - `Apply migrations + invariants` — schema validation (see below).
+#   - `Edge Function contract tests` — the Deno unit tests exercise handlers
+#     with synthetic Requests; they can never see a real Postgres, RLS, or the
+#     views the functions actually query. This job boots the local stack,
+#     applies every migration, and hits all six endpoints over HTTP with the
+#     same status/shape/Cache-Control assertions the production deploy smoke
+#     test uses — so cross-layer drift fails the PR instead of the release.
+#
+# This workflow runs on EVERY PR/push to master (no path filter) so both
+# contexts always report and can be required status checks without deadlocking
+# unrelated PRs. The expensive Supabase-stack work is gated internally: each
+# job runs only when its inputs (migrations / config / tests / functions, or
+# this workflow) changed, and is skipped-but-green otherwise.
 
 on:
   pull_request:
@@ -28,23 +37,28 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  validate:
-    name: Apply migrations + invariants
+  # Shared change detection: one paths-filter run whose outputs gate BOTH jobs.
+  # (A separate paths-filter per job would duplicate the filter lists and let
+  # them drift.) Always runs and always reports, so both contexts exist on
+  # every PR and can be required checks without deadlocking unrelated PRs.
+  changes:
+    name: Detect related changes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      run-contract: ${{ steps.decide.outputs.run-contract }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Full history so the incremental-apply step below can diff this PR's
-          # migrations against the base branch.
+          # Full history: paths-filter diffs against the base on push events.
           fetch-depth: 0
 
-      # Detect whether anything that affects the schema changed. Skipped on
-      # workflow_dispatch (which always force-runs the full validation below).
-      - name: Detect schema-related changes
+      # Skipped on workflow_dispatch (which always force-runs both jobs below).
+      - name: Detect related changes
         id: changes
         if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -55,27 +69,62 @@ jobs:
               - 'supabase/config.toml'
               - 'supabase/tests/**'
               - '.github/workflows/migrations-ci.yml'
+            functions:
+              - 'supabase/functions/**'
+              - 'supabase/config.toml'
+              - '.github/workflows/migrations-ci.yml'
 
-      - name: Decide whether to run full validation
+      - name: Decide which jobs run
         id: decide
         shell: bash
         env:
-          CHANGED: ${{ steps.changes.outputs.schema }}
+          CHANGED_SCHEMA: ${{ steps.changes.outputs.schema }}
+          CHANGED_FUNCTIONS: ${{ steps.changes.outputs.functions }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          if [ "$CHANGED" = "true" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+          # schema → full validation; schema OR functions → contract tests
+          # (the functions and the views they read drift together, so a
+          # migration must be re-verified against them).
+          if [ "$CHANGED_SCHEMA" = "true" ] || [ "$EVENT" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
+          if [ "$CHANGED_SCHEMA" = "true" ] || [ "$CHANGED_FUNCTIONS" = "true" ] || [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "run-contract=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run-contract=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    name: Apply migrations + invariants
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Full history so the incremental-apply step below can diff this PR's
+          # migrations against the base branch.
+          fetch-depth: 0
 
       - name: Set up Supabase CLI
-        if: steps.decide.outputs.run == 'true'
+        if: needs.changes.outputs.run == 'true'
         uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          # Pinned, not "latest" (setup-cli's default): the steps below were
+          # validated against 2.116.0, and a silent CLI upgrade that changes
+          # `db reset` / `db lint` semantics would break this job for reasons
+          # it cannot explain. Bump deliberately; the weekly toolchain-freshness
+          # check tracks the latest release.
+          version: "2.116.0"
 
       - name: Start local Postgres
-        if: steps.decide.outputs.run == 'true'
+        if: needs.changes.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -84,7 +133,7 @@ jobs:
           supabase db start
 
       - name: Apply migrations from scratch
-        if: steps.decide.outputs.run == 'true'
+        if: needs.changes.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +155,7 @@ jobs:
       # a push to master has already been through this on the PR.
       - name: Apply new migrations incrementally
         id: incremental
-        if: steps.decide.outputs.run == 'true' && github.event_name == 'pull_request'
+        if: needs.changes.outputs.run == 'true' && github.event_name == 'pull_request'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -155,7 +204,7 @@ jobs:
           echo "::notice title=Migrations CI::${#new_files[@]} new migration(s) applied incrementally on top of the base-branch schema"
 
       - name: Lint plpgsql
-        if: steps.decide.outputs.run == 'true'
+        if: needs.changes.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +214,7 @@ jobs:
 
       - name: Run security invariants
         id: invariants
-        if: steps.decide.outputs.run == 'true'
+        if: needs.changes.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -185,7 +234,7 @@ jobs:
         if: always()
         shell: bash
         env:
-          RUN_VALIDATION: ${{ steps.decide.outputs.run }}
+          RUN_VALIDATION: ${{ needs.changes.outputs.run }}
           INVARIANTS_OUTCOME: ${{ steps.invariants.outcome }}
           INCREMENTAL_RAN: ${{ steps.incremental.outputs.ran }}
           INCREMENTAL_COUNT: ${{ steps.incremental.outputs.count }}
@@ -227,5 +276,210 @@ jobs:
               echo ""
               echo "- Invariants step outcome: **${INVARIANTS_OUTCOME}**"
               echo "- Last failure line: ${tail:-none captured (failure may be in an earlier step — see logs)}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Edge Function contract tests (see the header comment for the rationale).
+  #
+  # Deliberately a separate job from `validate`: validate runs
+  # `supabase db start` (Postgres only — the functions need the gateway +
+  # PostgREST + the Edge Runtime container that `supabase start` serves them
+  # from), and booting the full stack inside validate would slow the migration
+  # check for every PR. Gated on the shared `changes` job's run-contract
+  # output: runs when migrations, config, tests, OR functions changed.
+  # ---------------------------------------------------------------------------
+  functions-contract:
+    name: Edge Function contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: changes
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Supabase CLI
+        if: needs.changes.outputs.run-contract == 'true'
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          # Pinned, not "latest" (setup-cli's default): the steps below were
+          # validated against 2.116.0, and a silent CLI upgrade that changes
+          # `start` / `db reset` / Edge-Runtime semantics would break
+          # assertions this job cannot explain. Bump deliberately; the weekly
+          # toolchain-freshness check tracks the latest release.
+          version: "2.116.0"
+
+      - name: Start local Supabase stack
+        if: needs.changes.outputs.run-contract == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Minimal stack: the functions need the gateway (kong) + PostgREST +
+          # Postgres + the Edge Runtime container that `supabase start` serves
+          # the repo's functions from. Everything else (studio, imgproxy,
+          # storage, …) is excluded — it only costs image pulls and RAM.
+          # --yes: non-interactive CI — a future CLI prompt must never hang
+          # the job until timeout.
+          supabase start --yes \
+             -x gotrue -x realtime -x storage-api -x imgproxy -x mailpit \
+             -x postgres-meta -x studio -x logflare -x vector -x supavisor
+
+      - name: Apply migrations
+        if: needs.changes.outputs.run-contract == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same apply-from-scratch as validate: the contract assertions run
+          # against the real schema, not a hand-built approximation.
+          # --yes: non-interactive CI — never hang on a confirmation prompt.
+          supabase db reset --no-seed --yes
+
+      - name: Wait for gateway + functions
+        if: needs.changes.outputs.run-contract == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          # `db reset` restarts the containers; the gateway needs a few
+          # seconds to come back. api-health is the cheapest full-path probe
+          # (kong → edge runtime → function) and does not touch the DB.
+          for i in $(seq 1 60); do
+            if curl -sf --max-time 5 http://localhost:54321/functions/v1/api-health 2>/dev/null | grep -q '"status":"ok"'; then
+              echo "gateway + functions ready (after $i probe(s))"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error title=Functions Contract::gateway did not return healthy after migrations were applied"
+          exit 1
+
+      - name: Contract-check all six endpoints
+        id: contract
+        if: needs.changes.outputs.run-contract == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Same six endpoints, same assertions as the production deploy smoke
+          # test in deploy.yml (status, body shape, Cache-Control) — run
+          # against the local stack with the real schema, so cross-layer
+          # drift fails the PR instead of the release.
+          checks=$(cat <<'CHECKS'
+          api-categories^api-categories?limit=1^type == "array"^public, max-age=86400
+          api-sources^api-sources?limit=1^type == "array"^public, max-age=3600
+          api-articles^api-articles?limit=1^type == "array"^public, max-age=900, stale-while-revalidate=1800
+          api-search^api-search?q=test&limit=1^type == "array"^private, max-age=60
+          api-health^api-health^.status == "ok"^no-store
+          api-source-health^api-source-health^has("summary") and (.summary | has("total"))^public, max-age=60
+          CHECKS
+          )
+
+          failed=0
+          results=""
+
+          while IFS='^' read -r name path assertion want_cc; do
+            [ -z "$name" ] && continue
+
+            hdr=$(mktemp)
+
+            # No -f: a non-2xx must be reported as a status mismatch, not
+            # swallowed as a curl error. Body goes to a file so stdout carries
+            # only the status code. "000" means curl never got a response.
+            status=$(curl -sS --max-time 20 -D "$hdr" -w '%{http_code}' \
+                       -o /tmp/contract-body.json \
+                       "http://localhost:54321/functions/v1/${path}" 2>/dev/null || echo "000")
+            body=$(cat /tmp/contract-body.json 2>/dev/null || true)
+
+            # Header names are case-insensitive; normalise, then collapse the
+            # header's internal whitespace so ", " vs "," never fails a match.
+            got_cc=$(grep -i '^cache-control:' "$hdr" | tail -1 \
+              | cut -d: -f2- | tr -d '\r' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/,[[:space:]]*/, /g')
+            rm -f "$hdr"
+
+            problems=""
+            # 206 is a success here: PostgREST answers Partial Content whenever
+            # a `limit` makes the response a subset of the matching rows.
+            if [ "$status" != "200" ] && [ "$status" != "206" ]; then
+              problems="${problems} status=${status} (want 200 or 206);"
+            fi
+
+            if ! printf '%s' "$body" | jq -e "$assertion" >/dev/null 2>&1; then
+              problems="${problems} body failed assertion \`${assertion}\`;"
+            fi
+
+            if [ "$got_cc" != "$want_cc" ]; then
+              problems="${problems} Cache-Control='${got_cc}' (want '${want_cc}');"
+            fi
+
+            if [ -n "$problems" ]; then
+              failed=1
+              echo "::error title=Functions Contract::${name} —${problems}"
+              echo "  body (first 300 chars): $(printf '%s' "$body" | head -c 300)"
+              results="${results}| \`${name}\` | ❌ |${problems} |"$'\n'
+            else
+              echo "${name}: OK (${status}, shape ok, Cache-Control ok)"
+              results="${results}| \`${name}\` | ✅ | ${status} · shape ok · \`${want_cc}\` |"$'\n'
+            fi
+          done <<< "$checks"
+
+          # Written to a file (not GITHUB_OUTPUT) so the Annotate step below
+          # can render it on BOTH paths; an empty file means the step never
+          # got far enough to check anything.
+          {
+            echo "| Endpoint | Result | Detail |"
+            echo "|----------|--------|--------|"
+            printf '%s' "$results"
+          } > /tmp/contract-results.md
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error title=Functions Contract::one or more endpoints failed against the local stack"
+            exit 1
+          fi
+          echo "All 6 endpoints passed the local contract check."
+
+      # Branch on the contract step's outcome so a red run never shows a green
+      # check; always() so a failed EARLIER step (stack, reset, wait) still
+      # gets an annotation explaining the job is red.
+      - name: Annotate contract result
+        if: always()
+        shell: bash
+        env:
+          RUN_CONTRACT: ${{ needs.changes.outputs.run-contract }}
+          CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$RUN_CONTRACT" != "true" ]; then
+            echo "::notice title=Functions Contract::no schema/config/function changes — contract tests skipped"
+            {
+              echo "## Edge Function contract tests ⏭️"
+              echo ""
+              echo "- No changes under \`supabase/migrations\`, \`supabase/functions\`, \`supabase/config.toml\`, or \`supabase/tests\` — the local-stack endpoint contract suite was skipped (nothing to verify)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          results=""
+          [ -f /tmp/contract-results.md ] && results=$(cat /tmp/contract-results.md)
+
+          if [ "$CONTRACT_OUTCOME" = "success" ]; then
+            echo "::notice title=Functions Contract::all 6 endpoints passed against the local stack (real schema)"
+            {
+              echo "## Edge Function contract tests ✅"
+              echo ""
+              echo "- Full local stack (Postgres + PostgREST + Kong + Edge Runtime) with every migration applied"
+              echo "- All 6 endpoints returned 200 with the expected shape and \`Cache-Control\` — the same assertions as the production deploy smoke test"
+              echo ""
+              echo "$results"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error title=Functions Contract::contract check ${CONTRACT_OUTCOME} — see the step annotations above"
+            {
+              echo "## Edge Function contract tests ❌"
+              echo ""
+              echo "- Contract step outcome: **${CONTRACT_OUTCOME}**"
+              echo ""
+              echo "${results:-no results captured — a step before the endpoint checks failed (see logs)}"
             } >> "$GITHUB_STEP_SUMMARY"
           fi

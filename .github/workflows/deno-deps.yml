@@ -51,11 +51,28 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: "Read pinned Deno version (canonical: test.yml)"
+        id: deno-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          # test.yml holds the canonical pin (see AGENTS.md). Read it rather
+          # than repeating the literal: a second copy could silently drift,
+          # and this job's `deno outdated` results must match the version
+          # that runs the Edge Function tests. The grep's output is strictly
+          # "v" + digits/dots, so it is safe to feed to setup-deno.
+          ver=$(grep -oE 'deno-version: v[0-9]+\.[0-9]+\.[0-9]+' .github/workflows/test.yml | head -n 1 | awk '{print $2}')
+          if [ -z "$ver" ]; then
+            echo "::error title=Deno Dependency Check::could not read the Deno version pin from test.yml — if that pin's format changed, update this grep"
+            exit 1
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "Using Deno ${ver} (read from test.yml)"
+
       - name: Set up Deno
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
-          # Keep in step with test.yml's pin.
-          deno-version: v2.9.4
+          deno-version: ${{ steps.deno-pin.outputs.version }}
           cache: true
 
       - name: Check for outdated dependencies

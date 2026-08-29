@@ -62,6 +62,13 @@ jobs:
 
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          # Pinned, not "latest" (setup-cli's default): this is the ONLY
+          # workflow that runs `supabase db push` against PRODUCTION, so a
+          # silent CLI upgrade changing push/dry-run semantics is the worst
+          # kind of surprise here. Bump deliberately — the weekly
+          # toolchain-freshness check tracks the latest release.
+          version: "2.116.0"
 
       - name: Apply migrations
         shell: bash

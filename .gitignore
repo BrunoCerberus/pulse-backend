@@ -35,6 +35,7 @@ Thumbs.db
 
 # Supabase CLI temp files
 supabase/.temp/
+supabase/.branches/
 
 # Deno coverage profile (created by `deno test --coverage` in CI / locally)
 supabase/functions/cov_profile/
