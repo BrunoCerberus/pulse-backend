@@ -46,8 +46,9 @@ jobs:
         working-directory: ./rss-worker
         run: |
           # Statement-exact gate: sum the cover profile's own per-block counts
-          # (mode: set — a count of 0 means the block never executed) instead
-          # of comparing against `go tool cover -func`'s one-decimal display.
+          # (a count of 0 means the block never executed, in any -covermode —
+          # with -race that is `atomic`) instead of comparing against
+          # `go tool cover -func`'s one-decimal display.
           # The display rounds 99.95%+ up to "100.0%", which at the current
           # module size is still distinguishable, but would let a single
           # uncovered statement pass silently once it grows past ~2000
