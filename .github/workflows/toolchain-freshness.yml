@@ -63,12 +63,12 @@ jobs:
           # pin must have EXACTLY one distinct value across its occurrences —
           # a drift between two env blocks (or two files) for the same tool is
           # reported here instead of silently choosing one of them.
-           get_pin() {
-             local var="$1"; shift
-             local vals count
-             # Anchored at line start: unanchored, `version:` would also match
-             # the tail of any `*-version:` key (node-version, deno-version, …).
-             vals=$(grep -hE "^[[:space:]]*${var}: \"[^\"]+\"" "$@" | sed -E 's/^[[:space:]]*'"${var}"': "([^"]+)".*/\1/' | sort -u)
+          get_pin() {
+            local var="$1"; shift
+            local vals count
+            # Anchored at line start: unanchored, `version:` would also match
+            # the tail of any `*-version:` key (node-version, deno-version, …).
+            vals=$(grep -hE "^[[:space:]]*${var}: \"[^\"]+\"" "$@" | sed -E 's/^[[:space:]]*'"${var}"': "([^"]+)".*/\1/' | sort -u)
             count=$(printf '%s\n' "$vals" | grep -c . || true)
             if [ "$count" -ne 1 ]; then
               echo "::error title=Security Toolchain::${var} — expected exactly one distinct pin value across $*, found ${count}; if the pin's format moved, update the parser in this job"
