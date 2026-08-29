@@ -1,0 +1,311 @@
+name: Security Toolchain Check
+
+# Weekly freshness tracker for the security binaries this repo installs from
+# pinned version + SHA256 in env blocks:
+#   gitleaks, gosec      (.github/workflows/security.yml)
+#   actionlint, zizmor   (.github/workflows/lint-meta.yml)
+#   Supabase CLI         (deploy.yml + migrations-ci.yml, via setup-cli inputs)
+#
+# Why a dedicated watch: Dependabot's two ecosystems (gomod, github-actions)
+# can only see go.mod and `uses:` refs — versions living in env blocks are
+# invisible to it, so these pins would rot silently (the same failure mode
+# deno-deps.yml closes for the Edge Functions). A stale scanner is a stale
+# ruleset: new bypasses and regexes shipped in gitleaks/zizmor/actionlint
+# releases never land, and the security pipeline degrades quietly.
+#
+# Advisory, exactly like deno-deps.yml: it never fails the job (a perpetually
+# red weekly workflow trains you to ignore it) and keeps ONE tracking issue in
+# sync — opened with the outdated table, updated weekly, closed when
+# everything is current. Bumping a pin is a small manual PR: the version and
+# its SHA256 must move together, and the issue body says where, per tool.
+#
+# Slot: Mondays 06:15 UTC — between security.yml (06:00) and deno-deps.yml
+# (06:30), so the whole Monday sweep lands together (see docs/ci-cd.md).
+
+on:
+  schedule:
+    - cron: '15 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-freshness
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check security toolchain freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Needed to open / edit / close the tracking issue and to ensure its
+      # label exists. No `pull-requests: write` — this workflow never touches PRs.
+      issues: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare pinned versions against latest releases
+        id: outdated
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Pin values are grep'd from the checked-out workflow files. Each
+          # pin must have EXACTLY one distinct value across its occurrences —
+          # a drift between two env blocks (or two files) for the same tool is
+          # reported here instead of silently choosing one of them.
+          #
+          # The failure message goes to STDERR on purpose: get_pin is called
+          # inside a command substitution, so anything it writes to stdout is
+          # captured *as the pin value* and would flow into the results table
+          # (and the tracking issue) while the job stays green.
+          get_pin() {
+            local var="$1"; shift
+            local vals count
+            # Anchored at line start: unanchored, `version:` would also match
+            # the tail of any `*-version:` key (node-version, deno-version, …).
+            vals=$(grep -hE "^[[:space:]]*${var}: \"[^\"]+\"" "$@" | sed -E 's/^[[:space:]]*'"${var}"': "([^"]+)".*/\1/' | sort -u)
+            count=$(printf '%s\n' "$vals" | grep -c . || true)
+            if [ "$count" -ne 1 ]; then
+              echo "pin parse failure: ${var} — expected exactly one distinct value across $*, found ${count}; if the pin's format moved, update the parser in this job" >&2
+              return 1
+            fi
+            printf '%s' "$vals"
+          }
+
+          # get_pin runs inside $(...) so its stderr is all the step gets; this
+          # wrapper runs in the MAIN shell, where a ::error annotation renders,
+          # and fails the job when a pin is unreadable. An advisory job that
+          # "succeeded" on unparseable input would report a garbage table in
+          # the tracking issue — the worst possible outcome for a security
+          # watch. (printf -v writes into the named variable in the caller.)
+          require_pin() {
+            local name="$1" var="$2" target="$3" val
+            shift 3
+            if ! val=$(get_pin "$var" "$@"); then
+              echo "::error title=Security Toolchain::${name} — could not read a single consistent \`${var}\` pin from $* (see the parse failure above in the log); the weekly check fails rather than guessing"
+              exit 1
+            fi
+            printf -v "$target" '%s' "$val"
+          }
+
+          # Field separator in the results below: the unit-separator control
+          # character (0x1F). A tab would seem natural but tab is a
+          # WHITESPACE IFS char, so `read` collapses the double tab in an
+          # "unknown" row (empty latest field) and the status lands in the
+          # wrong column — 0x1F is a non-whitespace IFS char, so empty fields
+          # survive, and no tool name or version string can contain it.
+          US=$'\x1f'
+
+          # Prints: name US pinned US latest US status
+          # "unknown" (latest empty) happens when the release lookup fails —
+          # reported, never fatal here: the sync step decides what an
+          # "unknown" means for the tracking issue (it must NOT all-clear).
+          check() {
+            local name="$1" pinned="$2" latest="$3" min status
+            if [ -z "$latest" ]; then
+              status="unknown"
+            else
+              min=$(printf '%s\n%s\n' "${pinned#v}" "${latest#v}" | sort -V | head -n 1)
+              if [ "$min" = "${latest#v}" ] && [ "${pinned#v}" != "${latest#v}" ]; then
+                status="current (pinned ahead of latest)"
+              elif [ "${pinned#v}" = "${latest#v}" ]; then
+                status="current"
+              else
+                status="outdated"
+              fi
+            fi
+            printf '%s%s%s%s%s%s%s\n' "$name" "$US" "$pinned" "$US" "$latest" "$US" "$status"
+          }
+
+          # Latest release lookups. `releases/latest` excludes pre-releases and
+          # drafts; a failed lookup degrades to "unknown" instead of failing
+          # the advisory job.
+          gh_latest() { gh api "repos/$1/releases/latest" --jq .tag_name 2>/dev/null || true; }
+
+          # Pre-declared for set -u (require_pin's printf -v writes into them).
+          gitleaks_pin="" gosec_pin="" actionlint_pin="" zizmor_pin="" cli_pin=""
+          require_pin gitleaks GITLEAKS_VERSION gitleaks_pin .github/workflows/security.yml
+          require_pin gosec GOSEC_VERSION gosec_pin .github/workflows/security.yml
+          require_pin actionlint ACTIONLINT_VERSION actionlint_pin .github/workflows/lint-meta.yml
+          require_pin zizmor ZIZMOR_VERSION zizmor_pin .github/workflows/lint-meta.yml
+          # The Supabase CLI is pinned via setup-cli `version:` inputs (no env
+          # block), in TWO files — both must agree.
+          require_pin "Supabase CLI" version cli_pin .github/workflows/deploy.yml .github/workflows/migrations-ci.yml
+
+          # Latest release lookups. `releases/latest` excludes pre-releases and
+          # drafts; a failed lookup degrades to "unknown" (see check below)
+          # instead of failing the advisory job.
+          gitleaks_latest=$(gh_latest gitleaks/gitleaks)
+          gosec_latest=$(gh_latest securego/gosec)
+          actionlint_latest=$(gh_latest rhysd/actionlint)
+          zizmor_latest=$(gh_latest zizmorcore/zizmor)
+          # npm is the supply chain for the CLI, so its "latest" comes from the
+          # registry, not a GitHub release.
+          cli_latest=$(curl -fsS --max-time 15 https://registry.npmjs.org/supabase/latest 2>/dev/null | jq -r .version || true)
+
+          results=""
+          results+="$(check gitleaks "$gitleaks_pin" "$gitleaks_latest")"$'\n'
+          results+="$(check gosec "$gosec_pin" "$gosec_latest")"$'\n'
+          results+="$(check actionlint "$actionlint_pin" "$actionlint_latest")"$'\n'
+          results+="$(check zizmor "$zizmor_pin" "$zizmor_latest")"$'\n'
+          results+="$(check "Supabase CLI" "$cli_pin" "$cli_latest")"$'\n'
+
+          {
+            echo "results<<RESULTS_EOF"
+            printf '%s' "$results"
+            echo "RESULTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sync tracking issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ steps.outdated.outputs.results }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Same field separator as the compare step (see the US comment
+          # there): the unit-separator control char, so empty fields in an
+          # "unknown" row survive both `read` and `awk -F`.
+          US=$'\x1f'
+
+          label="security-toolchain"
+          title="Outdated security toolchain binaries in CI"
+
+          # Idempotent: `gh label create` fails if the label already exists, and
+          # that is the steady state on every run after the first.
+          gh label create "$label" \
+            --description "Automated CI security-toolchain freshness report" \
+            --color "D93025" >/dev/null 2>&1 || true
+
+          # Where to bump each tool. Deliberately plain text — no nested
+          # backticks: the body is markdown, and escaping backticks inside a
+          # backtick-delimited code span mangles the rendered issue.
+          bump_note() {
+            case "$1" in
+              gitleaks) echo ".github/workflows/security.yml — GITLEAKS_VERSION + GITLEAKS_SHA256 (the new SHA256 is in the release's \`gitleaks_<ver>_checksums.txt\`)" ;;
+              gosec) echo ".github/workflows/security.yml — GOSEC_VERSION + GOSEC_SHA256 (the new SHA256 is in the release's \`gosec_<ver>_checksums.txt\`)" ;;
+              actionlint) echo ".github/workflows/lint-meta.yml — ACTIONLINT_VERSION + ACTIONLINT_SHA256 (the new SHA256 is in the release's \`actionlint_<ver>_checksums.txt\`)" ;;
+              zizmor) echo ".github/workflows/lint-meta.yml — ZIZMOR_VERSION + ZIZMOR_SHA256 (the new SHA256 is in the release body — zizmor publishes no checksums file)" ;;
+              "Supabase CLI") echo "deploy.yml + migrations-ci.yml — the version input on BOTH supabase/setup-cli steps (bump together; no checksum — npm is the supply chain)" ;;
+              *) echo "(unknown tool — update the bump notes in toolchain-freshness.yml)" ;;
+            esac
+          }
+
+          table() {
+            local rows="$1" only_outdated="${2:-}"
+            local name pinned latest status
+            while IFS="$US" read -r name pinned latest status; do
+              [ -z "$name" ] && continue
+              if [ -n "$only_outdated" ] && [ "$status" != "outdated" ]; then
+                continue
+              fi
+              echo "| ${name} | ${pinned:-?} | ${latest} | ${status} |"
+            done <<< "$rows"
+          }
+
+          count=$(printf '%s\n' "$RESULTS" | awk -F "$US" '$4 == "outdated"' | grep -c . || true)
+          unknown_count=$(printf '%s\n' "$RESULTS" | awk -F "$US" '$4 == "unknown"' | grep -c . || true)
+
+          if [ "$count" -eq 0 ] && [ "$unknown_count" -eq 0 ]; then
+            echo "::notice title=Security Toolchain::all CI security tools are at their latest releases"
+            {
+              echo "## Security Toolchain Check ✅"
+              echo ""
+              echo "- gitleaks, gosec, actionlint, zizmor, Supabase CLI: all at latest"
+              echo ""
+              echo "| Tool | Pinned | Latest | Status |"
+              echo "|--------|--------|--------|--------|"
+              table "$RESULTS"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            existing=$(gh issue list --label "$label" --state open \
+              --json number --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" \
+                --comment "All CI security tools are back at their latest releases as of ${RUN_URL}. Closing automatically."
+              echo "Closed stale tracking issue #${existing}"
+            fi
+            exit 0
+          elif [ "$count" -eq 0 ]; then
+            # A failed release/registry lookup shows as "unknown", not
+            # "outdated". Treating that as an all-clear would CLOSE the
+            # tracking issue with a false "everything is current" claim —
+            # one transient API hiccup would silently delete the only watch
+            # on these pins. Leave the issue exactly as it is and say so.
+            echo "::notice title=Security Toolchain Check::${unknown_count} release lookup(s) failed — cannot confirm all tools are current; the tracking issue is left untouched"
+            {
+              echo "## Security Toolchain Check ⏳"
+              echo ""
+              echo "- **${unknown_count}** tool(s) could not be checked this run (release/registry lookup failed). Not treating that as an all-clear — the tracking issue is left in its current state."
+              echo ""
+              echo "| Tool | Pinned | Latest | Status |"
+              echo "|------|--------|--------|--------|"
+              table "$RESULTS"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Built into a file rather than a heredoc: the body embeds backticks
+          # and tabs, and --body-file keeps both out of reach of shell quoting.
+          {
+            echo "The following CI-pinned security tools are behind their latest releases. Dependabot cannot see versions in env blocks, so this is the only watch on them (same pattern as the Deno dependency check)."
+            echo ""
+            echo "| Tool | Pinned | Latest | Where to bump |"
+            echo "|------|--------|--------|---------------|"
+            while IFS="$US" read -r name pinned latest status; do
+              [ -z "$name" ] && continue
+              [ "$status" != "outdated" ] && continue
+              echo "| ${name} | ${pinned} | ${latest} | $(bump_note "$name") |"
+            done <<< "$RESULTS"
+            # Failed lookups are never implied to be current: note them
+            # explicitly so a bumped-then-renamed release can't hide behind
+            # a "no outdated tools" look of the table.
+            unknown_tools=""
+            while IFS="$US" read -r name pinned latest status; do
+              [ -z "$name" ] && continue
+              [ "$status" = "unknown" ] && unknown_tools="${unknown_tools}${name} "
+            done <<< "$RESULTS"
+            if [ -n "$unknown_tools" ]; then
+              echo ""
+              echo "> Not checked this run (release lookup failed — NOT counted as current): ${unknown_tools% }"
+            fi
+            echo ""
+            echo "Bumping a pin is a two-line PR: the version and its SHA256 must move together (verify the new SHA256 from the release before extracting, the same way security.yml / lint-meta.yml do). The weekly run re-checks and closes this issue once everything is current."
+            echo ""
+            echo "<sub>Generated by [Security Toolchain Check](${RUN_URL})</sub>"
+          } > /tmp/issue-body.md
+
+          existing=$(gh issue list --label "$label" --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file /tmp/issue-body.md >/dev/null
+            issue_url=$(gh issue view "$existing" --json url --jq '.url')
+            echo "Updated tracking issue #${existing}"
+          else
+            issue_url=$(gh issue create --title "$title" --label "$label" --body-file /tmp/issue-body.md)
+            echo "Opened tracking issue ${issue_url}"
+          fi
+
+          echo "::notice title=Security Toolchain Check::${count} outdated tool(s) — tracked in ${issue_url}"
+          {
+            echo "## Security Toolchain Check ⚠️"
+            echo ""
+            echo "- **${count}** tool(s) behind their latest release — tracked in ${issue_url}"
+            echo ""
+            echo "| Tool | Pinned | Latest | Status |"
+            echo "|------|--------|--------|--------|"
+            table "$RESULTS"
+          } >> "$GITHUB_STEP_SUMMARY"

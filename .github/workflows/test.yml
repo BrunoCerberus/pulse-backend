@@ -45,9 +45,22 @@ jobs:
       - name: Enforce 100% coverage
         working-directory: ./rss-worker
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $NF}')
-          if [ "$total" != "100.0%" ]; then
-            echo "::error::Total coverage $total is below the 100.0% threshold"
+          # Statement-exact gate: sum the cover profile's own per-block counts
+          # (a count of 0 means the block never executed, in any -covermode —
+          # with -race that is `atomic`) instead of comparing against
+          # `go tool cover -func`'s one-decimal display.
+          # The display rounds 99.95%+ up to "100.0%", which at the current
+          # module size is still distinguishable, but would let a single
+          # uncovered statement pass silently once it grows past ~2000
+          # statements. Exact counts can't drift.
+          read -r covered total <<<"$(awk 'NR > 1 { t += $2; if ($3 > 0) c += $2 } END { print c + 0, t + 0 }' coverage.out)"
+          if [ "${total:-0}" -eq 0 ]; then
+            echo "::error::coverage profile has no statement blocks — the test step produced no usable data; refusing to pass vacuously"
+            exit 1
+          fi
+          if [ "$covered" -ne "$total" ]; then
+            pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f%%", 100 * c / t }')
+            echo "::error::Statement coverage ${pct} — $((total - covered)) of ${total} statements never executed"
             echo ""
             echo "Functions below 100%:"
             go tool cover -func=coverage.out | awk '$NF != "100.0%" && !/^total:/'
@@ -55,12 +68,12 @@ jobs:
           fi
           # Populate the Annotations box + Job Summary on the green path. The
           # race-detector step ran (and passed) earlier in this job.
-          echo "::notice title=Go Tests::race detector passed · total coverage ${total}"
+          echo "::notice title=Go Tests::race detector passed · 100% statement coverage (${total}/${total})"
           {
             echo "## Go Tests ✅"
             echo ""
             echo "- Race detector: passed"
-            echo "- Total coverage: **${total}**"
+            echo "- Total statement coverage: **100%** — ${total}/${total} statements (exact profile count, not the rounded \`-func\` display)"
             echo ""
             echo "<details><summary>Per-function coverage</summary>"
             echo ""
@@ -211,6 +224,9 @@ jobs:
           # (Deno 1.x only handles v3/4). Keep this in step with the version
           # developers run locally: `deno fmt` output can shift between minor
           # releases, so a drift here shows up as a CI-only format failure.
+          #
+          # This is the canonical pin: deno-deps.yml reads this value rather
+          # than carrying a second literal, so the two workflows cannot drift.
           deno-version: v2.9.4
           # Cache the dependency download (DENO_DIR), keyed on deno.lock, so
           # repeat runs don't re-fetch every imported std module.

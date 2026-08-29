@@ -40,8 +40,10 @@ Pulse iOS App
 
 - `rss-worker/` — Go worker (`go run . [cleanup|backfill-images|backfill-content]`);
   `internal/{config,models,parser,database,httputil,logger}`
-- `supabase/migrations/001–035_*.sql` (applied in order, annotated history in `docs/setup.md`) ·
+- `supabase/migrations/001–036_*.sql` (applied in order, annotated history in `docs/setup.md`) ·
   `supabase/functions/` — Edge Functions + `_shared/` · `supabase/tests/security_invariants.sql`
+- `scripts/check-endpoints.sh` — the shared six-endpoint contract suite run by the
+  migrations-ci contract job AND the production deploy smoke test (one file, two callers)
 - `docs/` — full reference docs (annotated repo tree: `docs/development.md`)
 
 Full command list + env vars: `docs/development.md`. First-time setup: `docs/setup.md`.
@@ -96,8 +98,10 @@ Full request/response contracts: `docs/api-reference.md`.
 
 ## Testing
 
-**100% statement coverage is required for all Go packages** — `test.yml` fails if total coverage
-< 100.0%. Unreachable defensive branches (e.g. `json.Marshal` on static types, `crypto/rand.Read`)
+**100% statement coverage is required for all Go packages** — `test.yml` fails if ANY statement
+is uncovered (it sums the cover profile's own counts; it does not trust `go tool cover -func`'s
+one-decimal display, which would round 99.95%+ up to "100.0%"). Unreachable defensive branches
+(e.g. `json.Marshal` on static types, `crypto/rand.Read`)
 are exercised via package-level function vars (`jsonMarshal`, `randRead`) swapped in tests. Follow
 this pattern for new similar code.
 
@@ -142,6 +146,7 @@ Commands: `make test` · `make test-go-cover` · `make test-deno` · `make fuzz`
   2023 `deno.land/std` for years.
 - Keep the local Deno version in step with `test.yml`'s pin (currently **v2.9.4**). `deno fmt`
   output shifts between minor releases, so drift shows up only as a CI format failure.
+  `test.yml`'s pin is the canonical one — `deno-deps.yml` reads it rather than carrying a copy.
 
 ## GitHub Actions / CI
 
