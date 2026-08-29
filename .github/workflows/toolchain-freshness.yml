@@ -124,7 +124,7 @@ jobs:
                 status="outdated"
               fi
             fi
-            printf '%s\x1f%s\x1f%s\x1f%s\n' "$name" "$pinned" "$latest" "$status"
+            printf '%s%s%s%s%s%s%s\n' "$name" "$US" "$pinned" "$US" "$latest" "$US" "$status"
           }
 
           # Latest release lookups. `releases/latest` excludes pre-releases and

@@ -206,11 +206,12 @@ jobs:
 
           # Rendered on both paths. Empty when the job died before the smoke
           # step ran (e.g. a failed migration), which is itself informative.
+          # SMOKE_RESULTS already carries the header + separator row
+          # (check-endpoints.sh writes both into the results file) — echo it
+          # verbatim, or the table renders a stray header in its body.
           smoke_table() {
             if [ -n "${SMOKE_RESULTS:-}" ]; then
               echo ""
-              echo "| Endpoint | Result | Detail |"
-              echo "|----------|--------|--------|"
               printf '%s\n' "$SMOKE_RESULTS"
             fi
           }

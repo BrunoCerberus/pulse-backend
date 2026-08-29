@@ -158,10 +158,10 @@ pulse-backend/
 │       ├── database/                  # Supabase client + tests (with retry logic)
 │       ├── httputil/                  # HTTP transports: Shared + SSRF-safe + per-host rate limiting + fuzz targets
 │       └── logger/                    # Structured logging with level support
- ├── scripts/
- │   └── check-endpoints.sh             # Shared 6-endpoint contract suite (migrations-ci contract job + deploy smoke test)
- ├── tasks/                             # Working notes / scratch (todo.md)
- └── .github/
+├── scripts/
+│   └── check-endpoints.sh             # Shared 6-endpoint contract suite (migrations-ci contract job + deploy smoke test)
+├── tasks/                             # Working notes / scratch (todo.md)
+└── .github/
     ├── workflows/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily 3 AM UTC)
