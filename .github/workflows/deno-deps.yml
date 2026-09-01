@@ -23,7 +23,7 @@ name: Deno Dependency Check
 on:
   schedule:
     # Weekly, Mondays 06:30 UTC — after security.yml (06:00) and before the
-    # conformance workflows (07:00), so the whole Monday sweep lands together.
+    # privacy conformance workflow (07:00), so the Monday sweep lands together.
     - cron: '30 6 * * 1'
   workflow_dispatch:
 

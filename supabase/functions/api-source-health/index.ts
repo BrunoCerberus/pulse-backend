@@ -15,7 +15,9 @@
  *   "fetched_at": "ISO-8601",
  *   "database": { "size_bytes": N, "size_pretty": "X MB", "quota_pct": N } | null,
  *   "summary":  { "total": N, "active": N, "circuit_open_count": N,
- *                 "high_failure_count": N, "stale_count": N },
+ *                 "high_failure_count": N, "stale_count": N,
+ *                 "latest_successful_fetch_at": "ISO-8601" | null,
+ *                 "fetch_age_minutes": N | null },
  *   "sources":  [SourceHealthRow, ...]
  * }
  * ```
@@ -87,6 +89,8 @@ interface HealthSummary {
   circuit_open_count: number;
   high_failure_count: number;
   stale_count: number;
+  latest_successful_fetch_at: string | null;
+  fetch_age_minutes: number | null;
 }
 
 interface DatabaseSize {
@@ -158,9 +162,16 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
   let circuitOpenCount = 0;
   let highFailureCount = 0;
   let staleCount = 0;
+  let latestSuccessfulFetchMs = 0;
 
   for (const r of rows) {
-    if (r.is_active) active++;
+    if (r.is_active) {
+      active++;
+      const fetchedMs = r.last_fetched_at ? new Date(r.last_fetched_at).getTime() : 0;
+      if (Number.isFinite(fetchedMs) && fetchedMs > latestSuccessfulFetchMs) {
+        latestSuccessfulFetchMs = fetchedMs;
+      }
+    }
     if (r.circuit_open) circuitOpenCount++;
     if (!r.circuit_open && r.consecutive_failures >= HIGH_FAILURE_THRESHOLD) {
       highFailureCount++;
@@ -171,12 +182,21 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
     }
   }
 
+  const latestSuccessfulFetchAt = latestSuccessfulFetchMs > 0
+    ? new Date(latestSuccessfulFetchMs).toISOString()
+    : null;
+  const fetchAgeMinutes = latestSuccessfulFetchMs > 0
+    ? Math.max(0, Math.floor((Date.now() - latestSuccessfulFetchMs) / 60_000))
+    : null;
+
   return {
     total: rows.length,
     active,
     circuit_open_count: circuitOpenCount,
     high_failure_count: highFailureCount,
     stale_count: staleCount,
+    latest_successful_fetch_at: latestSuccessfulFetchAt,
+    fetch_age_minutes: fetchAgeMinutes,
   };
 }
 

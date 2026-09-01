@@ -1,12 +1,11 @@
 name: Extended Fuzz
 
-# The `Go Fuzz` job in test.yml spends 20s per target so PRs stay fast — enough
-# to replay the corpus and catch an obvious new regression, not enough to find
-# anything deep. This workflow is the actual hunt: every target gets its own
-# runner and a much larger budget, nightly, off the PR critical path.
+# Committed fuzz seeds replay in the ordinary PR test suite. This workflow does
+# the nondeterministic search for new inputs: every target gets its own runner
+# and a larger budget, nightly, off the PR critical path.
 #
 # Rationale for fuzzing at all: THREAT_MODEL.md treats every feed, article page,
-# and enclosure as attacker-controlled, and the repo's 100% statement-coverage
+# and enclosure as attacker-controlled, and statement coverage
 # gate proves only that each line executed once — not that hostile bytes leave
 # it intact. The first target written here found a slice-bounds panic and a
 # C-SANITIZE bypass in cleanHTML within 16 seconds.

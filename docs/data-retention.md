@@ -32,7 +32,7 @@ documented in [`docs/privacy.md`](./privacy.md),
    which deletes both `articles` and `fetch_logs` rows older than the
    threshold in 5,000-row batches (statement timeout 5 minutes).
 4. `ArticleRetentionDays = 7` in `rss-worker/internal/config/config.go`
-   is the canonical retention literal. The conformance workflows assert
+   is the canonical retention literal. The privacy conformance workflow asserts
    that this file contains the literal `7` and that this document
    contains the literal `7 days`.
 

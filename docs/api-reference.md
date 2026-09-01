@@ -284,7 +284,9 @@ view can stay revoked from anon at the DB layer.
     "active": 131,
     "circuit_open_count": 2,
     "high_failure_count": 5,
-    "stale_count": 1
+    "stale_count": 1,
+    "latest_successful_fetch_at": "2026-05-14T00:45:47Z",
+    "fetch_age_minutes": 127
   },
   "sources": [
     {
@@ -302,6 +304,12 @@ view can stay revoked from anon at the DB layer.
 
 `database` is `null` if the DB-size RPC fails — the watchdog tolerates
 `null` so transient size-check failures don't false-page.
+
+`latest_successful_fetch_at` is the newest `last_fetched_at` among active
+sources; that column records successful fetches. `fetch_age_minutes` is its age
+at response time. Both are `null` for an empty fleet or when no active source
+has completed a successful fetch. The watchdog treats either condition as an
+error and alerts when the age exceeds 180 minutes.
 
 ---
 

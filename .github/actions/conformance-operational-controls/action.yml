@@ -1,6 +1,6 @@
 name: Conformance operational controls (shared)
 description: >
-  Shared by the GDPR and LGPD conformance workflows: cleanup workflow wiring,
+  Used by the unified privacy conformance workflow: cleanup workflow wiring,
   the 7-day retention literal, no plaintext http:// in migrations, the
   no-PII-redaction invariant in the regulation doc, and RLS staying enabled on
   user-facing tables. Requires the repository to already be checked out.

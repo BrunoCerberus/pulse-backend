@@ -6,7 +6,7 @@ the find → verify → triage → patch loop. Pair it with
 [`SECURITY.md`](SECURITY.md) (what severity it is).
 
 The point of writing this down is repeatability: the project already patches this
-way by habit (the 100% coverage gate, `supabase/tests/security_invariants.sql`,
+way by habit (exact coverage on the hostile-input packages, `supabase/tests/security_invariants.sql`,
 migration 027's sweep across *all five* `SECURITY DEFINER` functions, migration
 033 fixing the caller gate in the same five). This is that habit, made explicit.
 
@@ -52,8 +52,8 @@ Climb every rung. Don't merge until the top.
 
 4. **Validate.**
    - Build + the new test now passes.
-   - Full suite is green: `make test` (Go race detector + the **100% coverage
-     gate**, Deno lint/fmt/tests).
+   - Full suite is green: `make test` (Go race detector + risk-tiered coverage,
+     Deno lint/fmt/tests).
    - For schema changes: `migrations-ci.yml` applies every migration from scratch
      and re-runs `security_invariants.sql`.
    - **Re-attack:** confirm the original PoC no longer reproduces.

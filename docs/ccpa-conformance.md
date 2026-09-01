@@ -93,11 +93,9 @@ processing.
 
 ## Operational guard rails
 
-The substantive guard rails are enforced by the existing LGPD and GDPR
-conformance workflows (`.github/workflows/lgpd-conformance.yml` and
-`.github/workflows/gdpr-conformance.yml`). Both run on every PR and a
-weekly cron, and both have been extended to catch CCPA-relevant
-identifier patterns:
+The substantive guard rails are enforced by
+`.github/workflows/privacy-conformance.yml`. It runs on every PR and a weekly
+cron and includes CCPA-relevant identifier patterns:
 
 - **No US Social Security Number patterns** (`XXX-XX-XXXX`). Defended
   via ripgrep regex pass + `gitleaks` custom rules over full git
@@ -113,7 +111,7 @@ identifier patterns:
 
 **No PII redaction layer required** because no PII enters the system in
 the first place. This invariant is asserted in `lgpd-conformance.md`
-and `gdpr-conformance.md` and gated by the conformance workflows.
+and `gdpr-conformance.md` and gated by the privacy conformance workflow.
 
 ## Notice at Collection (§1798.130)
 

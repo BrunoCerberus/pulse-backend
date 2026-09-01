@@ -113,7 +113,7 @@ pulse-backend/
 
 The backend asserts and enforces a **no-end-user-PII** posture: it aggregates
 public RSS news only and processes no personal data of identified or identifiable
-natural persons. Two conformance workflows (LGPD and GDPR/CCPA) act as living
+natural persons. One unified conformance workflow (LGPD/GDPR/CCPA) acts as a living
 guard rails — PRs that would erode the posture fail CI. See
 [docs/privacy.md](docs/privacy.md) and the per-regulator docs linked above.
 

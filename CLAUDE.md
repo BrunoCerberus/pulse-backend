@@ -98,17 +98,15 @@ Full request/response contracts: `docs/api-reference.md`.
 
 ## Testing
 
-**100% statement coverage is required for all Go packages** — `test.yml` fails if ANY statement
-is uncovered (it sums the cover profile's own counts; it does not trust `go tool cover -func`'s
-one-decimal display, which would round 99.95%+ up to "100.0%"). Unreachable defensive branches
-(e.g. `json.Marshal` on static types, `crypto/rand.Read`)
-are exercised via package-level function vars (`jsonMarshal`, `randRead`) swapped in tests. Follow
-this pattern for new similar code.
+Go coverage is risk-tiered: `internal/parser` and `internal/httputil` require **100% exact statement
+coverage**, while the complete worker requires at least **98%**. `test.yml` sums the cover profile's
+own counts rather than trusting `go tool cover -func`'s rounded display. Keep security-boundary
+branches covered; ordinary unreachable defensive branches do not need artificial injection seams.
 
 Edge Functions have a **90% line-coverage floor** (currently ~98%), enforced in the same workflow.
 Go runs as a single `go test -race -coverprofile` pass — don't split it back into two runs.
 
-**Coverage is not the same as robustness.** 100% statement coverage proves each line ran once, not
+**Coverage is not the same as robustness.** Statement coverage proves each line ran once, not
 that hostile bytes leave it intact — so the hostile-input surfaces also carry **fuzz targets**
 (control C-FUZZ) in `internal/parser/fuzz_test.go` and `internal/httputil/fuzz_test.go`. Assert
 control invariants there, not just absence of panics. Both fuzz workflows discover targets by
@@ -174,5 +172,6 @@ allowlists. Full position: `docs/privacy.md`.
 
 ## Monitoring
 
-`fetch_logs` table + `api-source-health` endpoint (circuit/stale/high-failure counts, DB
-`quota_pct`; watchdog trips at 60%). Full runbook: `docs/operations-runbook.md`.
+`fetch_logs` table + `api-source-health` endpoint (circuit/stale/high-failure counts, latest
+successful fetch age, DB `quota_pct`; watchdog trips at 180 minutes / 60%). Full runbook:
+`docs/operations-runbook.md`.

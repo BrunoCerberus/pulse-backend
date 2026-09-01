@@ -1,6 +1,6 @@
 name: Conformance PII scan (shared)
 description: >
-  PII guard rails shared by the GDPR and LGPD conformance workflows: US SSN
+  Shared privacy PII guard rails: US SSN
   pattern ban, email allowlist enforcement, and the client-IP-handling ban in
   rss-worker. Regulation-specific identifier bans (IBAN / EU phone for GDPR,
   CPF / CNPJ for LGPD) stay inline in the calling workflow. The gitleaks
@@ -42,8 +42,7 @@ runs:
             -g '!docs/data-retention.md' \
             -g '!.github/lgpd-gdpr-rules.toml' \
             -g '!.github/pii-allowlist.txt' \
-            -g '!.github/workflows/lgpd-conformance.yml' \
-            -g '!.github/workflows/gdpr-conformance.yml' \
+            -g '!.github/workflows/privacy-conformance.yml' \
             -g '!.github/actions/conformance-pii-scan/action.yml' \
             -e "$SSN_RE" \
             .; then

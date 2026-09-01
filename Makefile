@@ -47,7 +47,7 @@ test-go-cover:
 test-go-race:
 	cd rss-worker && go test -v -race ./...
 
-# Mirrors test.yml's Go Fuzz job: discover every `func FuzzXxx` and run it, since
+# Mirrors fuzz.yml target discovery: find every `func FuzzXxx` and run it, since
 # `go test` accepts only one -fuzz target per invocation. Override the budget with
 # `make fuzz FUZZTIME=5m`.
 FUZZTIME ?= 30s

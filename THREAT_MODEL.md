@@ -280,7 +280,7 @@ rather than line numbers so this stays accurate as code moves.
 - **C-DEPSCAN** — govulncheck (PR + weekly), Trivy (vuln/secret/misconfig),
   Dependency Review on PRs, CodeQL (Go + TS, `security-extended` suite),
   Dependabot (Go + Actions), `deno-deps.yml` (Deno deps, which Dependabot does
-  not cover), SBOM.
+  not cover), and SBOM generation on merged/scheduled/manual states.
 - **C-SECRETSCAN** — gitleaks (full history) + TruffleHog (verified).
 - **C-FUZZ** — Go fuzz targets cover the hostile-input surfaces the controls
   above are implemented in: `cleanHTML`, `sanitizeText`, `canonicalizeURL`,
@@ -290,15 +290,14 @@ rather than line numbers so this stays accurate as code moves.
   invariants, not merely absence of panics — e.g. no tag survives `cleanHTML`,
   no control/bidi codepoint survives `sanitizeText`, `canonicalizeURL` is a
   fixed point (dedup depends on it), and a malformed-length IP is refused
-  rather than treated as routable. `test.yml`'s `Go Fuzz` job runs a short
-  bounded pass per target on every PR; `fuzz.yml` runs a long nightly pass per
+  rather than treated as routable. `fuzz.yml` runs a long nightly pass per
   target with a cached, compounding corpus. Minimized failing inputs are
-  committed under `testdata/fuzz/` so they replay forever as ordinary tests.
-  This exists because the 100% statement-coverage gate proves only that each
-  line ran once — it does not prove hostile bytes leave it intact, and the
-  first target written here found a C-SANITIZE bypass in 16 seconds.
-- **C-CONFORMANCE** — LGPD/GDPR/CCPA workflows ban PII patterns, enforce the
-  table/column allowlists, retention literal, and RLS-still-on invariant.
+  committed under `testdata/fuzz/` and replay on every ordinary PR test run.
+  This exists because statement coverage proves only that each line ran once —
+  it does not prove hostile bytes leave it intact, and the first target written
+  here found a C-SANITIZE bypass in 16 seconds.
+- **C-CONFORMANCE** — the unified LGPD/GDPR/CCPA workflow bans PII patterns,
+  enforces the table/column allowlists, retention literal, and RLS-still-on invariant.
 
 ---
 
@@ -315,7 +314,7 @@ rather than line numbers so this stays accurate as code moves.
   header (which, unlike `Authorization`, survives a cross-host redirect).
 - Supabase enforces RLS and PostgREST sets `request.jwt.claims` per request.
 - The worker handles **no inbound user requests** — there is no client-IP code
-  path in `rss-worker/` (asserted by the conformance workflows).
+  path in `rss-worker/` (asserted by the privacy conformance workflow).
 - **The Edge Functions are a *narrowing* proxy over a directly-reachable anon
   PostgREST surface** (the anon key is public). They can only reduce surface
    (forced `select`, length caps, order allow-list, limit cap), never widen it —

@@ -69,8 +69,8 @@ jobs:
         # Second sweep with the conformance rules (CPF/CNPJ, IBAN, SSN, …) on
         # top of the default ruleset. Lives here — not in the two conformance
         # workflows — so each PR pays for ONE custom-rules history sweep and one
-        # gitleaks install instead of three. The conformance workflows' summaries
-        # point at this job.
+        # gitleaks install instead of duplicating it. The privacy summary
+        # points at this job.
         run: gitleaks detect --source . --verbose --redact --no-banner --config .github/lgpd-gdpr-rules.toml
 
       - name: Run TruffleHog
@@ -174,7 +174,6 @@ jobs:
   # Go dependency vulnerabilities (govulncheck)
   # Scans go.mod against the official Go vulnerability database. Runs on
   # schedule so that newly disclosed CVEs surface even without new commits.
-  # (test.yml also runs this on every PR for fast feedback.)
   # ---------------------------------------------------------------------------
   go-vuln:
     name: Go Vulnerabilities (govulncheck)
@@ -281,6 +280,9 @@ jobs:
   # ---------------------------------------------------------------------------
   sbom:
     name: Generate SBOM
+    # Produce auditable artifacts for merged/scheduled/manual states, not for
+    # every ephemeral PR revision. Vulnerability gates above still run on PRs.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -121,7 +121,7 @@ The workflows are already configured (full table in [ci-cd.md](ci-cd.md)):
 - `fetch-rss.yml` - Runs every 2 hours
 - `cleanup.yml` - Runs daily at 3 AM UTC
 - `backfill.yml` - og:image + content backfill daily at 04:30 UTC (manual `workflow_dispatch` accepts `kind: both|images|content`)
-- `watchdog.yml` - Source-health check every 6 hours (fails the job + emails when circuit/stale/high-failure/DB-quota thresholds breach)
+- `watchdog.yml` - Source-health check every 2 hours (fails the job + emails on circuit/stale/high-failure/DB-quota or fetch-freshness breaches)
 - `migrations-ci.yml` - On PR/push touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**`: boots the local Supabase stack, applies all migrations from scratch, `supabase db lint`, then runs the SQL security-invariant assertions
 - `lint-meta.yml` - `actionlint` (+ shellcheck on run-blocks) over all workflows on PR/push
 
