@@ -11,18 +11,17 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
 | `backfill.yml` | Daily 04:30 UTC + manual (`kind: both\|images\|content`) | og:image + content backfill (two parallel jobs) |
-| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), **100% coverage gate** (statement-exact: fails if ANY statement is uncovered — it sums the profile's own counts rather than trusting the rounded `go tool cover -func` display), **`Go Fuzz`** (20s per discovered target), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. govulncheck lives in `security.yml`, not here. |
-| `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy, CycloneDX SBOM |
+| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), risk-tiered coverage (**100% exact** for `internal/parser` + `internal/httputil`, **98%** floor on everything outside that tier), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. Committed fuzz seeds replay here as ordinary tests; new-input discovery is nightly. |
+| `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy; CycloneDX SBOM on merged/scheduled/manual states (not ephemeral PR revisions) |
 | `codeql.yml` | Push/PR to `master` + weekly Mon 00:00 UTC | GitHub CodeQL static analysis; uploads SARIF to the Security tab |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
 | `migrations-ci.yml` | Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` | Two jobs. **Apply migrations + invariants**: boots the local Supabase stack, applies all migrations from scratch (`supabase db reset --no-seed`), replays this PR's new migrations **incrementally** on top of the base-branch schema (`supabase migration up`, the path production takes), `supabase db lint --fail-on error`, then runs `supabase/tests/security_invariants.sql`. **Edge Function contract tests** (also runs when `supabase/functions/**` changed): boots the local stack, applies all migrations, then hits all six endpoints over HTTP with the same status/shape/`Cache-Control` assertions as the production deploy smoke test — the functions are only otherwise verified in production. Both jobs are gated by a shared change-detection job and skipped-but-green otherwise |
 | `lint-meta.yml` | Push/PR | `actionlint` (+ shellcheck on run-blocks) for correctness and `zizmor` for workflow security (template injection, credential persistence, permissions, action pinning) over all workflows and composite actions |
 | `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | Gated by the `production` Environment (required-reviewer approval). Ordered steps under `set -e`: apply migrations (`supabase db push --dry-run` to log pending + surface drift, then the real push; **fails** if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → wait for `api-health` → smoke-test **all six endpoints** (status, response shape, `Cache-Control`). Concurrency group `deploy-production`, no cancel-in-progress. |
-| `watchdog.yml` | Every 6 hours + manual | Polls `api-source-health`; fails job (→ GitHub email) on circuit/stale/high-failure/DB-quota threshold breach |
-| `lgpd-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | LGPD guard rails: CPF/CNPJ + SSN regex bans, required privacy docs, retention + RLS + no-PII-redaction invariant, structural integrity on migrations |
-| `gdpr-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | GDPR + CCPA guard rails: IBAN + EU-phone + SSN regex bans plus the same docs/operational/structural checks as the LGPD workflow |
+| `watchdog.yml` | Every 2 hours + manual | Polls `api-source-health`; fails on circuit/stale/high-failure/DB-quota thresholds or when the latest successful fetch is over 180 minutes old |
+| `privacy-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | Unified LGPD/GDPR/CCPA guard rails: jurisdiction-specific PII patterns plus shared docs, retention, RLS, no-PII, and structural invariants |
 | `claude.yml` | Issue/PR comments, reviews, issue events | On-demand Claude Code agent (restricted to repo owner/members/collaborators) |
-| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Automated Claude Code review of PR diffs |
+| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory Claude Code review of PR diffs; cannot approve or request changes |
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
 | `deno-deps.yml` | Weekly Mon 06:30 UTC + manual | Runs `deno outdated` over `supabase/functions` and keeps a single tracking issue in sync (opens/updates/closes it). Dependabot has no Deno ecosystem, so this is the Edge Functions' only dependency-update path. |
@@ -32,39 +31,36 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 
 ## Branch Protection
 
-Protection on `master` is a repository **ruleset** ("Master") requiring **27
-status checks** before merge: `test.yml` (4, incl. `Go Fuzz`), `security.yml` (5), `pr-checks.yml`
-(4, incl. Dependency Review), `lgpd-conformance.yml` (4), `gdpr-conformance.yml`
-(4), `codeql.yml` (2), `migrations-ci.yml` (2, incl. `Edge Function contract tests`),
-`lint-meta.yml` (1), and `claude-code-review.yml` (`claude-review`, 1). Direct pushes to `master` are
-blocked; every change goes through a PR. Squash-only merges,
+Protection on `master` is a repository **ruleset** ("Master") requiring **20
+deterministic status checks** before merge: `test.yml` (3), `security.yml` (4),
+`pr-checks.yml` (4, incl. Dependency Review), `privacy-conformance.yml` (4),
+`codeql.yml` (2), `migrations-ci.yml` (2, incl. `Edge Function contract tests`),
+and `lint-meta.yml` (1). The AI reviews still report on PRs but are not merge
+gates; SBOM generation no longer runs on PRs at all. Direct pushes to `master` are blocked; every change goes through a PR. Squash-only merges,
 `delete_branch_on_merge`, linear history, strict up-to-date branches, and
-required review-thread resolution. Repository admins can bypass via PR — needed
-e.g. when a PR edits `claude-code-review.yml` itself, since `claude-code-action`
-refuses to run from a workflow file that differs from the default branch,
-leaving the required `claude-review` check red until the edit merges.
+required review-thread resolution. Repository admins can bypass via PR.
 
 ## Fuzzing
 
-The 100% statement-coverage gate proves every line executed at least once. It
+Statement coverage proves lines executed at least once. It
 does not prove that hostile bytes leave those lines intact — and per
 `THREAT_MODEL.md`, every feed, article page, and enclosure is attacker
 controlled. Fuzzing (control **C-FUZZ**) closes that gap.
 
 Targets live next to the code they exercise (`internal/parser/fuzz_test.go`,
 `internal/httputil/fuzz_test.go`) and assert control invariants rather than
-merely absence of panics. Both workflows **discover** targets by grepping for
-`func FuzzXxx`, so a new target enrols itself with no workflow edit; each job
-fails loudly if discovery matches nothing, so it can never pass vacuously.
+merely absence of panics. The nightly workflow **discovers** targets by grepping
+for `func FuzzXxx`, so a new target enrols itself with no workflow edit and
+discovery fails loudly if no targets exist.
 
 | Where | Budget | Purpose |
 |-------|--------|---------|
-| `test.yml` → `Go Fuzz` (required check) | 20s × target | Replay the committed corpus and catch obvious regressions without slowing a PR |
+| `test.yml` → ordinary Go tests | deterministic | Replay every committed fuzz seed on each PR |
 | `fuzz.yml` (nightly, one job per target) | 10m × target | The actual hunt, with a cached corpus that compounds across nights |
 
 Seed corpora under `testdata/fuzz/` also replay as ordinary subtests in the
-`Go Tests` job, so a fixed crasher stays fixed even if both fuzz jobs are
-skipped. When a nightly run fails, download its `fuzz-crashers-<Target>`
+`Go Tests` job, so a fixed crasher stays fixed even when nightly fuzzing is
+delayed. When a nightly run fails, download its `fuzz-crashers-<Target>`
 artifact and commit the minimized input as a seed in the same PR as the fix.
 
 ## Security
@@ -80,9 +76,10 @@ Trivy, uploads SARIF to the GitHub Security tab.
 | Go SAST | gosec | SQL injection, hardcoded credentials, weak crypto, unsafe HTTP clients, and other insecure Go patterns |
 | Go Vulnerabilities | govulncheck | Known CVEs in Go module dependencies (the repo's single govulncheck run) |
 | Trivy Filesystem | Trivy | Dependency CVEs (all ecosystems), additional secret patterns, and misconfigurations in Dockerfiles / GitHub workflows / IaC |
-| SBOM | Trivy (CycloneDX) | Generates a Software Bill of Materials as a workflow artifact for supply-chain audits |
+| SBOM | Trivy (CycloneDX) | Generates an artifact for merged, scheduled, and manually dispatched states |
 
-All jobs run in parallel and fail the build on any finding. The weekly schedule
+The scanning jobs run in parallel and fail the build on findings; SBOM generation
+is an artifact-producing post-merge/scheduled job. The weekly schedule
 ensures that vulnerabilities disclosed after merge still surface. Dependabot
 (weekly) handles automated dependency bumps for both Go modules and GitHub
 Actions; Deno dependencies are outside Dependabot's ecosystem support and are

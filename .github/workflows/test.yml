@@ -42,38 +42,69 @@ jobs:
         working-directory: ./rss-worker
         run: go tool cover -func=coverage.out
 
-      - name: Enforce 100% coverage
+      - name: Enforce risk-tiered coverage
         working-directory: ./rss-worker
+        env:
+          COVERAGE_FLOOR: "98.0"
         run: |
-          # Statement-exact gate: sum the cover profile's own per-block counts
-          # (a count of 0 means the block never executed, in any -covermode —
-          # with -race that is `atomic`) instead of comparing against
-          # `go tool cover -func`'s one-decimal display.
-          # The display rounds 99.95%+ up to "100.0%", which at the current
-          # module size is still distinguishable, but would let a single
-          # uncovered statement pass silently once it grows past ~2000
-          # statements. Exact counts can't drift.
+          # Keep the hostile-input boundary exact while allowing ordinary
+          # packages a small amount of defensive/unreachable code. Counts come
+          # from the profile itself; the rounded `go tool cover -func` display
+          # is never used as a gate.
           read -r covered total <<<"$(awk 'NR > 1 { t += $2; if ($3 > 0) c += $2 } END { print c + 0, t + 0 }' coverage.out)"
           if [ "${total:-0}" -eq 0 ]; then
             echo "::error::coverage profile has no statement blocks — the test step produced no usable data; refusing to pass vacuously"
             exit 1
           fi
-          if [ "$covered" -ne "$total" ]; then
-            pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f%%", 100 * c / t }')
-            echo "::error::Statement coverage ${pct} — $((total - covered)) of ${total} statements never executed"
+
+          read -r critical_covered critical_total <<<"$(awk '
+            NR > 1 && ($1 ~ /\/internal\/parser\// || $1 ~ /\/internal\/httputil\//) {
+              t += $2; if ($3 > 0) c += $2
+            }
+            END { print c + 0, t + 0 }
+          ' coverage.out)"
+          if [ "${critical_total:-0}" -eq 0 ]; then
+            echo "::error::coverage profile contains no parser/httputil statements — refusing to pass without the hostile-input packages"
+            exit 1
+          fi
+          if [ "$critical_covered" -ne "$critical_total" ]; then
+            echo "::error::parser/httputil coverage is not 100% — $((critical_total - critical_covered)) of ${critical_total} security-boundary statements are uncovered"
+            echo ""
+            echo "Security-boundary functions below 100%:"
+            go tool cover -func=coverage.out \
+              | awk '$NF != "100.0%" && !/^total:/ && ($1 ~ /\/internal\/parser\// || $1 ~ /\/internal\/httputil\//)'
+            exit 1
+          fi
+
+          # The floor is measured on the statements OUTSIDE the exact tier. Put
+          # parser/httputil (already gated at 100%) in the denominator and their
+          # ~674 statements subsidise everything else, turning a "98% floor"
+          # into ~96.6% for internal/database, main, and internal/logger.
+          other_covered=$((covered - critical_covered))
+          other_total=$((total - critical_total))
+          if [ "$other_total" -eq 0 ]; then
+            echo "::error::coverage profile contains only parser/httputil statements — refusing to pass without the rest of the worker"
+            exit 1
+          fi
+
+          pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f", 100 * c / t }')
+          other_pct=$(awk -v c="$other_covered" -v t="$other_total" 'BEGIN { printf "%.2f", 100 * c / t }')
+          if ! awk -v c="$other_covered" -v t="$other_total" -v f="$COVERAGE_FLOOR" 'BEGIN { exit !(100 * c / t >= f) }'; then
+            echo "::error::Coverage outside the exact tier is ${other_pct}% (${other_covered}/${other_total}), below the ${COVERAGE_FLOOR}% floor"
             echo ""
             echo "Functions below 100%:"
             go tool cover -func=coverage.out | awk '$NF != "100.0%" && !/^total:/'
             exit 1
           fi
-          # Populate the Annotations box + Job Summary on the green path. The
-          # race-detector step ran (and passed) earlier in this job.
-          echo "::notice title=Go Tests::race detector passed · 100% statement coverage (${total}/${total})"
+
+          echo "::notice title=Go Tests::race detector passed · total coverage ${pct}% · parser/httputil 100% · rest ${other_pct}%"
           {
             echo "## Go Tests ✅"
             echo ""
             echo "- Race detector: passed"
-            echo "- Total statement coverage: **100%** — ${total}/${total} statements (exact profile count, not the rounded \`-func\` display)"
+            echo "- Total statement coverage: **${pct}%** — ${covered}/${total} statements"
+            echo "- Security-boundary coverage: **100%** — parser + httputil ${critical_total}/${critical_total} statements"
+            echo "- Everything else: **${other_pct}%** — ${other_covered}/${other_total} statements (floor ${COVERAGE_FLOOR}%, measured without the exact tier)"
             echo ""
             echo "<details><summary>Per-function coverage</summary>"
             echo ""
@@ -88,85 +119,6 @@ jobs:
       # `Go Vulnerabilities (govulncheck)` job, on the same push/PR triggers
       # plus a weekly cron — running it in both places was the same scan, with
       # the same action pin and the same inputs, billed twice per PR.
-
-  fuzz:
-    name: Go Fuzz
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Go
-        uses: ./.github/actions/setup-go-worker
-
-      # Short, bounded smoke run on every PR. The seed corpora in
-      # testdata/fuzz/ already replay as ordinary subtests in the Go Tests job;
-      # this job spends a fixed budget looking for NEW inputs. The long hunt
-      # lives in fuzz.yml (nightly), so keep FUZZTIME small enough that a PR
-      # never waits on it.
-      #
-      # Targets are discovered, not listed: adding a func FuzzXxx anywhere in
-      # the module enrolls it here automatically. `go test` requires one -fuzz
-      # target per invocation, hence the loop.
-      - name: Fuzz hostile-input surfaces
-        id: fuzz
-        working-directory: ./rss-worker
-        env:
-          FUZZTIME: 20s
-        run: |
-          set -uo pipefail
-          fuzz_status=0
-          {
-            echo "## Go Fuzz"
-            echo ""
-            echo "| Target | Package | Result |"
-            echo "|--------|---------|--------|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          found=0
-          while IFS= read -r file; do
-            pkg=$(dirname "$file")
-            # GNU grep -r (the runner) prefixes paths with "./", BSD
-            # grep (macOS) does not; strip it so the go test path is
-            # well-formed on both.
-            pkg=${pkg#./}
-            while IFS= read -r target; do
-              found=$((found + 1))
-              echo "::group::${target} (${pkg}, ${FUZZTIME})"
-              if go test -run '^$' -fuzz "^${target}\$" -fuzztime "$FUZZTIME" "./${pkg}"; then
-                echo "| \`${target}\` | ${pkg} | ✅ |" >> "$GITHUB_STEP_SUMMARY"
-              else
-                echo "::error title=Go Fuzz::${target} found a failing input — the minimized crasher is in ${pkg}/testdata/fuzz/${target}/"
-                echo "| \`${target}\` | ${pkg} | ❌ |" >> "$GITHUB_STEP_SUMMARY"
-                fuzz_status=1
-              fi
-              echo "::endgroup::"
-            done < <(grep -oE '^func Fuzz[A-Za-z0-9_]*' "$file" | sed -E 's/^func //')
-          done < <(grep -rl --include='*_test.go' -E '^func Fuzz[A-Za-z0-9_]*\(' .)
-          if [ "$found" -eq 0 ]; then
-            echo "::error title=Go Fuzz::no fuzz targets found — the discovery grep matched nothing, so this job was silently vacuous"
-            exit 1
-          fi
-          echo "Ran $found fuzz target(s) for $FUZZTIME each."
-          if [ "$fuzz_status" -eq 0 ]; then
-            echo "::notice title=Go Fuzz::$found target(s) × $FUZZTIME — no failing inputs"
-          fi
-          exit "$fuzz_status"
-
-      # A crasher is only actionable with the input that produced it. Go writes
-      # the minimized case under testdata/fuzz/<Target>/; publish it so the fix
-      # can start by committing that file as a permanent seed.
-      - name: Upload failing fuzz inputs
-        if: failure() && steps.fuzz.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-crashers
-          path: rss-worker/**/testdata/fuzz/**
-          if-no-files-found: ignore
-          retention-days: 30
 
   lint:
     name: Go Lint

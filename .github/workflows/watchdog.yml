@@ -5,19 +5,19 @@ name: Source Health Watchdog
 # notifications to repo watchers — no external alerting service needed.
 #
 # Thresholds below are intentionally generous for the default fleet of ~133
-# sources. Tighten them once the fleet stabilizes and we have a baseline.
+# sources. Fetch freshness is tighter because it detects scheduler-wide stalls.
 
 on:
   schedule:
-    # Every 6 hours at :15 past the hour (staggered from the 2h fetch cron).
-    - cron: '15 */6 * * *'
+    # Every 2 hours at :15 past the hour (staggered from the fetch cron).
+    - cron: '15 */2 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 # One health check at a time; a manual dispatch shouldn't double up with the
-# 6-hourly cron.
+# 2-hourly cron.
 concurrency:
   group: watchdog
   cancel-in-progress: false
@@ -52,6 +52,9 @@ jobs:
       # still leaving ~200 MB of headroom before Supabase restricts the project
       # (which is what the April 2026 incident hit at 100%).
       MAX_DB_QUOTA_PCT: 60
+      # The ingestion workflow is scheduled every two hours. Alert after one missed
+      # interval plus one hour of scheduler/runtime headroom.
+      MAX_FETCH_AGE_MINUTES: 180
 
     steps:
       - name: Query source health
@@ -70,6 +73,8 @@ jobs:
           circuit_open=$(echo "$response" | jq -r '.summary.circuit_open_count')
           stale=$(echo "$response" | jq -r '.summary.stale_count')
           high_failure=$(echo "$response" | jq -r '.summary.high_failure_count')
+          fetch_age_minutes=$(echo "$response" | jq -r '.summary.fetch_age_minutes // empty')
+          latest_successful_fetch_at=$(echo "$response" | jq -r '.summary.latest_successful_fetch_at // empty')
           # `// empty` keeps the var unset when the RPC failed (database == null)
           # so we don't false-alarm on transient size-check failures.
           db_quota_pct=$(echo "$response" | jq -r '.database.quota_pct // empty')
@@ -86,6 +91,10 @@ jobs:
               exit 1
             fi
           done
+          if ! [[ "$fetch_age_minutes" =~ $int_re ]]; then
+            echo "::error title=Fetch freshness::missing or invalid fetch_age_minutes — latest successful fetch: ${latest_successful_fetch_at:-unknown}"
+            exit 1
+          fi
 
           fail=0
           if (( circuit_open > MAX_CIRCUIT_OPEN )); then
@@ -105,6 +114,10 @@ jobs:
             echo "::error title=DB quota::database is at ${db_quota_pct}% of quota (${db_pretty}), exceeds threshold ${MAX_DB_QUOTA_PCT}%"
             fail=1
           fi
+          if (( fetch_age_minutes > MAX_FETCH_AGE_MINUTES )); then
+            echo "::error title=Fetch freshness::latest successful fetch was ${fetch_age_minutes}m ago (${latest_successful_fetch_at}), exceeds ${MAX_FETCH_AGE_MINUTES}m"
+            fail=1
+          fi
 
           # Shared metrics table for the Job Summary (rendered on both paths).
           db_disp="${db_quota_pct:-n/a}"
@@ -116,6 +129,7 @@ jobs:
             echo "| stale | ${stale} | ${MAX_STALE} |"
             echo "| high_failure | ${high_failure} | ${MAX_HIGH_FAILURE} |"
             echo "| db_quota_pct | ${db_disp} | ${MAX_DB_QUOTA_PCT}% |"
+            echo "| fetch_age_minutes | ${fetch_age_minutes} | ${MAX_FETCH_AGE_MINUTES} |"
           }
 
           if (( fail == 1 )); then
@@ -144,7 +158,7 @@ jobs:
           else
             db_part="db_quota=${db_disp}/${MAX_DB_QUOTA_PCT}%"
           fi
-          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, ${db_part}"
+          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, fetch_age=${fetch_age_minutes}m/${MAX_FETCH_AGE_MINUTES}m, ${db_part}"
           {
             echo "## Source Health Watchdog ✅"
             echo ""

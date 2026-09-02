@@ -1,6 +1,6 @@
 name: Conformance docs presence (shared)
 description: >
-  Shared by the GDPR and LGPD conformance workflows: asserts that the privacy
+  Used by the unified privacy conformance workflow: asserts that the privacy
   doc set (privacy, regulation-specific conformance doc, ROPA, retention)
   exists and is non-empty. Requires the repository to already be checked out.
 

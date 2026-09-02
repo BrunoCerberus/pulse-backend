@@ -77,13 +77,11 @@ make clean             # Remove build artifacts
 
 ## Testing
 
-Unit tests cover the Go packages and the Deno Edge Functions. All Go packages are
-held at **100% statement coverage**; `test.yml` fails the build if ANY statement is uncovered
-(it sums the cover profile's own counts — the rounded `go tool cover -func` display is not
-trusted, because 99.95%+ rounds up to "100.0%"). Defensive branches that can't fail with real
-inputs are made
-reachable via package-level function vars (e.g. `jsonMarshal`, `randRead`) that
-tests swap — follow that pattern when adding similar code.
+Unit tests cover the Go packages and Deno Edge Functions. The hostile-input
+packages (`internal/parser`, `internal/httputil`) require **100% exact statement
+coverage**; everything outside that tier has a **98%** floor, measured on its own
+statements so the exact tier can't subsidise it. `test.yml` sums the profile's
+own counts instead of trusting the rounded `go tool cover -func` display.
 
 ```bash
 make test           # All tests
@@ -166,21 +164,20 @@ pulse-backend/
     │   ├── fetch-rss.yml              # RSS fetch job (every 2 hours)
     │   ├── cleanup.yml                # Cleanup job (daily 3 AM UTC)
     │   ├── backfill.yml              # og:image + content backfill (daily 04:30 UTC)
-    │   ├── test.yml                   # Unit tests (race+coverage) + fuzz smoke + lint + Deno tests (push/PR)
+    │   ├── test.yml                   # Unit tests (race+risk-tiered coverage) + lint + Deno tests (push/PR)
     │   ├── fuzz.yml                   # Extended nightly fuzzing, one matrix job per target
-    │   ├── security.yml               # Secret scan, SAST, deps, SBOM (push/PR + weekly)
+    │   ├── security.yml               # Secret scan, SAST, deps; post-merge/weekly SBOM
     │   ├── codeql.yml                 # CodeQL static analysis (push/PR + weekly)
     │   ├── pr-checks.yml              # PR-only: title, go.mod sync, migration format
     │   ├── deploy.yml                 # Gated deploy: migrations → functions → 6-endpoint smoke test
     │   ├── migrations-ci.yml          # Migrations from scratch + incremental + invariants; Edge Function contract tests
     │   ├── lint-meta.yml              # actionlint (+ shellcheck) + zizmor over all workflows
-    │   ├── watchdog.yml               # Source health check every 6h (fails job on degradation)
-    │   ├── lgpd-conformance.yml       # LGPD guard rails
-    │   ├── gdpr-conformance.yml       # GDPR + CCPA guard rails
+    │   ├── watchdog.yml               # Source health check every 2h (fails job on degradation)
+    │   ├── privacy-conformance.yml    # Unified LGPD + GDPR + CCPA guard rails
     │   ├── deno-deps.yml             # Weekly `deno outdated` → tracking issue (no Dependabot for Deno)
     │   ├── toolchain-freshness.yml   # Weekly pin freshness (gitleaks/gosec/actionlint/zizmor/Supabase CLI) → tracking issue
     │   ├── claude.yml                 # On-demand Claude Code agent (owner/members/collaborators)
-    │   ├── claude-code-review.yml     # Automated Claude PR review (trusted authors)
+    │   ├── claude-code-review.yml     # Advisory Claude PR review (trusted authors)
     │   ├── security-review.yml        # Advisory AI security review anchored to THREAT_MODEL.md
     │   ├── scorecard.yml              # OpenSSF Scorecard posture score (push/weekly)
     │   └── keepalive.yml              # Monthly: resets the 60-day inactivity timer on scheduled workflows

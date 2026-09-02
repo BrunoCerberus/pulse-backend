@@ -83,7 +83,7 @@ appropriate posture for a system with no personal-data processing.
 
 ## Operational guard rails
 
-The conformance workflow `.github/workflows/gdpr-conformance.yml`
+The unified conformance workflow `.github/workflows/privacy-conformance.yml`
 enforces the following invariants on every PR and weekly cron:
 
 - **No IBAN patterns** in source, tests, migrations, or docs. Defended

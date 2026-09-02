@@ -98,21 +98,25 @@ Full request/response contracts: `docs/api-reference.md`.
 
 ## Testing
 
-**100% statement coverage is required for all Go packages** — `test.yml` fails if ANY statement
-is uncovered (it sums the cover profile's own counts; it does not trust `go tool cover -func`'s
-one-decimal display, which would round 99.95%+ up to "100.0%"). Unreachable defensive branches
-(e.g. `json.Marshal` on static types, `crypto/rand.Read`)
-are exercised via package-level function vars (`jsonMarshal`, `randRead`) swapped in tests. Follow
-this pattern for new similar code.
+Go coverage is risk-tiered: `internal/parser` and `internal/httputil` require **100% exact statement
+coverage**; everything outside that tier has a **98%** floor measured on its own statements, so the
+exact tier can't subsidise it. `test.yml` sums the cover profile's own counts rather than trusting
+`go tool cover -func`'s rounded display. Unreachable defensive branches (e.g. `json.Marshal` on
+static types, `crypto/rand.Read`) are exercised via package-level function vars (`jsonMarshal` in
+`internal/database`, `randRead` in `main`) swapped in tests — keep those seams and follow the
+pattern for new similar code. The 98% floor is headroom for genuinely unreachable code, not licence
+to delete the seams: doing so would consume the whole budget in one go.
 
 Edge Functions have a **90% line-coverage floor** (currently ~98%), enforced in the same workflow.
 Go runs as a single `go test -race -coverprofile` pass — don't split it back into two runs.
 
-**Coverage is not the same as robustness.** 100% statement coverage proves each line ran once, not
+**Coverage is not the same as robustness.** Statement coverage proves each line ran once, not
 that hostile bytes leave it intact — so the hostile-input surfaces also carry **fuzz targets**
 (control C-FUZZ) in `internal/parser/fuzz_test.go` and `internal/httputil/fuzz_test.go`. Assert
-control invariants there, not just absence of panics. Both fuzz workflows discover targets by
-grepping for `func FuzzXxx`, so a new target needs no workflow edit. When a target finds a crasher,
+control invariants there, not just absence of panics. `fuzz.yml` (nightly) discovers targets by
+grepping for `func FuzzXxx`, so a new target needs no workflow edit — but it is the only workflow
+that searches for new inputs; on a PR a target contributes only its committed `testdata/fuzz/` seeds,
+which replay as ordinary subtests. When a target finds a crasher,
 commit the minimized `testdata/fuzz/` input as a seed in the same PR as the fix — seeds replay as
 ordinary subtests on every `go test`.
 
@@ -162,8 +166,8 @@ When editing any workflow, two things are enforced by `lint-meta.yml` (a require
 
 `claude-code-review.yml` and `security-review.yml` are **self-locking**: `claude-code-action`
 refuses to run from a workflow file that differs from the one on `master`, so a PR that edits
-either shows a failed `claude-review` until it merges. Expected, documented in `docs/ci-cd.md`,
-and needs an admin bypass to merge — don't "fix" it by reverting the edit.
+either shows a failed run until it merges. Expected. Both reviews are advisory and neither is a
+required check, so the red run does not block the merge — don't "fix" it by reverting the edit.
 
 ## Data Protection Conformance
 
@@ -174,5 +178,6 @@ allowlists. Full position: `docs/privacy.md`.
 
 ## Monitoring
 
-`fetch_logs` table + `api-source-health` endpoint (circuit/stale/high-failure counts, DB
-`quota_pct`; watchdog trips at 60%). Full runbook: `docs/operations-runbook.md`.
+`fetch_logs` table + `api-source-health` endpoint (circuit/stale/high-failure counts, latest
+successful fetch age, DB `quota_pct`; watchdog trips at 180 minutes / 60%). Full runbook:
+`docs/operations-runbook.md`.

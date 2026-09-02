@@ -49,7 +49,7 @@ api-sources^api-sources?limit=1^type == "array"^public, max-age=3600
 api-articles^api-articles?limit=1^type == "array"^public, max-age=900, stale-while-revalidate=1800
 api-search^api-search?q=test&limit=1^type == "array"^private, max-age=60
 api-health^api-health^.status == "ok"^no-store
-api-source-health^api-source-health^has("summary") and (.summary | has("total"))^public, max-age=60
+api-source-health^api-source-health^has("summary") and (.summary | has("total") and has("latest_successful_fetch_at") and has("fetch_age_minutes"))^public, max-age=60
 CHECKS
 )
 

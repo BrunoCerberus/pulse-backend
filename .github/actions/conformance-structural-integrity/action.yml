@@ -1,6 +1,6 @@
 name: Conformance structural integrity (shared)
 description: >
-  Shared by the GDPR and LGPD conformance workflows: bans new tables outside
+  Used by the unified privacy conformance workflow: bans new tables outside
   the conformance allowlist and PII-implying column names in migrations, and
   asserts the ROPA subprocessor table + retention doc stay consistent.
   Requires the repository to already be checked out.

@@ -35,7 +35,7 @@ Resolves findings from the multi-surface security audit.
 - [x] **L9** — `parser.go`: `canonicalizeURL` (strip fragment, lowercase scheme/host, sort query keys)
 - [x] **L10** — `parser.go`: clamp `published_at` to `[10y ago, now+1h]`
 - [x] **L11** — `parser.go`: `sanitizeText` strips C0/C1 control chars + bidi-override codepoints
-- [x] Tests: 100% coverage on every Go package; race detector clean
+- [x] Tests: 100% exact coverage on parser/httputil, 98% floor on the rest; race detector clean
 
 ## Phase 3 — DB migration 027 [DONE — pending apply]
 
@@ -70,7 +70,7 @@ These are blockers between the code landing and the protections being live.
 - [ ] **Apply migration 027 to production** — `supabase db push` from the main repo (not a worktree, per memory note)
 - [ ] **Deploy Edge Functions** — `supabase functions deploy --project-ref <ref>` (or merge to master to trigger `deploy-functions.yml` once the Environment is set up)
 - [ ] **Create the `production` Environment in GitHub**: Settings → Environments → New environment "production". Add yourself as a required reviewer. Set deployment branches to `master` only. Move `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` from repo secrets to this Environment so they're gated behind the approval rule.
-- [ ] **Rotate `SUPABASE_SERVICE_ROLE_KEY`** — only AFTER the watchdog change deploys (otherwise the next watchdog run fails). The old key was being sent in `Authorization` headers to api-source-health on every 6h tick and may sit in Supabase function logs.
+- [ ] **Rotate `SUPABASE_SERVICE_ROLE_KEY`** — only AFTER the watchdog change deploys (otherwise the next watchdog run fails). The old key was being sent in `Authorization` headers to api-source-health on each watchdog tick and may sit in Supabase function logs.
 - [ ] **Verify branch protection still lists the 11 required checks** by name (`go-tests`, `lint`, `deno-tests`, `secret-scan`, `go-sast`, `go-vuln`, `trivy`, `sbom`, `pr-title`, `gomod-sync`, `migration-format`). The CI job names didn't change in this PR but it's worth a glance after the merge.
 
 ## Verification (all green locally)

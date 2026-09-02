@@ -1,0 +1,216 @@
+name: Privacy Conformance
+
+# One workflow enforces the shared GDPR, LGPD, and CCPA posture. Jurisdiction-
+# specific identifier patterns stay distinct inside the PII job; shared
+# document, operational, and schema invariants run once per PR.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pii-scan:
+    name: Privacy PII Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Ensure ripgrep
+        uses: ./.github/actions/ensure-ripgrep
+
+      - name: Jurisdiction-specific identifier bans
+        shell: bash
+        run: |
+          set -euo pipefail
+          CPF_RE='\b[0-9]{3}\.[0-9]{3}\.[0-9]{3}-[0-9]{2}\b'
+          CNPJ_RE='\b[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2}\b'
+          IBAN_RE='\b[A-Z]{2}[0-9]{2}(?:[ ]?[A-Z0-9]{4}){2,7}(?:[A-Z0-9]{1,4})?\b'
+          EU_PHONE_RE='\+(?:30|31|32|33|34|36|39|40|41|43|44|45|46|47|48|49|350|351|352|353|354|356|357|358|359|370|371|372|385|386|420|421|423)[ -]?[0-9]{6,12}\b'
+
+          common_excludes=(
+            -g '!docs/privacy.md'
+            -g '!docs/lgpd-conformance.md'
+            -g '!docs/gdpr-conformance.md'
+            -g '!docs/ccpa-conformance.md'
+            -g '!docs/ropa.md'
+            -g '!docs/data-retention.md'
+            -g '!.github/lgpd-gdpr-rules.toml'
+            -g '!.github/pii-allowlist.txt'
+            -g '!.github/workflows/privacy-conformance.yml'
+            -g '!.github/actions/conformance-pii-scan/action.yml'
+          )
+
+          if rg --pcre2 "${common_excludes[@]}" -e "$CPF_RE" -e "$CNPJ_RE" .; then
+            echo "::error::CPF or CNPJ pattern found. LGPD: no Brazilian personal identifiers may be stored in this repo."
+            exit 1
+          fi
+          if rg --pcre2 "${common_excludes[@]}" -e "$IBAN_RE" -e "$EU_PHONE_RE" .; then
+            echo "::error::IBAN or EU/EEA phone pattern found. GDPR: no European financial/contact identifiers may be stored in this repo."
+            exit 1
+          fi
+
+      - name: Shared PII guard rails
+        uses: ./.github/actions/conformance-pii-scan
+        with:
+          regulation: Privacy
+          doc: docs/privacy.md
+
+      - name: Annotate PII scan
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Privacy PII Scan::LGPD, GDPR, and CCPA PII guard rails passed"
+          {
+            echo "## Privacy PII Scan ✅"
+            echo ""
+            echo "- CPF / CNPJ, IBAN, EU / EEA phone, and US SSN pattern bans"
+            echo "- Email allowlist and no client-IP handling invariants"
+            echo "- Full-history custom-rules scan runs once in Security Audit"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  docs-presence:
+    name: Privacy Docs Presence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The composite asserts the shared set (privacy, ROPA, retention) plus the
+      # one regulation doc it is handed. Called once, then a loop over the
+      # remaining regulation docs — invoking it per regulation would re-test the
+      # three shared docs on every pass.
+      - name: Shared doc set + GDPR document exist
+        uses: ./.github/actions/conformance-docs-presence
+        with:
+          regulation: GDPR
+          doc: docs/gdpr-conformance.md
+
+      - name: Remaining regulation documents exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in docs/lgpd-conformance.md docs/ccpa-conformance.md; do
+            if [ ! -s "$f" ]; then
+              echo "::error file=$f::Missing or empty — required by the privacy conformance workflow."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: LGPD + CCPA conformance docs present."
+
+      - name: Annotate docs presence
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Privacy Docs Presence::privacy, GDPR, LGPD, CCPA, ROPA, and retention docs are present"
+          {
+            echo "## Privacy Docs Presence ✅"
+            echo ""
+            echo "Present and non-empty:"
+            echo ""
+            echo "- \`docs/privacy.md\`"
+            echo "- \`docs/gdpr-conformance.md\`"
+            echo "- \`docs/lgpd-conformance.md\`"
+            echo "- \`docs/ccpa-conformance.md\`"
+            echo "- \`docs/ropa.md\`"
+            echo "- \`docs/data-retention.md\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  operational-controls:
+    name: Privacy Operational Controls
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only the no-PII-redaction grep is per-document; the cleanup wiring,
+      # retention literal, plaintext-HTTP sweep, and RLS check are global.
+      # Call the composite once, then assert the per-document literal for the
+      # regulation docs it wasn't handed.
+      - name: Global operational invariants + GDPR doc assertion
+        uses: ./.github/actions/conformance-operational-controls
+        with:
+          regulation: GDPR
+          doc: docs/gdpr-conformance.md
+
+      - name: No-PII-redaction invariant in the remaining regulation docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in docs/lgpd-conformance.md; do
+            if ! grep -q 'No PII redaction layer required' "$f"; then
+              echo "::error file=$f::No longer asserts 'No PII redaction layer required'. If a redaction layer was introduced, update both the doc and this workflow."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: no-PII invariant still asserted."
+
+      - name: Annotate operational controls
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Privacy Operational Controls::retention, RLS, HTTPS, and no-PII invariants hold"
+          {
+            echo "## Privacy Operational Controls ✅"
+            echo ""
+            echo "- \`cleanup.yml\` wired to \`rss-worker cleanup\`"
+            echo "- \`ArticleRetentionDays\` = 7"
+            echo "- no plaintext \`http://\` in migrations"
+            echo "- 'No PII redaction layer required' still asserted in the GDPR + LGPD docs"
+            echo "- RLS enabled on user-facing tables"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  structural-integrity:
+    name: Privacy Structural Integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Schema + ROPA invariants
+        uses: ./.github/actions/conformance-structural-integrity
+        with:
+          regulation: Privacy
+          doc: docs/privacy.md
+
+      - name: Annotate structural integrity
+        if: success()
+        shell: bash
+        run: |
+          echo "::notice title=Privacy Structural Integrity::schema allowlist, PII-column ban, ROPA, and retention invariants hold"
+          {
+            echo "## Privacy Structural Integrity ✅"
+            echo ""
+            echo "- only allowlisted tables (categories, sources, articles, fetch_logs)"
+            echo "- no PII-implying column names in migrations"
+            echo "- ROPA lists GitHub + Supabase subprocessors"
+            echo "- retention doc declares '7 days'"
+          } >> "$GITHUB_STEP_SUMMARY"

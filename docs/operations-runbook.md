@@ -37,9 +37,10 @@ View workflow runs:
 1. Go to Repository → Actions tab
 2. Check `fetch-rss.yml` for RSS fetching (every 2 hours)
 3. Check `cleanup.yml` for article cleanup (daily at 3 AM UTC)
-4. Check `watchdog.yml` for source-health alerts (every 6 hours, fails the
+4. Check `watchdog.yml` for source-health alerts (every 2 hours, fails the
    job + sends GitHub email when `circuit_open` / `stale` /
-   `high_failure` / `database.quota_pct` cross thresholds defined inline)
+   `high_failure` / `database.quota_pct` cross thresholds defined inline, or
+   the latest successful source fetch is more than 180 minutes old)
 5. Check `deploy.yml` for production deploys — gated by the
    `production` GitHub Environment (required-reviewer approval,
    master-only); deploys pause for human approval in the Actions UI.
@@ -53,6 +54,7 @@ View workflow runs:
 | Sources processed | 136 (all configured sources; live active count may be lower) | < 100 |
 | Errors per run | 0-2 | > 5 |
 | Fetch duration | 1-3 minutes | > 10 minutes |
+| Latest successful fetch age | < 2 hours | > 180 minutes |
 
 ---
 

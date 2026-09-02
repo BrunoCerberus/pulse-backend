@@ -79,6 +79,8 @@ Deno.test("GET success returns summary + sources + database with 60s cache", asy
     assertEquals(body.summary.circuit_open_count, 1);
     assertEquals(body.summary.high_failure_count, 1);
     assertEquals(body.summary.stale_count, 1);
+    assertEquals(typeof body.summary.latest_successful_fetch_at, "string");
+    assertEquals(body.summary.fetch_age_minutes, 0);
     assertEquals(body.database.size_bytes, 96_468_992);
     assertEquals(body.database.size_pretty, "92.0 MB");
     assertEquals(body.database.quota_pct, 18);
@@ -283,6 +285,8 @@ Deno.test("empty source list yields zero summary", async () => {
     assertEquals(body.summary.total, 0);
     assertEquals(body.summary.active, 0);
     assertEquals(body.summary.stale_count, 0);
+    assertEquals(body.summary.latest_successful_fetch_at, null);
+    assertEquals(body.summary.fetch_age_minutes, null);
   } finally {
     globalThis.fetch = origFetch;
     restoreEnv(origUrl, origKey);
@@ -425,17 +429,39 @@ Deno.test("fetchDatabaseSize: formats sizes across unit boundaries", async () =>
 // --- summarize ---
 
 Deno.test("summarize counts categories correctly", () => {
+  const latest = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const rows = [
-    row(),
+    row({ last_fetched_at: latest }),
     row({ is_active: false }),
-    row({ circuit_open: true, consecutive_failures: 10 }),
-    row({ consecutive_failures: 5 }),
+    row({ circuit_open: true, consecutive_failures: 10, last_fetched_at: null }),
+    row({ consecutive_failures: 5, last_fetched_at: "invalid" }),
   ];
   const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
   assertEquals(s.total, 4);
   assertEquals(s.active, 3);
   assertEquals(s.circuit_open_count, 1);
   assertEquals(s.high_failure_count, 1);
+  assertEquals(s.latest_successful_fetch_at, latest);
+  assertEquals(s.fetch_age_minutes, 30);
+});
+
+Deno.test("summarize ignores a last_fetched_at beyond the skew tolerance", () => {
+  const real = new Date(Date.now() - 200 * 60 * 1000).toISOString();
+  const rows = [
+    row({ last_fetched_at: real }),
+    row({ last_fetched_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString() }),
+  ];
+  const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
+  // The future row must not become the fleet maximum — otherwise the age
+  // clamps to 0 and the watchdog never fires during an ingestion stall.
+  assertEquals(s.latest_successful_fetch_at, real);
+  assertEquals(s.fetch_age_minutes, 200);
+});
+
+Deno.test("summarize clamps a small forward clock skew to a zero age", () => {
+  const rows = [row({ last_fetched_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() })];
+  const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
+  assertEquals(s.fetch_age_minutes, 0);
 });
 
 Deno.test("partial (206) fleet view is refused, not summarised, and not cached", async () => {

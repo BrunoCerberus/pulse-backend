@@ -1,4 +1,4 @@
-# Custom gitleaks rules used by the LGPD and GDPR conformance workflows.
+# Custom gitleaks rules used by the unified privacy conformance workflow.
 # Layered on top of gitleaks' built-in ruleset (extend.useDefault = true)
 # so we keep the upstream secret-detection coverage and add three
 # regulator-specific PII patterns.

@@ -70,7 +70,7 @@ A full list with purpose, region, and DPA status is maintained in
 - **In transit**: all Supabase API traffic uses TLS. RSS feed fetches use
   HTTPS where supported by the source; new sources added via migrations
   must use `https://` (enforced by the operational-controls check in
-  `.github/workflows/lgpd-conformance.yml` and `gdpr-conformance.yml`).
+  `.github/workflows/privacy-conformance.yml`).
 - **At rest**: Supabase-managed PostgreSQL encryption at rest (provider
   configuration). No application-level encryption on top — the data is
   public news content, so encryption is a defense-in-depth measure, not
@@ -92,7 +92,8 @@ Details and rationale in [`docs/data-retention.md`](./data-retention.md).
   (`rss-worker/internal/httputil/`).
 - Row-level security enabled on every table. Column-level grants on
   `articles` expose only the safe subset to the anon role.
-- 100% Go test coverage gate on every PR.
+- Risk-tiered Go coverage on every PR: 100% exact for parser/HTTP security
+  boundaries and a 98% floor on everything else.
 - Per-host rate limiting on outbound HTTP to be a good citizen of source
   publishers' infrastructure.
 
@@ -118,7 +119,7 @@ This document should be revisited if any of the following land:
 - A jurisdiction-specific request (LGPD ANPD, GDPR supervisory authority)
   is received.
 
-The structural-integrity job in the conformance workflows will catch new
+The structural-integrity job in the privacy conformance workflow will catch new
 tables and suspicious column names automatically — but the maintainer is
 still expected to update this document in the same PR.
 
