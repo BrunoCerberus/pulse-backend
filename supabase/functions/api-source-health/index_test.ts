@@ -445,6 +445,25 @@ Deno.test("summarize counts categories correctly", () => {
   assertEquals(s.fetch_age_minutes, 30);
 });
 
+Deno.test("summarize ignores a last_fetched_at beyond the skew tolerance", () => {
+  const real = new Date(Date.now() - 200 * 60 * 1000).toISOString();
+  const rows = [
+    row({ last_fetched_at: real }),
+    row({ last_fetched_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString() }),
+  ];
+  const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
+  // The future row must not become the fleet maximum — otherwise the age
+  // clamps to 0 and the watchdog never fires during an ingestion stall.
+  assertEquals(s.latest_successful_fetch_at, real);
+  assertEquals(s.fetch_age_minutes, 200);
+});
+
+Deno.test("summarize clamps a small forward clock skew to a zero age", () => {
+  const rows = [row({ last_fetched_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() })];
+  const s = summarize(rows as unknown as Parameters<typeof summarize>[0]);
+  assertEquals(s.fetch_age_minutes, 0);
+});
+
 Deno.test("partial (206) fleet view is refused, not summarised, and not cached", async () => {
   clearCache();
   const origUrl = Deno.env.get("SUPABASE_URL");

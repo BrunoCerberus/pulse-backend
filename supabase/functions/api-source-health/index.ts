@@ -26,7 +26,9 @@
  * not yet open. `stale_count` = active sources with no article in 7 days
  * and circuit still closed. `database` is `null` if the size RPC fails —
  * the watchdog tolerates `null` so transient size-check failures don't
- * false-page.
+ * false-page. `latest_successful_fetch_at` is the newest `last_fetched_at`
+ * among active sources, ignoring values more than `FUTURE_SKEW_MS` ahead of
+ * now so a skewed clock can't pin `fetch_age_minutes` at 0.
  *
  * ## Caching
  * Cache-Control: 60s public. Health doesn't need to be perfectly fresh.
@@ -68,6 +70,12 @@ const CACHE_TTL_MS = 60 * 1000;
 const CACHE_CONTROL = "public, max-age=60";
 const HIGH_FAILURE_THRESHOLD = 3;
 const STALE_MS = 7 * 24 * 60 * 60 * 1000;
+// Tolerated clock skew on `last_fetched_at` before the value is treated as
+// bogus. Mirrors the parser's C-CLAMP handling of skewed dates: without this,
+// one row stamped in the future becomes the fleet maximum and pins
+// `fetch_age_minutes` at 0 forever, silently disabling the watchdog's
+// freshness alarm during a total ingestion stall.
+const FUTURE_SKEW_MS = 60 * 60 * 1000;
 const DEFAULT_QUOTA_BYTES = 524_288_000;
 
 interface SourceHealthRow {
@@ -157,7 +165,9 @@ export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
 }
 
 export function summarize(rows: SourceHealthRow[]): HealthSummary {
-  const staleCutoff = Date.now() - STALE_MS;
+  const now = Date.now();
+  const staleCutoff = now - STALE_MS;
+  const futureCutoff = now + FUTURE_SKEW_MS;
   let active = 0;
   let circuitOpenCount = 0;
   let highFailureCount = 0;
@@ -168,7 +178,10 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
     if (r.is_active) {
       active++;
       const fetchedMs = r.last_fetched_at ? new Date(r.last_fetched_at).getTime() : 0;
-      if (Number.isFinite(fetchedMs) && fetchedMs > latestSuccessfulFetchMs) {
+      if (
+        Number.isFinite(fetchedMs) && fetchedMs <= futureCutoff &&
+        fetchedMs > latestSuccessfulFetchMs
+      ) {
         latestSuccessfulFetchMs = fetchedMs;
       }
     }
@@ -186,7 +199,7 @@ export function summarize(rows: SourceHealthRow[]): HealthSummary {
     ? new Date(latestSuccessfulFetchMs).toISOString()
     : null;
   const fetchAgeMinutes = latestSuccessfulFetchMs > 0
-    ? Math.max(0, Math.floor((Date.now() - latestSuccessfulFetchMs) / 60_000))
+    ? Math.max(0, Math.floor((now - latestSuccessfulFetchMs) / 60_000))
     : null;
 
   return {

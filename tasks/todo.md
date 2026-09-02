@@ -35,7 +35,7 @@ Resolves findings from the multi-surface security audit.
 - [x] **L9** — `parser.go`: `canonicalizeURL` (strip fragment, lowercase scheme/host, sort query keys)
 - [x] **L10** — `parser.go`: clamp `published_at` to `[10y ago, now+1h]`
 - [x] **L11** — `parser.go`: `sanitizeText` strips C0/C1 control chars + bidi-override codepoints
-- [x] Tests: 100% exact coverage on parser/httputil, 98% whole-worker floor; race detector clean
+- [x] Tests: 100% exact coverage on parser/httputil, 98% floor on the rest; race detector clean
 
 ## Phase 3 — DB migration 027 [DONE — pending apply]
 

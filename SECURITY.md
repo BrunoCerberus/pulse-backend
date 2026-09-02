@@ -139,4 +139,4 @@ Security is enforced continuously in CI, not just at review time:
 - **Committed threat model:** [`THREAT_MODEL.md`](THREAT_MODEL.md) names the
   entry points, assets, and trust boundaries and is kept current with the code.
 - **Risk-tiered Go coverage gate** on every pull request: 100% exact coverage
-  for parser/HTTP security boundaries and a 98% whole-worker floor.
+  for parser/HTTP security boundaries and a 98% floor on everything else.

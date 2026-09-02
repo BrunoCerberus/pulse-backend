@@ -11,7 +11,7 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `fetch-rss.yml` | Every 2 hours + manual | Fetch RSS feeds into Supabase |
 | `cleanup.yml` | Daily 3 AM UTC + manual | Remove articles older than the retention window |
 | `backfill.yml` | Daily 04:30 UTC + manual (`kind: both\|images\|content`) | og:image + content backfill (two parallel jobs) |
-| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), risk-tiered coverage (**100% exact** for `internal/parser` + `internal/httputil`, **98%** whole-worker floor), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. Committed fuzz seeds replay here as ordinary tests; new-input discovery is nightly. |
+| `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), risk-tiered coverage (**100% exact** for `internal/parser` + `internal/httputil`, **98%** floor on everything outside that tier), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. Committed fuzz seeds replay here as ordinary tests; new-input discovery is nightly. |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy; CycloneDX SBOM on merged/scheduled/manual states (not ephemeral PR revisions) |
 | `codeql.yml` | Push/PR to `master` + weekly Mon 00:00 UTC | GitHub CodeQL static analysis; uploads SARIF to the Security tab |
 | `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
@@ -35,8 +35,8 @@ Protection on `master` is a repository **ruleset** ("Master") requiring **20
 deterministic status checks** before merge: `test.yml` (3), `security.yml` (4),
 `pr-checks.yml` (4, incl. Dependency Review), `privacy-conformance.yml` (4),
 `codeql.yml` (2), `migrations-ci.yml` (2, incl. `Edge Function contract tests`),
-and `lint-meta.yml` (1). AI reviews and SBOM generation still report but are
-not merge gates. Direct pushes to `master` are blocked; every change goes through a PR. Squash-only merges,
+and `lint-meta.yml` (1). The AI reviews still report on PRs but are not merge
+gates; SBOM generation no longer runs on PRs at all. Direct pushes to `master` are blocked; every change goes through a PR. Squash-only merges,
 `delete_branch_on_merge`, linear history, strict up-to-date branches, and
 required review-thread resolution. Repository admins can bypass via PR.
 

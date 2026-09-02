@@ -79,7 +79,8 @@ make clean             # Remove build artifacts
 
 Unit tests cover the Go packages and Deno Edge Functions. The hostile-input
 packages (`internal/parser`, `internal/httputil`) require **100% exact statement
-coverage**; the complete worker has a **98%** floor. `test.yml` sums the profile's
+coverage**; everything outside that tier has a **98%** floor, measured on its own
+statements so the exact tier can't subsidise it. `test.yml` sums the profile's
 own counts instead of trusting the rounded `go tool cover -func` display.
 
 ```bash

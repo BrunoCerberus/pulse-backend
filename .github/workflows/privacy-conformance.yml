@@ -94,26 +94,47 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: GDPR documents exist
+      # The composite asserts the shared set (privacy, ROPA, retention) plus the
+      # one regulation doc it is handed. Called once, then a loop over the
+      # remaining regulation docs — invoking it per regulation would re-test the
+      # three shared docs on every pass.
+      - name: Shared doc set + GDPR document exist
         uses: ./.github/actions/conformance-docs-presence
         with:
           regulation: GDPR
           doc: docs/gdpr-conformance.md
 
-      - name: LGPD documents exist
-        uses: ./.github/actions/conformance-docs-presence
-        with:
-          regulation: LGPD
-          doc: docs/lgpd-conformance.md
-
-      - name: CCPA document exists
+      - name: Remaining regulation documents exist
         shell: bash
-        run: test -s docs/ccpa-conformance.md
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in docs/lgpd-conformance.md docs/ccpa-conformance.md; do
+            if [ ! -s "$f" ]; then
+              echo "::error file=$f::Missing or empty — required by the privacy conformance workflow."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: LGPD + CCPA conformance docs present."
 
       - name: Annotate docs presence
         if: success()
         shell: bash
-        run: echo "::notice title=Privacy Docs Presence::privacy, GDPR, LGPD, CCPA, ROPA, and retention docs are present"
+        run: |
+          echo "::notice title=Privacy Docs Presence::privacy, GDPR, LGPD, CCPA, ROPA, and retention docs are present"
+          {
+            echo "## Privacy Docs Presence ✅"
+            echo ""
+            echo "Present and non-empty:"
+            echo ""
+            echo "- \`docs/privacy.md\`"
+            echo "- \`docs/gdpr-conformance.md\`"
+            echo "- \`docs/lgpd-conformance.md\`"
+            echo "- \`docs/ccpa-conformance.md\`"
+            echo "- \`docs/ropa.md\`"
+            echo "- \`docs/data-retention.md\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   operational-controls:
     name: Privacy Operational Controls
@@ -125,22 +146,44 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: GDPR operational invariants
+      # Only the no-PII-redaction grep is per-document; the cleanup wiring,
+      # retention literal, plaintext-HTTP sweep, and RLS check are global.
+      # Call the composite once, then assert the per-document literal for the
+      # regulation docs it wasn't handed.
+      - name: Global operational invariants + GDPR doc assertion
         uses: ./.github/actions/conformance-operational-controls
         with:
           regulation: GDPR
           doc: docs/gdpr-conformance.md
 
-      - name: LGPD operational invariants
-        uses: ./.github/actions/conformance-operational-controls
-        with:
-          regulation: LGPD
-          doc: docs/lgpd-conformance.md
+      - name: No-PII-redaction invariant in the remaining regulation docs
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in docs/lgpd-conformance.md; do
+            if ! grep -q 'No PII redaction layer required' "$f"; then
+              echo "::error file=$f::No longer asserts 'No PII redaction layer required'. If a redaction layer was introduced, update both the doc and this workflow."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: no-PII invariant still asserted."
 
       - name: Annotate operational controls
         if: success()
         shell: bash
-        run: echo "::notice title=Privacy Operational Controls::retention, RLS, HTTPS, and no-PII invariants hold"
+        run: |
+          echo "::notice title=Privacy Operational Controls::retention, RLS, HTTPS, and no-PII invariants hold"
+          {
+            echo "## Privacy Operational Controls ✅"
+            echo ""
+            echo "- \`cleanup.yml\` wired to \`rss-worker cleanup\`"
+            echo "- \`ArticleRetentionDays\` = 7"
+            echo "- no plaintext \`http://\` in migrations"
+            echo "- 'No PII redaction layer required' still asserted in the GDPR + LGPD docs"
+            echo "- RLS enabled on user-facing tables"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   structural-integrity:
     name: Privacy Structural Integrity
@@ -161,4 +204,13 @@ jobs:
       - name: Annotate structural integrity
         if: success()
         shell: bash
-        run: echo "::notice title=Privacy Structural Integrity::schema allowlist, PII-column ban, ROPA, and retention invariants hold"
+        run: |
+          echo "::notice title=Privacy Structural Integrity::schema allowlist, PII-column ban, ROPA, and retention invariants hold"
+          {
+            echo "## Privacy Structural Integrity ✅"
+            echo ""
+            echo "- only allowlisted tables (categories, sources, articles, fetch_logs)"
+            echo "- no PII-implying column names in migrations"
+            echo "- ROPA lists GitHub + Supabase subprocessors"
+            echo "- retention doc declares '7 days'"
+          } >> "$GITHUB_STEP_SUMMARY"

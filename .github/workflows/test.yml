@@ -69,23 +69,42 @@ jobs:
           fi
           if [ "$critical_covered" -ne "$critical_total" ]; then
             echo "::error::parser/httputil coverage is not 100% — $((critical_total - critical_covered)) of ${critical_total} security-boundary statements are uncovered"
+            echo ""
+            echo "Security-boundary functions below 100%:"
+            go tool cover -func=coverage.out \
+              | awk '$NF != "100.0%" && !/^total:/ && ($1 ~ /\/internal\/parser\// || $1 ~ /\/internal\/httputil\//)'
+            exit 1
+          fi
+
+          # The floor is measured on the statements OUTSIDE the exact tier. Put
+          # parser/httputil (already gated at 100%) in the denominator and their
+          # ~674 statements subsidise everything else, turning a "98% floor"
+          # into ~96.6% for internal/database, main, and internal/logger.
+          other_covered=$((covered - critical_covered))
+          other_total=$((total - critical_total))
+          if [ "$other_total" -eq 0 ]; then
+            echo "::error::coverage profile contains only parser/httputil statements — refusing to pass without the rest of the worker"
             exit 1
           fi
 
           pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f", 100 * c / t }')
-          if ! awk -v c="$covered" -v t="$total" -v f="$COVERAGE_FLOOR" 'BEGIN { exit !(100 * c / t >= f) }'; then
-            echo "::error::Total statement coverage ${pct}% is below the ${COVERAGE_FLOOR}% floor"
+          other_pct=$(awk -v c="$other_covered" -v t="$other_total" 'BEGIN { printf "%.2f", 100 * c / t }')
+          if ! awk -v c="$other_covered" -v t="$other_total" -v f="$COVERAGE_FLOOR" 'BEGIN { exit !(100 * c / t >= f) }'; then
+            echo "::error::Coverage outside the exact tier is ${other_pct}% (${other_covered}/${other_total}), below the ${COVERAGE_FLOOR}% floor"
+            echo ""
+            echo "Functions below 100%:"
             go tool cover -func=coverage.out | awk '$NF != "100.0%" && !/^total:/'
             exit 1
           fi
 
-          echo "::notice title=Go Tests::race detector passed · total coverage ${pct}% · parser/httputil 100%"
+          echo "::notice title=Go Tests::race detector passed · total coverage ${pct}% · parser/httputil 100% · rest ${other_pct}%"
           {
             echo "## Go Tests ✅"
             echo ""
             echo "- Race detector: passed"
-            echo "- Total statement coverage: **${pct}%** — ${covered}/${total} statements (floor ${COVERAGE_FLOOR}%)"
+            echo "- Total statement coverage: **${pct}%** — ${covered}/${total} statements"
             echo "- Security-boundary coverage: **100%** — parser + httputil ${critical_total}/${critical_total} statements"
+            echo "- Everything else: **${other_pct}%** — ${other_covered}/${other_total} statements (floor ${COVERAGE_FLOOR}%, measured without the exact tier)"
             echo ""
             echo "<details><summary>Per-function coverage</summary>"
             echo ""

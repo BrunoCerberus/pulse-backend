@@ -93,7 +93,7 @@ Details and rationale in [`docs/data-retention.md`](./data-retention.md).
 - Row-level security enabled on every table. Column-level grants on
   `articles` expose only the safe subset to the anon role.
 - Risk-tiered Go coverage on every PR: 100% exact for parser/HTTP security
-  boundaries and a 98% whole-worker floor.
+  boundaries and a 98% floor on everything else.
 - Per-host rate limiting on outbound HTTP to be a good citizen of source
   publishers' infrastructure.
 

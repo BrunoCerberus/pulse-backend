@@ -306,10 +306,12 @@ view can stay revoked from anon at the DB layer.
 `null` so transient size-check failures don't false-page.
 
 `latest_successful_fetch_at` is the newest `last_fetched_at` among active
-sources; that column records successful fetches. `fetch_age_minutes` is its age
-at response time. Both are `null` for an empty fleet or when no active source
-has completed a successful fetch. The watchdog treats either condition as an
-error and alerts when the age exceeds 180 minutes.
+sources; that column records successful fetches. Values more than an hour ahead
+of the current time are ignored, so a skewed clock on one source cannot pin the
+whole fleet at age 0. `fetch_age_minutes` is its age at response time. Both are
+`null` for an empty fleet or when no active source has completed a successful
+fetch. The watchdog treats either condition as an error and alerts when the age
+exceeds 180 minutes.
 
 ---
 

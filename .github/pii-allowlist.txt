@@ -1,7 +1,7 @@
 # Email addresses intentionally present in this repository.
 #
 # Every email matched by the PII-scan regex must appear here or the
-# The privacy conformance workflow will fail the build. Keep the list
+# privacy conformance workflow will fail the build. Keep the list
 # short — if it grows beyond ~20 lines, something has likely gone wrong
 # (a real PII leak, or the regex needs tightening).
 #

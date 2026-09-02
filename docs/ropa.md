@@ -47,7 +47,7 @@ regulation.
 | Retention period                 | Articles: 7 days. `fetch_logs`: 7 days. No backups beyond Supabase platform-managed PITR. |
 | Lawful basis (GDPR Art. 6)       | Not applicable — no personal data is processed. |
 | Legal basis (LGPD Art. 7)        | Not applicable — no personal data is processed. |
-| Technical / organizational measures | TLS, RLS, SSRF-aware HTTP client, per-host rate limiting, exact coverage on hostile-input packages plus a 98% worker floor, weekly security audit (`security.yml`), unified conformance workflow (`privacy-conformance.yml`). |
+| Technical / organizational measures | TLS, RLS, SSRF-aware HTTP client, per-host rate limiting, exact coverage on hostile-input packages plus a 98% floor on the rest of the worker, weekly security audit (`security.yml`), unified conformance workflow (`privacy-conformance.yml`). |
 
 ## Subprocessors
 
