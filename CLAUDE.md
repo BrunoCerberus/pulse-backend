@@ -107,7 +107,8 @@ static types, `crypto/rand.Read`) are exercised via package-level function vars 
 pattern for new similar code. The 98% floor is headroom for genuinely unreachable code, not licence
 to delete the seams: doing so would consume the whole budget in one go.
 
-Edge Functions have a **90% line-coverage floor** (currently ~98%), enforced in the same workflow.
+Edge Functions have a **90% line-coverage floor** (the real number runs well above it; see the
+`Deno Coverage` job summary), enforced in the same workflow.
 Go runs as a single `go test -race -coverprofile` pass — don't split it back into two runs.
 
 **Coverage is not the same as robustness.** Statement coverage proves each line ran once, not

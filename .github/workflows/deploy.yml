@@ -5,11 +5,21 @@ name: Deploy
 # so a failed `supabase db push` aborts the job before any function ships —
 # that ordering is the whole point.
 #
-# There is deliberately NO rollback: if the smoke test fails, the new
+# There is deliberately NO automated rollback: if the smoke test fails, the new
 # migrations and functions are already live. Posture is fix-forward — a red
 # run here means "production may be broken, fix it now", not "nothing
 # changed". Rolling back applied migrations automatically is riskier than the
-# failure modes it would cover.
+# failure modes it would cover. As a manual safety net, the `Back up database`
+# step dumps roles + schema + data and uploads them as the
+# `pre-deploy-backup-<sha>` artifact (30-day retention) BEFORE any migration
+# runs.
+#
+# The `preflight` job gates the deploy on Tests + Migrations CI being green for
+# the exact commit (fails closed on a red or missing run; skipped on manual
+# dispatch). If a `staging` Environment is configured (repo variable
+# STAGING_ENABLED=true + STAGING_SUPABASE_* secrets), `deploy-staging` runs the
+# whole migrate/deploy/contract path there first; otherwise it is skipped and
+# production proceeds unchanged.
 #
 # Gated on the `production` GitHub Environment (Settings → Environments →
 # production: required reviewers + branch restriction to master). One approval
@@ -45,10 +55,154 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Deploy
+  # Gate: production deploys only on a commit whose CI is actually green.
+  # deploy.yml triggers on push to master and would otherwise run concurrently
+  # with test.yml / migrations-ci.yml for the same SHA — a direct push or an
+  # admin-bypassed PR could ship before (or instead of) those passing. This job
+  # waits for the substantive validators to conclude for THIS SHA and fails
+  # closed if any is red or never finishes. A manual `workflow_dispatch` skips
+  # the gate (the operator chose the ref deliberately).
+  preflight:
+    name: Require CI green for this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Wait for required workflows to pass on ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            echo "::notice title=Preflight::manual dispatch — skipping the CI-green gate"
+            {
+              echo "## Preflight ⏭️"
+              echo ""
+              echo "- Manual dispatch: the CI-green gate is skipped (operator chose the ref)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # The substantive validators for everything this deploy ships. CodeQL
+          # is intentionally NOT here: it never fails a build (findings only),
+          # so gating on it would block deploys on advisory output.
+          required=("Tests" "Migrations CI")
+
+          deadline=$(( $(date +%s) + 25 * 60 ))
+          while :; do
+            runs=$(gh api --paginate \
+              "repos/${REPO}/actions/runs?head_sha=${SHA}" \
+              --jq '.workflow_runs[] | [.name, .status, .conclusion] | @tsv')
+
+            pending=""
+            for wf in "${required[@]}"; do
+              line=$(printf '%s\n' "$runs" | awk -F'\t' -v n="$wf" '$1 == n {print; exit}')
+              if [ -z "$line" ]; then
+                pending="${pending} ${wf}(no-run-yet)"
+                continue
+              fi
+              status=$(printf '%s' "$line" | cut -f2)
+              conclusion=$(printf '%s' "$line" | cut -f3)
+              if [ "$status" != "completed" ]; then
+                pending="${pending} ${wf}(${status})"
+                continue
+              fi
+              if [ "$conclusion" != "success" ]; then
+                echo "::error title=Preflight::${wf} concluded '${conclusion}' for ${SHA} — refusing to deploy. Fix CI on master, then re-run this deploy."
+                exit 1
+              fi
+            done
+
+            if [ -z "$pending" ]; then
+              echo "::notice title=Preflight::all required workflows green for ${SHA}"
+              {
+                echo "## Preflight ✅"
+                echo ""
+                echo "- Required workflows green for \`${SHA}\`: ${required[*]}"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error title=Preflight::timed out waiting for:${pending}. Failing closed — deploy proceeds only once CI is green for this commit (or via manual dispatch)."
+              exit 1
+            fi
+            echo "waiting for:${pending}"
+            sleep 30
+          done
+
+  # Optional pre-production stage. Inert until a staging Supabase project
+  # exists: set the repo variable STAGING_ENABLED=true and add the four
+  # STAGING_SUPABASE_* secrets on a `staging` Environment. Until then this job
+  # is skipped and production deploys exactly as before. Runs the same
+  # migrate → deploy → contract-suite path as production against a throwaway
+  # project, so a migration that only breaks against real data fails here
+  # first — the rehearsal the local stack in migrations-ci can't give.
+  deploy-staging:
+    name: Deploy to staging
+    needs: preflight
+    if: vars.STAGING_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    environment: staging
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@46f7f98c7f948ad727d22c1e67fab04c223a0520 # v3.0.0
+        with:
+          version: "2.116.0"
+
+      - name: Migrate, deploy functions, contract-test
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.STAGING_SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.STAGING_SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.STAGING_SUPABASE_DB_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ] || [ -z "${SUPABASE_URL:-}" ]; then
+            echo "::error title=Staging::STAGING_ENABLED is true but the STAGING_SUPABASE_* secrets are not all set on the staging Environment."
+            exit 1
+          fi
+          supabase link --project-ref "$SUPABASE_PROJECT_REF"
+          echo "Pending migrations (staging):"
+          supabase db push --dry-run
+          supabase db push
+          supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
+          for _ in $(seq 1 10); do
+            if curl -fsS --max-time 15 "${SUPABASE_URL}/functions/v1/api-health" \
+              | jq -e '.status == "ok"' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 3
+          done
+          # Same six-endpoint contract suite the production smoke test runs.
+          bash scripts/check-endpoints.sh "${SUPABASE_URL}/functions/v1" "Staging" /tmp/staging-results.md
+
+  deploy:
+    name: Deploy
+    needs: [preflight, deploy-staging]
+    # preflight must pass; staging must have passed OR been skipped (it is
+    # skipped whenever STAGING_ENABLED is not 'true').
+    if: |
+      always() &&
+      needs.preflight.result == 'success' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Single gate for the whole deploy: one required-reviewer approval covers
     # migrations + functions. All environment-scoped secrets are available to
     # the job once approved.
@@ -69,6 +223,42 @@ jobs:
           # kind of surprise here. Bump deliberately — the weekly
           # toolchain-freshness check tracks the latest release.
           version: "2.116.0"
+
+      - name: Back up database (restore point)
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          # This deploy is fix-forward with NO automated rollback, and the
+          # project's plan has no point-in-time recovery. A logical dump taken
+          # here and kept as a workflow artifact is the restore point: if a
+          # migration corrupts data, restore by hand with
+          # `psql "$DB_URL" -f pre-deploy-roles.sql -f pre-deploy-schema.sql -f pre-deploy-data.sql`.
+          # Contents are public RSS news only — no end-user PII (see docs/privacy.md).
+          if [ -z "${SUPABASE_DB_PASSWORD:-}" ]; then
+            echo "::error title=Deploy::SUPABASE_DB_PASSWORD is not set on the production environment — cannot take a pre-deploy backup. Refusing to continue."
+            exit 1
+          fi
+
+          supabase link --project-ref "$SUPABASE_PROJECT_REF"
+
+          mkdir -p /tmp/backup
+          supabase db dump --linked --role-only -f /tmp/backup/pre-deploy-roles.sql
+          supabase db dump --linked -f /tmp/backup/pre-deploy-schema.sql
+          supabase db dump --linked --data-only -f /tmp/backup/pre-deploy-data.sql
+          ls -l /tmp/backup
+
+      - name: Upload pre-deploy backup
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pre-deploy-backup-${{ github.sha }}
+          path: /tmp/backup/
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Apply migrations
         shell: bash

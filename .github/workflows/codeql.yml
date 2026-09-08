@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,6 +22,10 @@ jobs:
     name: CodeQL ${{ matrix.language }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write # upload analysis SARIF to the Security tab
+      actions: read # CodeQL reads workflow run metadata for the analysis
     strategy:
       # Analyze every language even if one fails — a Go failure must not hide
       # a TypeScript finding (or vice versa).
