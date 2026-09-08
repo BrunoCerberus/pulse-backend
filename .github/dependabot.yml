@@ -4,6 +4,7 @@ updates:
     directory: "/rss-worker"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
     # Batch minor/patch bumps into a single PR to cut review noise; major
     # bumps still open their own PR so they get individual scrutiny.
     groups:
@@ -15,6 +16,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 10
     groups:
       actions-minor-patch:
         patterns: ["*"]

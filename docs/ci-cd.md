@@ -14,11 +14,11 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `test.yml` | Push/PR to `master` | Go tests (single `-race -coverprofile` pass), risk-tiered coverage (**100% exact** for `internal/parser` + `internal/httputil`, **98%** floor on everything outside that tier), golangci-lint, Deno lint/fmt/tests + 90% Deno line-coverage floor. Committed fuzz seeds replay here as ordinary tests; new-input discovery is nightly. |
 | `security.yml` | Push/PR to `master` + weekly Mon 06:00 UTC | Secret scan (gitleaks + TruffleHog), gosec, govulncheck, Trivy; CycloneDX SBOM on merged/scheduled/manual states (not ephemeral PR revisions) |
 | `codeql.yml` | Push/PR to `master` + weekly Mon 00:00 UTC | GitHub CodeQL static analysis; uploads SARIF to the Security tab |
-| `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format |
+| `pr-checks.yml` | PR to `master` only | PR title conventional-commits, `go.mod` sync, migration filename/format, THREAT_MODEL.md currency (control-surface changes must ship a `THREAT_MODEL.md` edit or a `threat-model-not-applicable:` PR-body line), Dependency Review |
 | `migrations-ci.yml` | Push/PR touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**` | Two jobs. **Apply migrations + invariants**: boots the local Supabase stack, applies all migrations from scratch (`supabase db reset --no-seed`), replays this PR's new migrations **incrementally** on top of the base-branch schema (`supabase migration up`, the path production takes), `supabase db lint --fail-on error`, then runs `supabase/tests/security_invariants.sql`. **Edge Function contract tests** (also runs when `supabase/functions/**` changed): boots the local stack, applies all migrations, then hits all six endpoints over HTTP with the same status/shape/`Cache-Control` assertions as the production deploy smoke test — the functions are only otherwise verified in production. Both jobs are gated by a shared change-detection job and skipped-but-green otherwise |
 | `lint-meta.yml` | Push/PR | `actionlint` (+ shellcheck on run-blocks) for correctness and `zizmor` for workflow security (template injection, credential persistence, permissions, action pinning) over all workflows and composite actions |
-| `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | Gated by the `production` Environment (required-reviewer approval). Ordered steps under `set -e`: apply migrations (`supabase db push --dry-run` to log pending + surface drift, then the real push; **fails** if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → wait for `api-health` → smoke-test **all six endpoints** (status, response shape, `Cache-Control`). Concurrency group `deploy-production`, no cancel-in-progress. |
-| `watchdog.yml` | Every 2 hours + manual | Polls `api-source-health`; fails on circuit/stale/high-failure/DB-quota thresholds or when the latest successful fetch is over 180 minutes old |
+| `deploy.yml` | Push to `master` touching `supabase/migrations/**`, `supabase/functions/**`, or `supabase/config.toml` + manual | `preflight` gates on `Tests` + `Migrations CI` being green for the exact commit (fails closed; skipped on manual dispatch). Optional `deploy-staging` (repo var `STAGING_ENABLED=true` + `STAGING_SUPABASE_*` secrets) rehearses the full path on a throwaway project first. Production `deploy` is gated by the `production` Environment (required-reviewer approval); ordered steps under `set -e`: dump schema+data, encrypt with `BACKUP_ENCRYPTION_KEY`, upload as the `pre-deploy-backup-<sha>` artifact (30d) → apply migrations (`--dry-run` to log pending + surface drift, then the real push; **fails** if `SUPABASE_DB_PASSWORD` unset) → deploy Edge Functions → wait for `api-health` → smoke-test **all six endpoints**. Concurrency group `deploy-production`, no cancel-in-progress. |
+| `watchdog.yml` | Hourly + manual | Polls `api-source-health`; fails on circuit/stale/high-failure/DB-quota thresholds or when the latest successful fetch is over 180 minutes old |
 | `privacy-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | Unified LGPD/GDPR/CCPA guard rails: jurisdiction-specific PII patterns plus shared docs, retention, RLS, no-PII, and structural invariants |
 | `claude.yml` | Issue/PR comments, reviews, issue events | On-demand Claude Code agent (restricted to repo owner/members/collaborators) |
 | `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory Claude Code review of PR diffs; cannot approve or request changes |
@@ -39,6 +39,11 @@ and `lint-meta.yml` (1). The AI reviews still report on PRs but are not merge
 gates; SBOM generation no longer runs on PRs at all. Direct pushes to `master` are blocked; every change goes through a PR. Squash-only merges,
 `delete_branch_on_merge`, linear history, strict up-to-date branches, and
 required review-thread resolution. Repository admins can bypass via PR.
+
+`pr-checks.yml`'s `THREAT_MODEL.md currency` job runs on every PR and reports,
+but is **not yet in the ruleset's required set** — add `THREAT_MODEL.md currency`
+there to make it a merge gate (the ruleset is edited in the GitHub UI /
+`gh api`, not in this repo).
 
 ## Fuzzing
 
@@ -96,5 +101,12 @@ this on new workflows.
   `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`; the watchdog only needs
   `SUPABASE_URL`).
 - **`production` Environment** — `SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`,
-  `SUPABASE_DB_PASSWORD` (used by `deploy.yml` only; gated by required-reviewer
-  approval). See [setup.md](setup.md) for the full secret-configuration steps.
+  `SUPABASE_DB_PASSWORD`, `BACKUP_ENCRYPTION_KEY` (passphrase for the pre-deploy
+  dump; `openssl rand -base64 32`) — used by `deploy.yml` only; gated by
+  required-reviewer approval. See [setup.md](setup.md) for the full
+  secret-configuration steps. Decrypt a backup artifact with
+  `openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass env:BACKUP_ENCRYPTION_KEY -in <file>.enc -out <file>`.
+- **`staging` Environment** (optional) — repo variable `STAGING_ENABLED=true`
+  plus `STAGING_SUPABASE_ACCESS_TOKEN`, `STAGING_SUPABASE_PROJECT_REF`,
+  `STAGING_SUPABASE_DB_PASSWORD`, `STAGING_SUPABASE_URL`. When unset, the
+  `deploy-staging` job is skipped and production deploys unchanged.

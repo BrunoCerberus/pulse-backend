@@ -210,9 +210,10 @@ jobs:
           set -o pipefail
           deno test --frozen --allow-env --allow-net --coverage=cov_profile _shared/ api-articles/ api-categories/ api-sources/ api-search/ api-health/ api-source-health/ 2>&1 | tee /tmp/deno-test.log
 
-      # Enforce a line-coverage floor on the Edge Functions (currently ~96.8%).
-      # Mirrors the Go side's coverage gate so the TS layer can't silently
-      # regress. Floor is set below today's number to leave normal headroom.
+      # Enforce a line-coverage floor on the Edge Functions. The floor sits well
+      # below the current number (see this job's summary for today's value) to
+      # leave normal headroom — it exists to catch a real regression, not to pin
+      # an exact percentage. Mirrors the Go side's coverage gate.
       - name: Check Edge Function coverage
         if: success()
         working-directory: ./supabase/functions

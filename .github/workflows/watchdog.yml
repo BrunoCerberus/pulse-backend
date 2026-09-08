@@ -9,8 +9,11 @@ name: Source Health Watchdog
 
 on:
   schedule:
-    # Every 2 hours at :15 past the hour (staggered from the fetch cron).
-    - cron: '15 */2 * * *'
+    # Hourly at :15 past the hour (staggered from the every-2h fetch cron).
+    # Hourly rather than 2-hourly so a scheduler-wide stall or a broken worker
+    # binary on master surfaces within ~1h instead of ~3h — the job is cheap
+    # (one HTTP call) and the thresholds already tolerate a single missed fetch.
+    - cron: '15 * * * *'
   workflow_dispatch:
 
 permissions:

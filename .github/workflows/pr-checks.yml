@@ -5,6 +5,7 @@ name: PR Checks
 #     the commit message on master, so bad titles rot the history).
 #   - go.mod / go.sum must be in sync — catches missed `go mod tidy`.
 #   - Migration filenames follow NNN_*.sql with no gaps in the sequence.
+#   - THREAT_MODEL.md must move in the same PR that changes a security control.
 #
 # Runs in parallel with test.yml and security.yml on every PR against master.
 
@@ -171,6 +172,80 @@ jobs:
           fi
 
           exit $bad
+
+  # ---------------------------------------------------------------------------
+  # THREAT_MODEL.md currency
+  # CLAUDE.md requires THREAT_MODEL.md to be updated in the same PR that changes
+  # any control it documents. Nothing enforced that — this closes it. If a PR
+  # touches a control surface (httputil, parser, migrations, the Edge Function
+  # shared proxy layer) it must also touch THREAT_MODEL.md, OR carry an explicit
+  # `threat-model-not-applicable:` line in the PR body with a one-line reason.
+  # ---------------------------------------------------------------------------
+  threat-model-currency:
+    name: THREAT_MODEL.md currency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect control vs threat-model changes
+        id: changes
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            controls:
+              - 'rss-worker/internal/httputil/**'
+              - 'rss-worker/internal/parser/**'
+              - 'supabase/migrations/**'
+              - 'supabase/functions/_shared/**'
+            threatmodel:
+              - 'THREAT_MODEL.md'
+
+      - name: Require THREAT_MODEL.md alongside control changes
+        shell: bash
+        env:
+          CONTROLS: ${{ steps.changes.outputs.controls }}
+          THREATMODEL: ${{ steps.changes.outputs.threatmodel }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+
+          if [ "$CONTROLS" != "true" ]; then
+            echo "::notice title=THREAT_MODEL.md currency::no control files changed — not applicable"
+            {
+              echo "## THREAT_MODEL.md currency ✅"
+              echo ""
+              echo "- No changes under \`internal/httputil\`, \`internal/parser\`, \`supabase/migrations\`, or \`supabase/functions/_shared\` — nothing to cross-check."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$THREATMODEL" = "true" ]; then
+            echo "::notice title=THREAT_MODEL.md currency::control change ships with a THREAT_MODEL.md update"
+            {
+              echo "## THREAT_MODEL.md currency ✅"
+              echo ""
+              echo "- This PR changes a control surface and updates \`THREAT_MODEL.md\` in the same PR."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if printf '%s' "$PR_BODY" | grep -qiE '^threat-model-not-applicable:'; then
+            reason=$(printf '%s' "$PR_BODY" | grep -iE '^threat-model-not-applicable:' | head -1)
+            echo "::notice title=THREAT_MODEL.md currency::waived in PR body — ${reason}"
+            {
+              echo "## THREAT_MODEL.md currency ✅ (waived)"
+              echo ""
+              echo "- Control surface changed without a \`THREAT_MODEL.md\` edit; PR body waives it: \`${reason}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::error title=THREAT_MODEL.md currency::this PR changes a security control surface (httputil / parser / migrations / _shared) but does not touch THREAT_MODEL.md. Update it in the same PR (CLAUDE.md), or add a line 'threat-model-not-applicable: <reason>' to the PR body."
+          exit 1
 
   # ---------------------------------------------------------------------------
   # Dependency Review
