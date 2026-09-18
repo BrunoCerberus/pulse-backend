@@ -140,7 +140,7 @@ jobs:
           # Pinned so a compromise of the golangci-lint release pipeline
           # can't land a malicious binary on the next run. Bump via
           # Dependabot (config in .github/dependabot.yml).
-          version: v2.4.0
+          version: v2.13.2
           working-directory: ./rss-worker
 
       # golangci-lint annotates its own findings on failure; this records the
@@ -149,11 +149,11 @@ jobs:
         if: success()
         shell: bash
         run: |
-          echo "::notice title=Go Lint::golangci-lint v2.4.0 passed — no findings"
+          echo "::notice title=Go Lint::golangci-lint v2.13.2 passed — no findings"
           {
             echo "## Go Lint ✅"
             echo ""
-            echo "- golangci-lint **v2.4.0**: no findings"
+            echo "- golangci-lint **v2.13.2**: no findings"
           } >> "$GITHUB_STEP_SUMMARY"
 
   deno-tests:

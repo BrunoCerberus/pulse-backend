@@ -1,11 +1,11 @@
 module github.com/pulsefeed/rss-worker
 
-go 1.25.14
+go 1.26.6
 
 require (
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/mmcdole/gofeed v1.4.2
-	golang.org/x/time v0.15.0
+	golang.org/x/time v0.16.0
 )
 
 require (
