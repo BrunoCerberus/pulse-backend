@@ -167,8 +167,9 @@ When editing any workflow, two things are enforced by `lint-meta.yml` (a require
 
 `claude-code-review.yml` and `security-review.yml` are **self-locking**: `claude-code-action`
 refuses to run from a workflow file that differs from the one on `master`, so a PR that edits
-either shows a failed run until it merges. Expected. Both reviews are advisory and neither is a
-required check, so the red run does not block the merge — don't "fix" it by reverting the edit.
+either shows a failed run until it merges. Expected. `claude-code-review` approves or requests
+changes and `security-review` is advisory, but neither is a required check (the ruleset requires 0
+approvals), so the red run does not block the merge — don't "fix" it by reverting the edit.
 
 ## Data Protection Conformance
 
