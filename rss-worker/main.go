@@ -389,7 +389,7 @@ func runFetch(baseCtx context.Context, db Store, rssParser *parser.Parser, maxCo
 		return fmt.Errorf("failed to get sources: %w", err)
 	}
 
-	logger.Infof("📡 Found %d active sources", len(sources))
+	logger.Infof("📡 Found %d sources due for fetch", len(sources))
 
 	// Process sources concurrently with a semaphore
 	results := make(chan models.FetchResult, len(sources))

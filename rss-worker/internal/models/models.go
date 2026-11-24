@@ -68,7 +68,16 @@ func (s *Source) CategorySlug() string {
 	return ""
 }
 
-// ShouldFetch returns true if the source is due for fetching based on its interval.
+// fetchScheduleTolerance absorbs GitHub Actions cron start jitter. Intervals
+// are multiples of the every-2h fetch cron, so consecutive runs land a few
+// minutes either side of one interval apart (12:09 then 14:06). A strict
+// comparison skips every source on the early run, leaving the fleet unfetched
+// for ~4h. Must stay well under the 2h cron period, or sources would be
+// fetched on back-to-back runs.
+const fetchScheduleTolerance = 30 * time.Minute
+
+// ShouldFetch returns true if the source is due for fetching based on its
+// interval, less fetchScheduleTolerance.
 func (s *Source) ShouldFetch() bool {
 	if s.LastFetched == nil {
 		return true
@@ -77,7 +86,7 @@ func (s *Source) ShouldFetch() bool {
 	if interval <= 0 {
 		interval = 2 // default 2 hours
 	}
-	return time.Since(*s.LastFetched) >= time.Duration(interval)*time.Hour
+	return time.Since(*s.LastFetched) >= time.Duration(interval)*time.Hour-fetchScheduleTolerance
 }
 
 // Article represents a news article to be stored in the database.

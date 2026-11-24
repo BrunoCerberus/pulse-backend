@@ -51,7 +51,7 @@ View workflow runs:
 | Metric | Normal Range | Alert Threshold |
 |--------|--------------|-----------------|
 | Articles inserted per run | 5-50 | 0 for 3+ consecutive runs |
-| Sources processed | 136 (all configured sources; live active count may be lower) | < 100 |
+| Sources processed | Varies per run: only active sources due under `fetch_interval_hours` (2h default, 6h for some categories), so 6h sources join every third run | 0 on a scheduled run |
 | Errors per run | 0-2 | > 5 |
 | Fetch duration | 1-3 minutes | > 10 minutes |
 | Latest successful fetch age | < 2 hours | > 180 minutes |
