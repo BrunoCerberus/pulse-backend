@@ -146,6 +146,9 @@ func FuzzURLSafety(f *testing.F) {
 		if !safe {
 			return
 		}
+		if !utf8.ValidString(s) {
+			t.Fatalf("isSafeArticleURL(%q) accepted invalid UTF-8, which storage would rewrite", s)
+		}
 		// Oracles independent of the guard's own normalisation: a client
 		// drops one trailing root dot before reading an IP literal, never
 		// sends a zone ID off-link, and resolves "localhost" on-device.

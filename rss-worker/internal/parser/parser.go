@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmcdole/gofeed"
 	"github.com/pulsefeed/rss-worker/internal/httputil"
@@ -569,7 +570,12 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentC
 // (itemToArticle), thumbnail / RSS-image / media (isSafeMediaURL), and og:image
 // (isAcceptableOGImage) — so all four enforce one consistent policy.
 func isSafeArticleURL(raw string) bool {
-	if urlHasUnsafeRune(raw) {
+	// Invalid UTF-8 is refused outright. The URL is JSON-encoded for storage,
+	// which rewrites invalid bytes to U+FFFD, so the checks below would judge a
+	// different string from the one stored and served; and x/net/idna's
+	// handling of invalid UTF-8 varies with its Unicode tables (chosen by Go
+	// version), so the host check would too.
+	if !utf8.ValidString(raw) || urlHasUnsafeRune(raw) {
 		return false
 	}
 	u, err := url.Parse(raw)

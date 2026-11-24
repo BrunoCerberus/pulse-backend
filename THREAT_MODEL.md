@@ -228,8 +228,10 @@ rather than line numbers so this stays accurate as code moves.
 - **C-URLSAFE** — `isSafeArticleURL` is the single storage guard shared by all
   four publisher-URL sinks (article link, thumbnail, media via `isSafeMediaURL`,
   og:image via `isAcceptableOGImage`). It rejects non-`http(s)` schemes, empty
-  hosts, control / bidi-override codepoints (`urlHasUnsafeRune`), over-`maxURLLen`
-  URLs, **embedded userinfo** (`trusted.com@evil/` phishing spoof), and **any
+  hosts, control / bidi-override codepoints (`urlHasUnsafeRune`), **invalid
+  UTF-8** (storage's JSON encoding would rewrite it to U+FFFD, so the guard
+  would judge a different string from the one served, and x/net/idna's handling
+  of it varies by Go version), over-`maxURLLen` URLs, **embedded userinfo** (`trusted.com@evil/` phishing spoof), and **any
   forbidden or obfuscated IP-literal host** — `hostIsForbiddenIPLiteral` runs
   `IsForbiddenIP` on canonical literals and decodes inet_aton decimal/hex/octal
   forms (`2852039166`, `0x7f000001`) that `net.ParseIP` misses but iOS

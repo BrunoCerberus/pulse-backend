@@ -1600,7 +1600,14 @@ func TestIsSafeArticleURL(t *testing.T) {
 		{"http://ＬＯＣＡＬＨＯＳＴ/x", false},       // fullwidth letters map to "localhost"
 		{"http://admin.localhost/x", false}, // RFC 6761 reserves *.localhost for loopback
 		{"http://router.local/x", false},    // RFC 6762 mDNS — resolved on the user's LAN
-		{"http://a\xffb.example/x", false},  // invalid UTF-8 host fails IDNA, as it does in WebKit
+		// Invalid UTF-8 anywhere is refused before parsing: storage would
+		// rewrite it to U+FFFD, and x/net/idna on Go < 1.27 punycodes it
+		// without an error instead of refusing it.
+		{"http://a\xffb.example/x", false},
+		{"https://example.com/a\xffb.jpg", false},
+		// A host IDNA refuses (U+FFFD is disallowed) can't be loaded by the
+		// client either, so it is not stored.
+		{"http://a�b.example/x", false},
 		// Legitimate hosts must survive the normalisation.
 		{"https://www.bbc.co.uk/news/1", true},
 		{"https://EXAMPLE.COM/a", true},
