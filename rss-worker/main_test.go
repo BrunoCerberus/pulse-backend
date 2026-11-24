@@ -1855,6 +1855,10 @@ func TestRunContentBackfill_BudgetIsPerSource(t *testing.T) {
 		w.Write([]byte(page))
 	}))
 	defer webServer.Close()
+	brokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer brokenServer.Close()
 
 	parser.SetHostRateLimit(10_000, 10_000)
 	defer parser.SetHostRateLimit(parser.DefaultHostRPS, parser.DefaultHostBurst)
@@ -1869,6 +1873,10 @@ func TestRunContentBackfill_BudgetIsPerSource(t *testing.T) {
 			})
 		}
 	}
+	// A genuine extraction failure in the same run, to tell the two apart.
+	articles = append(articles, database.ArticleForContentBackfill{
+		URLHash: "src-a-broken", URL: brokenServer.URL, SourceID: "src-a",
+	})
 	db := &mockStore{contentArticles: articles}
 
 	if err := runContentBackfill(context.Background(), db, 2); err != nil {
@@ -1887,10 +1895,12 @@ func TestRunContentBackfill_BudgetIsPerSource(t *testing.T) {
 			t.Errorf("%s wrote %d bytes, want 0 < n <= %d", src, perSource[src], parser.MaxFeedBytes)
 		}
 	}
-	// Refused articles count as failed attempts, so a source that keeps
-	// overrunning its budget ages out after BACKFILL_MAX_ATTEMPTS.
-	if len(db.bumpedContent) == 0 {
-		t.Error("expected over-budget articles to be bumped as failed attempts")
+	// A budget refusal is not the article's failure: charging it an attempt
+	// would let a source's tail articles exhaust BACKFILL_MAX_ATTEMPTS on
+	// budget alone and never get content, though a later run would fit them.
+	// Real extraction failures are still charged.
+	if got := strings.Join(db.bumpedContent, ","); got != "src-a-broken" {
+		t.Errorf("bumped %q, want only the genuinely failed article src-a-broken", got)
 	}
 }
 

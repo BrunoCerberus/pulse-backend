@@ -1600,6 +1600,10 @@ func TestIsSafeArticleURL(t *testing.T) {
 		{"http://ＬＯＣＡＬＨＯＳＴ/x", false},       // fullwidth letters map to "localhost"
 		{"http://admin.localhost/x", false}, // RFC 6761 reserves *.localhost for loopback
 		{"http://router.local/x", false},    // RFC 6762 mDNS — resolved on the user's LAN
+		{"http://router/x", false},          // dotless: search domain / LLMNR / mDNS, never public
+		{"http://intranet./x", false},       // dotless once the root dot goes
+		{"http://nas.home.arpa/x", false},   // RFC 8375 home-network names
+		{"http://db.internal/x", false},     // ICANN-reserved private-use TLD
 		// Invalid UTF-8 anywhere is refused before parsing: storage would
 		// rewrite it to U+FFFD, and x/net/idna on Go < 1.27 punycodes it
 		// without an error instead of refusing it.

@@ -732,23 +732,41 @@ const contentFlushBatchSize = 50
 // (parser.MaxFeedBytes). Without it this path undoes that bound: the fetch
 // path stores articles without content once a feed's budget is spent, and a
 // hostile feed can also serve short pages at fetch time and huge ones here.
+// An article refused for budget is deferred, not failed: it is not charged a
+// backfill attempt, so a later run with a fresh budget can still fill it.
 func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) error {
 	contentExtractor := parser.NewContentExtractor()
 
 	var (
-		mu      sync.Mutex
-		pending []database.ContentUpdate
-		spent   = map[string]int{}
+		mu       sync.Mutex
+		pending  []database.ContentUpdate
+		spent    = map[string]int{}
+		deferred = map[string]bool{}
 	)
 	queue := func(sourceID string, update database.ContentUpdate) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		if spent[sourceID]+len(update.Content) > parser.MaxFeedBytes {
+			deferred[update.URLHash] = true
 			return false
 		}
 		spent[sourceID] += len(update.Content)
 		pending = append(pending, update)
 		return true
+	}
+	bumpFailures := func(hashes []string, kind string) error {
+		mu.Lock()
+		failed := make([]string, 0, len(hashes))
+		for _, h := range hashes {
+			if !deferred[h] {
+				failed = append(failed, h)
+			}
+		}
+		mu.Unlock()
+		if len(failed) == 0 {
+			return nil
+		}
+		return db.BumpBackfillAttempts(failed, kind)
 	}
 
 	err := runBackfill(ctx, backfillConfig[database.ArticleForContentBackfill]{
@@ -766,7 +784,7 @@ func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) err
 			return processContentBackfill(ctx, contentExtractor, article, queue)
 		},
 		hashOf:       func(a database.ArticleForContentBackfill) string { return a.URLHash },
-		bumpAttempts: db.BumpBackfillAttempts,
+		bumpAttempts: bumpFailures,
 	})
 
 	// Flush whatever was queued even on error/cancel — same rationale as the
@@ -785,7 +803,7 @@ func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) err
 // from a single article's webpage. If valid content is extracted, enqueues
 // a ContentUpdate for the caller to batch-write later. Returns true if an
 // update was queued; queue refuses it once the article's source has spent its
-// byte budget for the run.
+// byte budget for the run (the caller then defers it rather than failing it).
 //
 // Applies parser.SanitizeContent with the per-source-aware effective cap so
 // backfilled content matches what initial-parse writes would have stored —

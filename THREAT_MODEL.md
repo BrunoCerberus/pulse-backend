@@ -240,8 +240,9 @@ rather than line numbers so this stays accurate as code moves.
   (`hostIsUnsafeForClient` → `clientHost`): WHATWG/UTS #46 mapping (WebKit's
   parser — fullwidth digits and ideographic full stops become ASCII), one
   trailing root dot dropped (`169.254.169.254.`), zone-scoped / malformed
-  bracket literals refused, and on-device names refused (`localhost`,
-  `*.localhost`, `*.local`). Checking the raw string let every one of those
+  bracket literals refused, and names public DNS can never answer refused
+  (`isLocalOnlyName`: dotless names, `localhost`/`*.localhost`, `*.local`,
+  `*.home.arpa`, `*.internal`). Checking the raw string let every one of those
   reach an internal address once iOS parsed it. (The worker's own fetch is
   guarded at the dial layer; this guards the value that is *served to iOS*.)
 - **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
@@ -360,6 +361,16 @@ rather than line numbers so this stays accurate as code moves.
 
 - A compromised *trusted* publisher can serve malicious-but-well-formed content;
   we cap, sanitize, and SSRF-guard it but cannot vouch for editorial integrity.
+- C-URLSAFE judges a stored URL's host *lexically*; it cannot judge what a
+  client's resolver will answer. A public name whose DNS points inside
+  (`127.0.0.1.nip.io`, a rebinding domain) or an unreserved LAN suffix
+  (`.lan`, `.home`, `.corp`) still passes. That leaves a blind GET from the
+  user's device, with no response read back, further gated by iOS ATS.
+- C-LIMITS bounds a hostile feed, it does not exclude one: a feed that rotates
+  its links can still add `MaxArticlesPerFeed` rows and `MaxFeedBytes` of
+  text per fetch (plus the same per-source budget in the daily content
+  backfill) until it is deactivated. The watchdog's DB-quota alarm is the
+  detection backstop.
 - Edge Functions run on Supabase's platform; we inherit its tenant isolation.
 - LLM review bots are **not** hardened against prompt injection, hence the
   fork-gate; a malicious *trusted-author* PR is out of scope (single maintainer).

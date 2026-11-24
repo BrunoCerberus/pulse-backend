@@ -378,7 +378,13 @@ BEGIN
     FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
         FOREACH tbl IN ARRAY ARRAY['public.articles', 'public.sources', 'public.categories'] LOOP
             FOREACH priv IN ARRAY ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'] LOOP
-                IF has_table_privilege(r, tbl, priv) THEN
+                -- INSERT/UPDATE can also be granted per column, which
+                -- has_table_privilege does not see; has_any_column_privilege
+                -- covers both. DELETE/TRUNCATE exist only at table level.
+                IF CASE WHEN priv IN ('INSERT', 'UPDATE')
+                        THEN has_any_column_privilege(r, tbl, priv)
+                        ELSE has_table_privilege(r, tbl, priv)
+                   END THEN
                     RAISE EXCEPTION 'INVARIANT 9 FAILED: % has % on % (migration 035/037 write-REVOKE regressed)', r, priv, tbl;
                 END IF;
             END LOOP;

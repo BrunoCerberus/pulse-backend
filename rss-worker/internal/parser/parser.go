@@ -252,15 +252,15 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 	}, nil
 }
 
-// capNewest keeps the max newest articles by PublishedAt, in feed order.
+// capNewest keeps the limit newest articles by PublishedAt, in feed order.
 // Newest rather than first: some feeds (notably podcast back catalogues) list
 // oldest-first, and a head cut would then drop every new item forever.
-func capNewest(articles []*models.Article, max int) []*models.Article {
-	if len(articles) <= max {
+func capNewest(articles []*models.Article, limit int) []*models.Article {
+	if len(articles) <= limit {
 		return articles
 	}
 	keep := make([]bool, len(articles))
-	for _, i := range newestFirst(articles)[:max] {
+	for _, i := range newestFirst(articles)[:limit] {
 		keep[i] = true
 	}
 	return keepMarked(articles, keep)
@@ -653,12 +653,22 @@ func clientHost(host string) (h string, ok bool) {
 	return strings.TrimSuffix(ascii, "."), true
 }
 
-// isLocalOnlyName reports whether h (from clientHost) is a special-use name
-// the device resolves without public DNS: localhost and *.localhost (RFC 6761,
-// loopback) or *.local (RFC 6762, multicast DNS on the user's LAN). No
-// publisher URL legitimately uses one.
+// isLocalOnlyName reports whether h (from clientHost) is a name public DNS
+// can never answer, so it can only resolve to the user's device or network: a
+// dotless name (search domains, LLMNR, mDNS; ICANN bars dotless public
+// names), localhost and *.localhost (RFC 6761, loopback), *.local (RFC 6762,
+// multicast DNS), *.home.arpa (RFC 8375, home networks) or *.internal
+// (ICANN's private-use reservation). No publisher URL legitimately uses one.
 func isLocalOnlyName(h string) bool {
-	return h == "localhost" || strings.HasSuffix(h, ".localhost") || strings.HasSuffix(h, ".local")
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	for _, suffix := range []string{".localhost", ".local", ".home.arpa", ".internal"} {
+		if strings.HasSuffix(h, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // hostIsForbiddenIPLiteral reports whether host (a url.Hostname() result) is an
