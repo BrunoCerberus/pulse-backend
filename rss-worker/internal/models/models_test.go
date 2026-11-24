@@ -238,13 +238,23 @@ func TestSource_ShouldFetch(t *testing.T) {
 			},
 			expected: true,
 		},
+		// Literal times, not fetchScheduleTolerance, so changing the constant
+		// fails here: a 2h source is due from 1h30m.
 		{
-			name: "beyond tolerance is still not due",
+			name: "just short of interval minus tolerance is not due",
 			source: Source{
 				FetchIntervalHours: 2,
-				LastFetched:        timePtr(time.Now().Add(-2*time.Hour + fetchScheduleTolerance + 10*time.Minute)),
+				LastFetched:        timePtr(time.Now().Add(-(1*time.Hour + 29*time.Minute))),
 			},
 			expected: false,
+		},
+		{
+			name: "just past interval minus tolerance is due",
+			source: Source{
+				FetchIntervalHours: 2,
+				LastFetched:        timePtr(time.Now().Add(-(1*time.Hour + 31*time.Minute))),
+			},
+			expected: true,
 		},
 		{
 			name: "6h source is not due two runs later",
