@@ -221,6 +221,49 @@ func TestSource_ShouldFetch(t *testing.T) {
 			},
 			expected: false,
 		},
+		{
+			// The 2026-11-24 12:09 -> 14:06 cron pair that skipped the whole fleet.
+			name: "cron jitter just under 2h interval still fetches",
+			source: Source{
+				FetchIntervalHours: 2,
+				LastFetched:        timePtr(time.Now().Add(-(1*time.Hour + 57*time.Minute))),
+			},
+			expected: true,
+		},
+		{
+			name: "cron jitter just under 6h interval still fetches",
+			source: Source{
+				FetchIntervalHours: 6,
+				LastFetched:        timePtr(time.Now().Add(-(5*time.Hour + 50*time.Minute))),
+			},
+			expected: true,
+		},
+		// Literal times, not fetchScheduleTolerance, so changing the constant
+		// fails here: a 2h source is due from 1h30m.
+		{
+			name: "just short of interval minus tolerance is not due",
+			source: Source{
+				FetchIntervalHours: 2,
+				LastFetched:        timePtr(time.Now().Add(-(1*time.Hour + 29*time.Minute))),
+			},
+			expected: false,
+		},
+		{
+			name: "just past interval minus tolerance is due",
+			source: Source{
+				FetchIntervalHours: 2,
+				LastFetched:        timePtr(time.Now().Add(-(1*time.Hour + 31*time.Minute))),
+			},
+			expected: true,
+		},
+		{
+			name: "6h source is not due two runs later",
+			source: Source{
+				FetchIntervalHours: 6,
+				LastFetched:        timePtr(time.Now().Add(-(4*time.Hour + 10*time.Minute))),
+			},
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
