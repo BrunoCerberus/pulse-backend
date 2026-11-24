@@ -40,7 +40,7 @@ Pulse iOS App
 
 - `rss-worker/` — Go worker (`go run . [cleanup|backfill-images|backfill-content]`);
   `internal/{config,models,parser,database,httputil,logger}`
-- `supabase/migrations/001–036_*.sql` (applied in order, annotated history in `docs/setup.md`) ·
+- `supabase/migrations/001–037_*.sql` (applied in order, annotated history in `docs/setup.md`) ·
   `supabase/functions/` — Edge Functions + `_shared/` · `supabase/tests/security_invariants.sql`
 - `scripts/check-endpoints.sh` — the shared six-endpoint contract suite run by the
   migrations-ci contract job AND the production deploy smoke test (one file, two callers)

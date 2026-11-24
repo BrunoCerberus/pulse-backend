@@ -593,6 +593,9 @@ type ArticleForContentBackfill struct {
 	URL     string  `json:"url"`      // Original article URL to extract content from
 	Content *string `json:"content"`  // Current content (nil or empty for backfill candidates)
 
+	// SourceID keys the backfill's per-source byte budget (C-LIMITS).
+	SourceID string `json:"source_id"`
+
 	// Source is the PostgREST-embedded sub-object returned by
 	// ?select=...,sources(max_content_length). Surfaces only the cap so the
 	// backfill clamp can apply the same MIN(source-cap, global-cap) rule the
@@ -679,7 +682,7 @@ func (c *Client) GetArticlesNeedingContent(limit, maxAttempts, cooldownHours, ma
 		andClauses += ",created_at.gte." + ageCutoff
 	}
 	filter := "and=(" + andClauses + ")"
-	url := fmt.Sprintf("%s/articles?select=url_hash,url,content,sources(max_content_length)&%s&limit=%d", c.baseURL, filter, limit)
+	url := fmt.Sprintf("%s/articles?select=url_hash,url,content,source_id,sources(max_content_length)&%s&limit=%d", c.baseURL, filter, limit)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

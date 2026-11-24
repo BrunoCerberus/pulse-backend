@@ -113,7 +113,9 @@ the vulnerability classes worth targeting during discovery.
 | Feed/redirect points at `localhost`/RFC-1918/link-local/cloud-metadata to reach internal services (SSRF) | **SSRF** | C-SSRF |
 | Hostile DNS rebinds between validation and connect (TOCTOU) | **SSRF** | C-SSRF |
 | og:image URL coerces iOS clients to probe internal addresses | **SSRF** | C-OGIMG |
+| Stored URL host the guard reads as public but the client parses as internal (`10.0.0.1.`, fullwidth digits, `localhost`, zone IDs) | **SSRF** | C-URLSAFE |
 | Multi-gigabyte feed / page body exhausts worker memory (DoS) | **DoS** | C-LIMITS |
+| One feed's item count / text volume fills the DB past the free-tier quota (project-wide outage) | **DoS** | C-LIMITS |
 | Feed-supplied MIME type smuggles CRLF / extra headers | **Injection** | C-SANITIZE |
 | Oversized/overflowing media duration corrupts numeric fields | **DoS** | C-SANITIZE |
 | Control / bidi-override codepoints spoof rendering on iOS | **Injection** | C-SANITIZE |
@@ -197,7 +199,17 @@ rather than line numbers so this stays accurate as code moves.
   caps (title 500 / summary 4096 / content 200K / author 200 / URL 2048). The
   content extractor also bounds go-readability's node count
   (`MaxElemsToParse = 100K`) so a pathological DOM can't pin a worker on the
-  super-linear scoring passes within the byte cap.
+  super-linear scoring passes within the byte cap. Per feed per fetch,
+  `ParseFeed` keeps at most `MaxArticlesPerFeed` (100) articles — the newest
+  by date, so oldest-first feeds still ingest new items — *before* enrichment,
+  which also bounds the og:image / content fetches a feed can trigger, then
+  `fitByteBudget` holds the feed's stored text to `MaxFeedBytes` (2 MB),
+  newest-first, storing older items without content rather than dropping
+  them. The body cap bounds worker *memory*, not rows: without these, one
+  50 MB feed of tiny items inserts hundreds of thousands of rows in a run. The
+  content backfill (`runContentBackfill`) applies the same per-source budget,
+  so serving short pages at fetch time and huge ones at backfill time can't
+  route around it.
 - **C-SANITIZE** — `internal/parser/parser.go`: `sanitizeText` strips C0/C1
   control + bidi-override codepoints; `sanitizeMIMEType` enforces a tight MIME
   regex (no CRLF); `parseDuration` bounds each part before combining (so the
@@ -222,8 +234,14 @@ rather than line numbers so this stays accurate as code moves.
   `IsForbiddenIP` on canonical literals and decodes inet_aton decimal/hex/octal
   forms (`2852039166`, `0x7f000001`) that `net.ParseIP` misses but iOS
   `getaddrinfo` resolves, so a stored URL can't coerce a client into an internal
-  probe. (The worker's own fetch is guarded at the dial layer; this guards the
-  value that is *served to iOS*.)
+  probe. Hosts are judged **as the client parses them**
+  (`hostIsUnsafeForClient` → `clientHost`): WHATWG/UTS #46 mapping (WebKit's
+  parser — fullwidth digits and ideographic full stops become ASCII), one
+  trailing root dot dropped (`169.254.169.254.`), zone-scoped / malformed
+  bracket literals refused, and on-device names refused (`localhost`,
+  `*.localhost`, `*.local`). Checking the raw string let every one of those
+  reach an internal address once iOS parsed it. (The worker's own fetch is
+  guarded at the dial layer; this guards the value that is *served to iOS*.)
 - **C-CANON** — `canonicalizeURL` drops the fragment, lowercases scheme/host,
   and sorts query parameters before SHA-256 hashing, so dedup can't be bypassed.
   Sorting splits the raw query on `&` only (not the lossy `url.Values` round-trip,
@@ -254,9 +272,12 @@ rather than line numbers so this stays accurate as code moves.
 - **C-SEARCHCAP** — `search_articles` rejects empty/whitespace/>200-char queries
   and runs under `statement_timeout = '3s'` with an explicit projection.
 - **C-BATCHCAP** — `bump_backfill_attempts` rejects arrays over 10K entries.
-- **C-WRITEREVOKE** — `sources`/`categories` carry a table-level write REVOKE
-  (migration 035) so the GRANT boundary, not just RLS, blocks anon/authenticated
-  writes.
+- **C-WRITEREVOKE** — `articles`/`sources`/`categories` carry a table-level
+  `INSERT/UPDATE/DELETE/TRUNCATE` REVOKE (migrations 035 + 037) so the GRANT
+  boundary, not just RLS, blocks anon/authenticated writes. `TRUNCATE` is
+  included because RLS never applies to it. (Migration 027's column grants on
+  `articles` were SELECT-only, so until 037 RLS was that table's only write
+  barrier.)
 - The SQL invariants in `supabase/tests/security_invariants.sql` (11 blocks)
   assert C-GRANT/C-VIEW/C-DEFINER/C-CALLERGATE/C-SEARCHCAP/C-WRITEREVOKE on every
   migration run — including the base-table `articles` column grant (not just the

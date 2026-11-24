@@ -205,9 +205,9 @@ func TestFlushImageUpdates_PropagatesBatchError(t *testing.T) {
 
 // captureContentQueue returns a queue closure that appends to a shared slice
 // the caller can inspect after the run.
-func captureContentQueue() (func(database.ContentUpdate), *[]database.ContentUpdate) {
+func captureContentQueue() (func(string, database.ContentUpdate) bool, *[]database.ContentUpdate) {
 	var queued []database.ContentUpdate
-	return func(u database.ContentUpdate) { queued = append(queued, u) }, &queued
+	return func(_ string, u database.ContentUpdate) bool { queued = append(queued, u); return true }, &queued
 }
 
 func TestProcessContentBackfill_Success(t *testing.T) {
@@ -1797,5 +1797,118 @@ func TestMainBinary_BackfillContentError(t *testing.T) {
 	})
 	if exit != 1 {
 		t.Errorf("exit = %d, want 1 (stderr: %s)", exit, stderr)
+	}
+}
+
+// --- C-LIMITS: the content backfill shares the per-source byte budget ---
+
+// The fetch path bounds what one feed stores per run, but the daily content
+// backfill re-fetches every article stored without content and writes up to
+// maxContentLen runes for each. Without the same per-source budget, a hostile
+// feed defeats the fetch-path bound by serving short pages at fetch time and
+// huge ones at backfill time.
+func TestRunContentBackfill_EnforcesPerSourceByteBudget(t *testing.T) {
+	const wantMaxSourceBytes = 2 << 20
+	page := `<html><head><title>a</title></head><body><article><p>` +
+		strings.Repeat("lorem ", 45_000) + // ~270 KB of text, clamped to 200K runes
+		`</p></article></body></html>`
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(page))
+	}))
+	defer webServer.Close()
+
+	parser.SetHostRateLimit(10_000, 10_000)
+	defer parser.SetHostRateLimit(parser.DefaultHostRPS, parser.DefaultHostBurst)
+
+	var articles []database.ArticleForContentBackfill
+	for i := 0; i < 15; i++ { // 15 × 200 KB ≈ 3 MB from one source
+		articles = append(articles, database.ArticleForContentBackfill{
+			URLHash: fmt.Sprintf("hash-%d", i),
+			URL:     webServer.URL,
+		})
+	}
+	db := &mockStore{contentArticles: articles}
+
+	if err := runContentBackfill(context.Background(), db, 2); err != nil {
+		t.Fatalf("runContentBackfill: %v", err)
+	}
+	total := 0
+	for _, u := range db.batchedContent {
+		total += len(u.Content)
+	}
+	if len(db.batchedContent) == 0 {
+		t.Fatal("budget starved the source entirely; expected some content to be written")
+	}
+	if total > wantMaxSourceBytes {
+		t.Fatalf("backfill wrote %d bytes for one source, want <= %d", total, wantMaxSourceBytes)
+	}
+}
+
+// The budget is per source, not per run: one hostile source exhausting its
+// allowance must not starve the others.
+func TestRunContentBackfill_BudgetIsPerSource(t *testing.T) {
+	page := `<html><head><title>a</title></head><body><article><p>` +
+		strings.Repeat("lorem ", 45_000) + `</p></article></body></html>`
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(page))
+	}))
+	defer webServer.Close()
+
+	parser.SetHostRateLimit(10_000, 10_000)
+	defer parser.SetHostRateLimit(parser.DefaultHostRPS, parser.DefaultHostBurst)
+
+	var articles []database.ArticleForContentBackfill
+	for _, src := range []string{"src-a", "src-b"} {
+		for i := 0; i < 15; i++ {
+			articles = append(articles, database.ArticleForContentBackfill{
+				URLHash:  fmt.Sprintf("%s-%d", src, i),
+				URL:      webServer.URL,
+				SourceID: src,
+			})
+		}
+	}
+	db := &mockStore{contentArticles: articles}
+
+	if err := runContentBackfill(context.Background(), db, 2); err != nil {
+		t.Fatalf("runContentBackfill: %v", err)
+	}
+	sourceOf := map[string]string{}
+	for _, a := range articles {
+		sourceOf[a.URLHash] = a.SourceID
+	}
+	perSource := map[string]int{}
+	for _, u := range db.batchedContent {
+		perSource[sourceOf[u.URLHash]] += len(u.Content)
+	}
+	for _, src := range []string{"src-a", "src-b"} {
+		if perSource[src] == 0 || perSource[src] > parser.MaxFeedBytes {
+			t.Errorf("%s wrote %d bytes, want 0 < n <= %d", src, perSource[src], parser.MaxFeedBytes)
+		}
+	}
+	// Refused articles count as failed attempts, so a source that keeps
+	// overrunning its budget ages out after BACKFILL_MAX_ATTEMPTS.
+	if len(db.bumpedContent) == 0 {
+		t.Error("expected over-budget articles to be bumped as failed attempts")
+	}
+}
+
+func TestProcessContentBackfill_RefusedByBudget(t *testing.T) {
+	webServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<html><head><title>Article</title></head><body><article><p>This is the full article content that is definitely long enough to be extracted by the readability parser. It needs to be well over one hundred characters to pass the length threshold check.</p></article></body></html>`))
+	}))
+	defer webServer.Close()
+
+	var gotSource string
+	refuse := func(sourceID string, _ database.ContentUpdate) bool { gotSource = sourceID; return false }
+	article := database.ArticleForContentBackfill{URLHash: "hash-1", URL: webServer.URL, SourceID: "src-x"}
+
+	if processContentBackfill(context.Background(), parser.NewContentExtractor(), article, refuse) {
+		t.Error("expected false when the queue refuses the update")
+	}
+	if gotSource != "src-x" {
+		t.Errorf("queue got source %q, want src-x", gotSource)
 	}
 }

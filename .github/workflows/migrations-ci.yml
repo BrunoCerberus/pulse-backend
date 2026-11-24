@@ -303,7 +303,7 @@ jobs:
               echo "- Apply-from-scratch: all ${migration_count} migrations (\`supabase db reset --no-seed\`) applied with no SQL error"
               echo "${incremental_line}"
               echo "- plpgsql lint: no error-level findings (\`supabase db lint --fail-on error\`)"
-              echo "- Security invariants (supabase/tests/security_invariants.sql): RLS on articles + fetch_logs + sources + categories · SECURITY DEFINER funcs pin empty search_path · write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap + bounded projection · articles_with_source hides url_hash · base-table articles column grant hides url_hash/backfill · sources/categories writes revoked · sources operational columns revoked · security_invoker on views"
+              echo "- Security invariants (supabase/tests/security_invariants.sql): RLS on articles + fetch_logs + sources + categories · SECURITY DEFINER funcs pin empty search_path · write functions are SECURITY DEFINER · write funcs carry the JWT-claim gate + anon/authenticated EXECUTE revoked · search_articles length cap + bounded projection · articles_with_source hides url_hash · base-table articles column grant hides url_hash/backfill · articles/sources/categories writes + TRUNCATE revoked · sources operational columns revoked · security_invoker on views"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             tail=""

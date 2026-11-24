@@ -661,6 +661,10 @@ func TestGetArticlesNeedingContent_Success(t *testing.T) {
 		if !strings.Contains(r.URL.String(), "sources(max_content_length)") {
 			t.Errorf("expected sources(max_content_length) embed in select, got %s", r.URL.String())
 		}
+		// The backfill's per-source byte budget (C-LIMITS) groups by source.
+		if r.URL.Query().Get("select") != "url_hash,url,content,source_id,sources(max_content_length)" {
+			t.Errorf("select = %q, want source_id projected for the per-source budget", r.URL.Query().Get("select"))
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(expectedArticles)

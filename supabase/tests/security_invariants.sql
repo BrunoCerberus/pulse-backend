@@ -6,7 +6,7 @@
 -- HOW IT RUNS (see .github/workflows/migrations-ci.yml):
 --   psql "<local-stack-conn>" -v ON_ERROR_STOP=1 -f supabase/tests/security_invariants.sql
 --
--- Run AFTER `supabase db reset --no-seed` has applied migrations 001..035 from
+-- Run AFTER `supabase db reset --no-seed` has applied every migration (001..037) from
 -- scratch against the Supabase local stack. The local stack provisions the
 -- Supabase-managed roles (anon, authenticated, service_role, authenticator) and
 -- the `request.jwt.claims` request GUC that these migrations reference; a bare
@@ -35,9 +35,9 @@
 -- -----------------------------------------------------------------------------
 -- Guards migration 001 (ALTER TABLE ... ENABLE ROW LEVEL SECURITY) and the
 -- defence-in-depth posture reinforced by 005 (drops the over-broad write
--- policies), 027 (column-level grants + fetch_logs REVOKE), and 035 (the
--- sources/categories write REVOKE — whose backstop only matters while RLS is
--- also on). We check the catalog flag pg_class.relrowsecurity directly so the
+-- policies), 027 (column-level grants + fetch_logs REVOKE), and 035/037 (the
+-- articles/sources/categories write REVOKE — whose backstop only matters
+-- while RLS is also on). We check the catalog flag pg_class.relrowsecurity directly so the
 -- assertion is independent of which policies exist. sources/categories are
 -- included because they are anon-readable and an RLS-disable regression there
 -- (dashboard toggle / table recreate) would re-expose writes that 035 only
@@ -360,13 +360,15 @@ END $$;
 
 
 -- -----------------------------------------------------------------------------
--- INVARIANT 9: anon/authenticated have NO INSERT/UPDATE/DELETE on
---              public.sources or public.categories.
+-- INVARIANT 9: anon/authenticated have NO INSERT/UPDATE/DELETE/TRUNCATE on
+--              public.articles, public.sources or public.categories.
 -- -----------------------------------------------------------------------------
--- Guards migration 035 (the defence-in-depth write REVOKE). Writes are also
--- blocked by RLS (INVARIANT 1), but 035 makes the GRANT boundary block them
--- too, so an RLS-disable regression can't silently re-open writes. The worker
--- writes sources only via the service_role RPC, so this REVOKE breaks nothing.
+-- Guards migrations 035 + 037 (the defence-in-depth write REVOKE). Writes are
+-- also blocked by RLS (INVARIANT 1), but the REVOKE makes the GRANT boundary
+-- block them too, so an RLS-disable regression can't silently re-open writes.
+-- TRUNCATE is listed because RLS never applies to it: the GRANT is its only
+-- barrier. `articles` is the table whose URLs every iOS client dereferences.
+-- The worker writes all three only as service_role, so this breaks nothing.
 DO $$
 DECLARE
     r    TEXT;
@@ -374,10 +376,10 @@ DECLARE
     priv TEXT;
 BEGIN
     FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
-        FOREACH tbl IN ARRAY ARRAY['public.sources', 'public.categories'] LOOP
-            FOREACH priv IN ARRAY ARRAY['INSERT', 'UPDATE', 'DELETE'] LOOP
+        FOREACH tbl IN ARRAY ARRAY['public.articles', 'public.sources', 'public.categories'] LOOP
+            FOREACH priv IN ARRAY ARRAY['INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'] LOOP
                 IF has_table_privilege(r, tbl, priv) THEN
-                    RAISE EXCEPTION 'INVARIANT 9 FAILED: % has % on % (migration 035 write-REVOKE regressed)', r, priv, tbl;
+                    RAISE EXCEPTION 'INVARIANT 9 FAILED: % has % on % (migration 035/037 write-REVOKE regressed)', r, priv, tbl;
                 END IF;
             END LOOP;
         END LOOP;

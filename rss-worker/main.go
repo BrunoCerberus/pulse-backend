@@ -727,17 +727,28 @@ const contentFlushBatchSize = 50
 // publishers for hundreds of articles per day whose content was just
 // nulled by the daily prune — silently undoing the prune AND draining
 // the per-host rate-limit budget.
+//
+// Each source gets the same per-run byte budget the fetch path applies
+// (parser.MaxFeedBytes). Without it this path undoes that bound: the fetch
+// path stores articles without content once a feed's budget is spent, and a
+// hostile feed can also serve short pages at fetch time and huge ones here.
 func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) error {
 	contentExtractor := parser.NewContentExtractor()
 
 	var (
 		mu      sync.Mutex
 		pending []database.ContentUpdate
+		spent   = map[string]int{}
 	)
-	queue := func(update database.ContentUpdate) {
+	queue := func(sourceID string, update database.ContentUpdate) bool {
 		mu.Lock()
+		defer mu.Unlock()
+		if spent[sourceID]+len(update.Content) > parser.MaxFeedBytes {
+			return false
+		}
+		spent[sourceID] += len(update.Content)
 		pending = append(pending, update)
-		mu.Unlock()
+		return true
 	}
 
 	err := runBackfill(ctx, backfillConfig[database.ArticleForContentBackfill]{
@@ -773,13 +784,14 @@ func runContentBackfill(ctx context.Context, db Store, contentPruneDays int) err
 // processContentBackfill uses go-readability to extract the main text content
 // from a single article's webpage. If valid content is extracted, enqueues
 // a ContentUpdate for the caller to batch-write later. Returns true if an
-// update was queued.
+// update was queued; queue refuses it once the article's source has spent its
+// byte budget for the run.
 //
 // Applies parser.SanitizeContent with the per-source-aware effective cap so
 // backfilled content matches what initial-parse writes would have stored —
 // without this clamp the backfill path could silently insert arbitrarily
 // large content from go-readability, bypassing the parser's defences.
-func processContentBackfill(ctx context.Context, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill, queue func(database.ContentUpdate)) bool {
+func processContentBackfill(ctx context.Context, contentExtractor *parser.ContentExtractor, article database.ArticleForContentBackfill, queue func(sourceID string, update database.ContentUpdate) bool) bool {
 	articleLog := logger.With("kind", "content", "url_hash", article.URLHash, "url", article.URL)
 
 	content, err := contentExtractor.ExtractTextContent(ctx, article.URL)
@@ -799,10 +811,10 @@ func processContentBackfill(ctx context.Context, contentExtractor *parser.Conten
 	}
 	content = parser.SanitizeContent(content, parser.EffectiveContentCap(perSourceCap))
 
-	queue(database.ContentUpdate{
-		URLHash: article.URLHash,
-		Content: content,
-	})
+	if !queue(article.SourceID, database.ContentUpdate{URLHash: article.URLHash, Content: content}) {
+		articleLog.Info("backfill_over_source_budget", "source_id", article.SourceID, "chars", len(content))
+		return false
+	}
 	articleLog.Info("backfill_queued", "chars", len(content))
 	return true
 }

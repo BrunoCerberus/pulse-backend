@@ -266,6 +266,10 @@ Backfill state (`*_backfill_attempts`, `*_backfill_last_attempt_at`) and
 service-role only (migration 034).
 
 Writes are gated by the service-role key; there are no anon write policies.
+Behind RLS, `anon`/`authenticated` also hold no table-level `INSERT` /
+`UPDATE` / `DELETE` / `TRUNCATE` on `articles`, `sources` or `categories`
+(migrations 035 + 037), and nothing at all on `fetch_logs` (027), so an
+RLS-disable regression can't open writes either.
 
 ---
 
