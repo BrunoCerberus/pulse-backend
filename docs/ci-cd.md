@@ -21,7 +21,7 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `watchdog.yml` | Hourly + manual | Polls `api-source-health`; fails on circuit/stale/high-failure/DB-quota thresholds or when the latest successful fetch is over 180 minutes old |
 | `privacy-conformance.yml` | Push/PR to `master` + weekly Mon 07:00 UTC | Unified LGPD/GDPR/CCPA guard rails: jurisdiction-specific PII patterns plus shared docs, retention, RLS, no-PII, and structural invariants |
 | `claude.yml` | Issue/PR comments, reviews, issue events | On-demand Claude Code agent (restricted to repo owner/members/collaborators) |
-| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory Claude Code review of PR diffs; cannot approve or request changes |
+| `claude-code-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Claude Code review of PR diffs; approves or requests changes as a sign-off (not a required check; the ruleset requires 0 approvals) |
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
 | `deno-deps.yml` | Weekly Mon 06:30 UTC + manual | Runs `deno outdated` over `supabase/functions` and keeps a single tracking issue in sync (opens/updates/closes it). Dependabot has no Deno ecosystem, so this is the Edge Functions' only dependency-update path. |

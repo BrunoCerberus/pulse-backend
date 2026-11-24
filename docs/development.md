@@ -177,7 +177,7 @@ pulse-backend/
     │   ├── deno-deps.yml             # Weekly `deno outdated` → tracking issue (no Dependabot for Deno)
     │   ├── toolchain-freshness.yml   # Weekly pin freshness (gitleaks/gosec/actionlint/zizmor/Supabase CLI) → tracking issue
     │   ├── claude.yml                 # On-demand Claude Code agent (owner/members/collaborators)
-    │   ├── claude-code-review.yml     # Advisory Claude PR review (trusted authors)
+    │   ├── claude-code-review.yml     # Claude PR review that approves/requests changes (trusted authors)
     │   ├── security-review.yml        # Advisory AI security review anchored to THREAT_MODEL.md
     │   ├── scorecard.yml              # OpenSSF Scorecard posture score (push/weekly)
     │   └── keepalive.yml              # Monthly: resets the 60-day inactivity timer on scheduled workflows
