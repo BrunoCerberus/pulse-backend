@@ -264,21 +264,19 @@ view can stay revoked from anon at the DB layer.
 
 | Parameter | Type | Description | Example |
 |-----------|------|-------------|---------|
-| `id` | string | Filter by source UUID. | `id=eq.<uuid>` |
-| `slug` | string | Filter by source slug. | `slug=eq.bbc-tech` |
-| `is_active` | boolean | Filter by active status. | `is_active=eq.true` |
+| `id` | string | Filter by source UUID. `eq.` only. | `id=eq.<uuid>` |
+| `slug` | string | Filter by source slug. `eq.` only. | `slug=eq.bbc-tech` |
+| `is_active` | boolean | Filter by active status. `eq.true` or `eq.false` only. | `is_active=eq.true` |
 | `order` | string | Sort order. Allowed: `name`, `slug`, `consecutive_failures`, `last_fetched_at`. | `order=consecutive_failures.desc` |
+
+Filters take a single `eq.` value. Any other operator (`neq.`, `in.(…)`, …) is
+dropped and the request returns the unfiltered fleet view, which is cached.
 
 #### Response
 
 ```json
 {
   "fetched_at": "2026-05-14T02:53:00.000Z",
-  "database": {
-    "size_bytes": 96468992,
-    "size_pretty": "92.0 MB",
-    "quota_pct": 18
-  },
   "summary": {
     "total": 136,
     "active": 131,
@@ -302,8 +300,10 @@ view can stay revoked from anon at the DB layer.
 }
 ```
 
-`database` is `null` if the DB-size RPC fails — the watchdog tolerates
-`null` so transient size-check failures don't false-page.
+The response does not include database size. Migration 027 revoked it from
+anon because it tells an attacker filling the database how close the quota is,
+and this endpoint answers anyone. The watchdog reads it directly through the
+service-role-only `get_db_size_bytes` RPC.
 
 `latest_successful_fetch_at` is the newest `last_fetched_at` among active
 sources; that column records successful fetches. Values more than an hour ahead

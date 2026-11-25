@@ -33,11 +33,11 @@ jobs:
 
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      # Note: no SUPABASE_SERVICE_ROLE_KEY here. The Edge Function
-      # api-source-health is now declared `verify_jwt = false` and uses
-      # its own server-side service-role key to read the privileged
-      # source_health view. Sending a JWT in this workflow was a leak
-      # vector (function logs captured the bearer).
+      # The service-role key is NOT sent to api-source-health: that function
+      # is `verify_jwt = false` and reads source_health with its own key, and
+      # sending a JWT to it was a leak vector (function logs captured the
+      # bearer). The key is used only for the direct DB-size RPC call below,
+      # scoped to the step that makes it.
       # Thresholds — fail the job when any of these are exceeded.
       # Calibrated post-cleanup (migration 023 inactivated 16 dead sources).
       # Baseline floor on 2026-05-12 after cleanup: circuit_open=1, stale=23,
@@ -55,12 +55,15 @@ jobs:
       # still leaving ~200 MB of headroom before Supabase restricts the project
       # (which is what the April 2026 incident hit at 100%).
       MAX_DB_QUOTA_PCT: 60
+      DB_QUOTA_BYTES: 524288000
       # The ingestion workflow is scheduled every two hours. Alert after one missed
       # interval plus one hour of scheduler/runtime headroom.
       MAX_FETCH_AGE_MINUTES: 180
 
     steps:
       - name: Query source health
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           set -euo pipefail
 
@@ -70,17 +73,12 @@ jobs:
 
           echo "Summary:"
           echo "$response" | jq '.summary'
-          echo "Database:"
-          echo "$response" | jq '.database'
 
           circuit_open=$(echo "$response" | jq -r '.summary.circuit_open_count')
           stale=$(echo "$response" | jq -r '.summary.stale_count')
           high_failure=$(echo "$response" | jq -r '.summary.high_failure_count')
           fetch_age_minutes=$(echo "$response" | jq -r '.summary.fetch_age_minutes // empty')
           latest_successful_fetch_at=$(echo "$response" | jq -r '.summary.latest_successful_fetch_at // empty')
-          # `// empty` keeps the var unset when the RPC failed (database == null)
-          # so we don't false-alarm on transient size-check failures.
-          db_quota_pct=$(echo "$response" | jq -r '.database.quota_pct // empty')
 
           # Validate everything is a non-negative integer before arithmetic.
           # Anything else is treated as missing (the `fail=0` default holds
@@ -112,10 +110,30 @@ jobs:
             echo "::error title=High failure count::high_failure_count=${high_failure} exceeds threshold ${MAX_HIGH_FAILURE}"
             fail=1
           fi
-          if [[ -n "$db_quota_pct" ]] && [[ "$db_quota_pct" =~ $int_re ]] && (( db_quota_pct > MAX_DB_QUOTA_PCT )); then
-            db_pretty=$(echo "$response" | jq -r '.database.size_pretty')
-            echo "::error title=DB quota::database is at ${db_quota_pct}% of quota (${db_pretty}), exceeds threshold ${MAX_DB_QUOTA_PCT}%"
-            fail=1
+
+          # DB size comes from the service-role-only RPC, not the public
+          # endpoint: migration 027 revoked it from anon because it tells an
+          # attacker filling the database how close the quota is. This repo's
+          # Actions logs are public too, so only ok / over / n/a is printed,
+          # never the size. The key goes to curl on stdin, not in its argv.
+          # A failed check warns rather than fails, so a transient RPC error
+          # doesn't page, but it shows up as n/a instead of passing silently.
+          db_status="n/a"
+          db_bytes=$(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\n' \
+              "$SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_SERVICE_ROLE_KEY" |
+            curl -fsS --max-time 30 -K - -X POST \
+              -H "Content-Type: application/json" -d '{}' \
+              "${SUPABASE_URL}/rest/v1/rpc/get_db_size_bytes" || true)
+          if [[ "$db_bytes" =~ $int_re ]]; then
+            if (( db_bytes * 100 > DB_QUOTA_BYTES * MAX_DB_QUOTA_PCT )); then
+              db_status="over"
+              echo "::error title=DB quota::database size exceeds ${MAX_DB_QUOTA_PCT}% of quota; check usage in the Supabase dashboard"
+              fail=1
+            else
+              db_status="ok"
+            fi
+          else
+            echo "::warning title=DB quota::database size check unavailable; the quota alarm did not run"
           fi
           if (( fetch_age_minutes > MAX_FETCH_AGE_MINUTES )); then
             echo "::error title=Fetch freshness::latest successful fetch was ${fetch_age_minutes}m ago (${latest_successful_fetch_at}), exceeds ${MAX_FETCH_AGE_MINUTES}m"
@@ -123,15 +141,13 @@ jobs:
           fi
 
           # Shared metrics table for the Job Summary (rendered on both paths).
-          db_disp="${db_quota_pct:-n/a}"
-          [ "$db_disp" != "n/a" ] && db_disp="${db_disp}%"
           metrics_table() {
             echo "| Metric | Value | Threshold |"
             echo "|--------|-------|-----------|"
             echo "| circuit_open | ${circuit_open} | ${MAX_CIRCUIT_OPEN} |"
             echo "| stale | ${stale} | ${MAX_STALE} |"
             echo "| high_failure | ${high_failure} | ${MAX_HIGH_FAILURE} |"
-            echo "| db_quota_pct | ${db_disp} | ${MAX_DB_QUOTA_PCT}% |"
+            echo "| db_quota | ${db_status} | ${MAX_DB_QUOTA_PCT}% |"
             echo "| fetch_age_minutes | ${fetch_age_minutes} | ${MAX_FETCH_AGE_MINUTES} |"
           }
 
@@ -154,14 +170,7 @@ jobs:
           fi
 
           # Success: populate the Annotations box (notice) + the Job Summary.
-          # Render the db part cleanly when the size RPC was unavailable (n/a)
-          # rather than the awkward "n/a/60%".
-          if [ "$db_disp" = "n/a" ]; then
-            db_part="db_quota=n/a"
-          else
-            db_part="db_quota=${db_disp}/${MAX_DB_QUOTA_PCT}%"
-          fi
-          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, fetch_age=${fetch_age_minutes}m/${MAX_FETCH_AGE_MINUTES}m, ${db_part}"
+          echo "::notice title=Source Health::OK — circuit_open=${circuit_open}/${MAX_CIRCUIT_OPEN}, stale=${stale}/${MAX_STALE}, high_failure=${high_failure}/${MAX_HIGH_FAILURE}, fetch_age=${fetch_age_minutes}m/${MAX_FETCH_AGE_MINUTES}m, db_quota=${db_status}"
           {
             echo "## Source Health Watchdog ✅"
             echo ""

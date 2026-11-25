@@ -158,9 +158,24 @@ export function isSlugFilter(raw: string): boolean {
   return everyFilterValue(raw, (v) => v.length <= 128 && SLUG_RE.test(v));
 }
 
+/**
+ * Accepts only `eq.<slug>`: the slug counterpart of `isSingleUuidEqFilter`,
+ * for the same reason. `neq.` and `in.(…)` pass `isSlugFilter` but match many
+ * rows, and `in.(…)` can be respelled endlessly into new cache keys.
+ */
+export function isSingleSlugEqFilter(raw: string): boolean {
+  const m = /^eq\.(.*)$/s.exec(raw);
+  return m !== null && m[1].length <= 128 && SLUG_RE.test(m[1]);
+}
+
 /** Accepts only boolean value(s): `eq.true` / `is.false` / `true` / `false`. */
 export function isBooleanFilter(raw: string): boolean {
   return everyFilterValue(raw, (v) => v === "true" || v === "false");
+}
+
+/** Accepts only `eq.true` / `eq.false`: two spellings, so two cache keys. */
+export function isBooleanEqFilter(raw: string): boolean {
+  return raw === "eq.true" || raw === "eq.false";
 }
 
 /** Accepts only ISO 639-1 language code(s): `eq.en` / `in.(en,pt)` etc. */

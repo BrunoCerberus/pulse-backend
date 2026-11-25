@@ -132,6 +132,7 @@ the vulnerability classes worth targeting during discovery.
 | Threat | Cluster | Mitigation |
 |--------|---------|------------|
 | `anon` reads columns it should not see (`url_hash`, backfill state) | **Data exposure** | C-GRANT, C-VIEW |
+| An anonymous Edge Function that reads as service_role hands back what anon was revoked from (DB size, the quota-timing signal) | **Data exposure** | C-VIEW |
 | `search_path` hijack redirects a built-in inside a `SECURITY DEFINER` fn | **Privilege escalation** | C-DEFINER |
 | `anon`/`authenticated` invokes a privileged write function | **Privilege escalation** | C-GRANT, C-CALLERGATE |
 | Unbounded / pathological search query exhausts the DB (DoS) | **DoS** | C-SEARCHCAP |
@@ -275,6 +276,11 @@ rather than line numbers so this stays accurate as code moves.
   `fetch_logs` is fully revoked from anon.
 - **C-VIEW** — `articles_with_source` is an explicit projection with
   `security_invoker=on`; `source_health` is revoked from anon (migration 027).
+  `api-source-health` reads that view as service_role for any caller, so it
+  returns only the fleet summary and per-source rows, never the DB size 027
+  also revoked: that number tells an attacker filling the database how close
+  the quota is. The watchdog reads it itself through the service-role-only
+  `get_db_size_bytes` RPC, and its public Actions logs show only ok / over.
 - **C-DEFINER** — every `SECURITY DEFINER` function pins `SET search_path = ''`
   with fully-qualified references (migration 027).
 - **C-CALLERGATE** — all seven SECURITY DEFINER write functions (the five from
@@ -360,7 +366,10 @@ rather than line numbers so this stays accurate as code moves.
    `ProxyConfig.paramValidators` exists for exactly this: endpoints validate their
    filter values so a malformed value is dropped before the upstream DB round-trip.
    All proxy endpoints return a **generic** error body (never the raw upstream
-   PostgREST error) — `api-source-health` validates its `id`/`slug`/`is_active`,
+   PostgREST error) — `api-source-health` accepts each of `id`/`slug`/`is_active`
+   only as a single `eq.` value (it queries as service_role, and a `neq.` or
+   `in.(…)` filter is a near-full fleet query that a fresh value per request
+   would keep out of the cache),
    while the memory-cached public endpoints (`api-sources`) and non-cached `api-articles`
    validate UUIDs, booleans, slugs, and ISO 639-1 language codes. Empty result sets
    are not cached (`isCacheableResult`), so a rotated non-matching filter can't thrash
