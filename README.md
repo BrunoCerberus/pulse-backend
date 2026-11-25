@@ -91,7 +91,7 @@ GET /api-sources          # 1h cache
 GET /api-articles         # 15min + ETag (304 support)
 GET /api-search?q=…       # 1min private cache
 GET /api-health           # no-store liveness probe
-GET /api-source-health    # 60s — per-source health + DB size (powers the watchdog)
+GET /api-source-health    # 60s — per-source fetch health (powers the watchdog)
 ```
 
 No authentication required — endpoints are public read-only. Full parameter

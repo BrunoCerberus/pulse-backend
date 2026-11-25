@@ -169,7 +169,7 @@ pulse-backend/
     │   ├── deploy.yml                 # Gated deploy: migrations → functions → 6-endpoint smoke test
     │   ├── migrations-ci.yml          # Migrations from scratch + incremental + invariants; Edge Function contract tests
     │   ├── lint-meta.yml              # actionlint (+ shellcheck) + zizmor over all workflows
-    │   ├── watchdog.yml               # Source health check every 2h (fails job on degradation)
+    │   ├── watchdog.yml               # Source health + DB-quota check hourly (fails job on degradation)
     │   ├── privacy-conformance.yml    # Unified LGPD + GDPR + CCPA guard rails
     │   ├── deno-deps.yml             # Weekly `deno outdated` → tracking issue (no Dependabot for Deno)
     │   ├── toolchain-freshness.yml   # Weekly pin freshness (gitleaks/gosec/actionlint/zizmor/Supabase CLI) → tracking issue

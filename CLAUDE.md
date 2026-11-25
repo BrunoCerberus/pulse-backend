@@ -10,7 +10,7 @@ a second copy here). If what you need isn't below, follow the pointer before gre
 
 Pulse Backend is a self-hosted news aggregation backend for the Pulse iOS app.
 
-**Tech Stack:** Go 1.25 | Supabase (PostgreSQL + PostgREST) | GitHub Actions | Deno (Edge Functions)
+**Tech Stack:** Go 1.26 | Supabase (PostgreSQL + PostgREST) | GitHub Actions | Deno (Edge Functions)
 
 ## Architecture
 

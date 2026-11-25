@@ -37,7 +37,7 @@ View workflow runs:
 1. Go to Repository → Actions tab
 2. Check `fetch-rss.yml` for RSS fetching (every 2 hours)
 3. Check `cleanup.yml` for article cleanup (daily at 3 AM UTC)
-4. Check `watchdog.yml` for source-health alerts (every 2 hours, fails the
+4. Check `watchdog.yml` for source-health alerts (hourly, fails the
    job + sends GitHub email when `circuit_open` / `stale` /
    `high_failure` cross thresholds defined inline, when DB size passes 60% of
    quota, or when the latest successful source fetch is more than 180 minutes
@@ -242,21 +242,24 @@ WHERE created_at BETWEEN '2024-01-15 10:00:00' AND '2024-01-15 11:00:00';
 
 ### Regenerate Supabase Keys
 
-The watchdog workflow no longer sends the service-role key as a bearer to
-`api-source-health` (since migration 027 / the matching Edge Function
-update). Rotating the key only requires updating writers + Edge Function
-project secrets:
+The watchdog never sends the service-role key to `api-source-health` (it did
+before migration 027 / the matching Edge Function update). It uses the key only
+for its direct `get_db_size_bytes` call.
 
 1. Supabase Dashboard → Settings → API → Regenerate Service Role key.
-2. Update the `production` GitHub Environment secrets:
-   - Settings → Environments → production
-   - Update `SUPABASE_ACCESS_TOKEN` (for deploys) and `SUPABASE_SERVICE_ROLE_KEY`
-     (used by `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`).
-3. The `api-source-health` Edge Function reads
+2. Update the **repository** secret `SUPABASE_SERVICE_ROLE_KEY`
+   (Settings → Secrets and variables → Actions). The scheduled workflows read
+   this one: `fetch-rss.yml`, `cleanup.yml`, `backfill.yml` and `watchdog.yml`.
+   The `production` Environment holds a second copy that no current workflow
+   reads; keep it in step or remove it.
+3. If the deploy token was rotated too, update `SUPABASE_ACCESS_TOKEN` in the
+   `production` Environment.
+4. The `api-source-health` Edge Function reads
    `SUPABASE_SERVICE_ROLE_KEY` from the Supabase project's auto-injected
    env, so no Edge Function redeploy is needed after a rotation in the
    Supabase dashboard.
-4. The watchdog workflow only needs `SUPABASE_URL` — no key required.
+5. Check the next watchdog run. If the repository secret still holds the old
+   key, it fails with `db_quota=error` (HTTP 401 or 403) rather than passing.
 
 Rotate proactively after merging the security-hardening PR for the first
 time, since the previous key spent ≥ one cycle in the Authorization
