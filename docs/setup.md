@@ -16,7 +16,7 @@ For the repository layout and local-dev workflow, see
 ## 2. Run Database Migrations
 
 In the Supabase Dashboard, go to **SQL Editor** and run the migrations in order.
-(In CI/CD these are applied automatically by `supabase db push` — see
+(In CI/CD these are applied automatically by `supabase db push --remote` — see
 [ci-cd.md](ci-cd.md).)
 
 - `supabase/migrations/001_initial_schema.sql` - Core schema
@@ -107,7 +107,7 @@ Two scopes:
 |-------------|---------|
 | `SUPABASE_ACCESS_TOKEN` | `deploy.yml` |
 | `SUPABASE_PROJECT_REF` | `deploy.yml` |
-| `SUPABASE_DB_PASSWORD` | `deploy.yml` (`supabase db push`; from Supabase dashboard → Project Settings → Database). If absent, the migration step no-ops with a notice and functions still deploy. |
+| `SUPABASE_DB_PASSWORD` | `deploy.yml` (the pre-deploy `supabase db dump --remote` and `supabase db push --remote`; from Supabase dashboard → Project Settings → Database). If absent, the deploy fails before any migration runs or function ships. |
 
 Configure the `production` Environment with **required reviewers** (yourself) and
 **deployment branches: master only**. This gates every deploy on a human approval
@@ -142,18 +142,25 @@ brew install supabase/tap/supabase
 supabase login
 supabase link --project-ref YOUR_PROJECT_REF
 
-# Deploy all functions
+# Deploy all functions (CLI v3 asks you to confirm; Enter means No)
 supabase functions deploy
 ```
+
+CI pins the Supabase CLI to **3.4.0** (the `version:` input on every
+`supabase/setup-cli` step in `deploy.yml` and `migrations-ci.yml`). In v3,
+commands like `db push` and `db dump` target the **local** stack unless you
+pass `--remote` (the linked project), and every change to a hosted project
+asks first, or needs `--yes` when nothing can answer.
 
 **Automated (after the `production` Environment is set up):** any merge to
 `master` touching `supabase/migrations/**`, `supabase/functions/**`, or
 `supabase/config.toml` queues a deploy in `deploy.yml`. The job pauses on the
 "Waiting" step until a maintainer clicks **Approve and deploy** in the Actions
 UI, then runs three ordered steps under `set -e`: (1) **apply migrations** via
-`supabase db push` (no-ops with a notice if `SUPABASE_DB_PASSWORD` is unset, so
-functions still ship); (2) **deploy Edge Functions** via
-`supabase functions deploy`; (3) **api-health smoke test** that curls
+`supabase db push --yes --remote`, after an encrypted pre-deploy backup and a
+`--dry-run` (fails the deploy if `SUPABASE_DB_PASSWORD` is unset, so functions
+never ship without their migrations); (2) **deploy Edge Functions** via
+`supabase functions deploy --yes --remote=<ref>`; (3) **api-health smoke test** that curls
 `${SUPABASE_URL}/functions/v1/api-health` with retries and expects
 `{"status":"ok"}`. A failed migration aborts before functions deploy.
 

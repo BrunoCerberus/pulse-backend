@@ -171,7 +171,8 @@ jobs:
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
         with:
-          version: "2.116.0"
+          # Same pin as the production job below; see the comment there.
+          version: "3.4.0"
 
       - name: Migrate, deploy functions, contract-test
         shell: bash
@@ -191,11 +192,13 @@ jobs:
             echo "::error title=Staging::STAGING_ENABLED is true but these secrets are not set on the staging Environment:${missing}"
             exit 1
           fi
+          # CLI v3 flags (--remote, --yes): see "Apply migrations" in the
+          # production job below.
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
           echo "Pending migrations (staging):"
-          supabase db push --dry-run
-          supabase db push
-          supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
+          supabase db push --dry-run --yes --remote
+          supabase db push --yes --remote
+          supabase functions deploy --yes --remote="$SUPABASE_PROJECT_REF"
           for _ in $(seq 1 10); do
             if curl -fsS --max-time 15 "${SUPABASE_URL}/functions/v1/api-health" \
               | jq -e '.status == "ok"' >/dev/null 2>&1; then
@@ -234,9 +237,14 @@ jobs:
           # Pinned, not "latest" (setup-cli's default): this is the ONLY
           # workflow that runs `supabase db push` against PRODUCTION, so a
           # silent CLI upgrade changing push/dry-run semantics is the worst
-          # kind of surprise here. Bump deliberately — the weekly
-          # toolchain-freshness check tracks the latest release.
-          version: "2.116.0"
+          # kind of surprise here. v3 was exactly that (hosted commands need
+          # --remote and --yes; see "Apply migrations"), and migrations-ci
+          # cannot catch a wrong flag here because it only runs local
+          # commands. Bump deliberately and re-read every CLI line in this
+          # file against the release notes; the weekly toolchain-freshness
+          # check tracks the latest release. All four setup-cli pins
+          # (here + migrations-ci.yml) must stay identical.
+          version: "3.4.0"
 
       - name: Back up database (restore point)
         shell: bash
@@ -278,10 +286,14 @@ jobs:
 
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
 
+          # --remote: CLI v3 dumps the LOCAL stack when no target is given.
+          # --yes: `db dump` never mutates and never prompts; v3 only needs
+          # consent to lift a network ban on this runner's IP while
+          # connecting, which v2 did unasked.
           work=$(mktemp -d)
           mkdir -p /tmp/backup
-          supabase db dump --linked -f "$work/pre-deploy-schema.sql"
-          supabase db dump --linked --data-only -f "$work/pre-deploy-data.sql"
+          supabase db dump -f "$work/pre-deploy-schema.sql" --yes --remote
+          supabase db dump --data-only -f "$work/pre-deploy-data.sql" --yes --remote
           for f in pre-deploy-schema.sql pre-deploy-data.sql; do
             openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:BACKUP_ENCRYPTION_KEY \
               -in "$work/$f" -out "/tmp/backup/${f}.enc"
@@ -314,6 +326,17 @@ jobs:
           # The CLI reads SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD from env.
           # `db push` applies pending migrations to the linked project. A failure
           # here aborts the job (set -e) before functions deploy.
+          #
+          # CLI v3 flags, on every hosted command in this file:
+          #   --remote  Bare `db push`/`db dump` target the LOCAL stack in v3.
+          #             Bare --remote means "the linked project", the only
+          #             target v3 sends SUPABASE_DB_PASSWORD to, so don't
+          #             swap it for --remote=<ref> on the db commands.
+          #   --yes     v3 fails every unattended hosted change with
+          #             HostedMutationConsentRequiredError without it. The
+          #             production Environment's required-reviewer approval
+          #             is the human confirmation.
+          # `link` is unchanged in v3 and takes no --remote.
           supabase link --project-ref "$SUPABASE_PROJECT_REF"
 
           # Dry run first. Migrations CI proves the set applies from SCRATCH;
@@ -323,17 +346,21 @@ jobs:
           # becomes visible. It also puts the exact list of migrations about to
           # run into the log — which, given there is no rollback, is the record
           # you want when diagnosing a bad release.
+          # --dry-run never asks for consent; --yes only lets it lift a
+          # network ban on this runner's IP, as above.
           echo "Pending migrations:"
-          supabase db push --dry-run
+          supabase db push --dry-run --yes --remote
 
-          supabase db push
+          supabase db push --yes --remote
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
 
       - name: Deploy Edge Functions
-        run: supabase functions deploy --project-ref "$SUPABASE_PROJECT_REF"
+        # No function names = deploy every function. --remote=<ref> is v3's
+        # replacement for the deprecated --project-ref; --yes as above.
+        run: supabase functions deploy --yes --remote="$SUPABASE_PROJECT_REF"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
@@ -429,7 +456,7 @@ jobs:
 
           # On success the migrate step always ran `supabase db push` (a missing
           # secret or a failed push aborts the job before this annotation).
-          migrate_line="Migrations applied via \`supabase db push\`"
+          migrate_line="Migrations applied via \`supabase db push --remote\`"
 
           # Rendered on both paths. Empty when the job died before the smoke
           # step ran (e.g. a failed migration), which is itself informative.

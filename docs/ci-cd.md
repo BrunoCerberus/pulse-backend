@@ -25,9 +25,16 @@ vulnerability-disclosure policy see [../SECURITY.md](../SECURITY.md).
 | `security-review.yml` | PR opened/synchronize/reopened to `master` (trusted authors) | Advisory AI security review anchored to `THREAT_MODEL.md`; never issues a merge verdict |
 | `scorecard.yml` | Push to `master` + weekly Mon 05:30 UTC + branch-protection changes | OpenSSF Scorecard supply-chain posture score; SARIF to Security tab (informational) |
 | `deno-deps.yml` | Weekly Mon 06:30 UTC + manual | Runs `deno outdated` over `supabase/functions` and keeps a single tracking issue in sync (opens/updates/closes it). Dependabot has no Deno ecosystem, so this is the Edge Functions' only dependency-update path. |
-| `toolchain-freshness.yml` | Weekly Mon 06:15 UTC + manual | Freshness tracker for the security binaries pinned in env blocks (gitleaks, gosec, actionlint, zizmor) plus the Supabase CLI: Dependabot can't see versions in env blocks, so without this watch the pins rot silently. Advisory (never fails): keeps one tracking issue in sync with the outdated table, including where each pin + SHA256 must move. |
+| `toolchain-freshness.yml` | Weekly Mon 06:15 UTC + manual | Freshness tracker for the security binaries pinned in env blocks (gitleaks, gosec, actionlint, zizmor) plus the Supabase CLI (the `version:` input on all four `supabase/setup-cli` steps in `deploy.yml` + `migrations-ci.yml`, which must be identical; currently 3.4.0): Dependabot can't see versions in env blocks, so without this watch the pins rot silently. Advisory (never fails): keeps one tracking issue in sync with the outdated table, including where each pin + SHA256 must move. |
 | `fuzz.yml` | Daily 02:00 UTC + manual (`fuzztime`, default `10m`) | Extended fuzzing: one matrix job per discovered `func FuzzXxx`, each with its own cached corpus (`~/.cache/go-build/fuzz`) so coverage compounds night over night. Failing inputs upload as `fuzz-crashers-<Target>`; commit them under `testdata/fuzz/<Target>/` as permanent seeds. |
 | `keepalive.yml` | Monthly (1st, 05:45 UTC) + manual | Resets GitHub's 60-day scheduled-trigger inactivity timer so crons (fetch, cleanup, watchdog, …) survive commit-quiet periods |
+
+**Supabase CLI v3 in `deploy.yml`.** Every hosted CLI call there carries
+`--remote` and `--yes`. In v3 a bare `db push` or `db dump` targets the local
+stack, and an unattended change to a hosted project fails with
+`HostedMutationConsentRequiredError` unless it gets `--yes`. `migrations-ci.yml`
+only runs local CLI commands, so it can't catch a wrong flag in `deploy.yml`.
+Re-read every CLI line there against the release notes when you bump the pin.
 
 ## Branch Protection
 
