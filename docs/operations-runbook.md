@@ -259,7 +259,7 @@ for its direct `get_db_size_bytes` call.
    env, so no Edge Function redeploy is needed after a rotation in the
    Supabase dashboard.
 5. Check the next watchdog run. If the repository secret still holds the old
-   key, it fails with `db_quota=error` (HTTP 401) rather than passing.
+   key, it fails with `db_quota=error` (HTTP 401 or 403) rather than passing.
 
 Rotate proactively after merging the security-hardening PR for the first
 time, since the previous key spent ≥ one cycle in the Authorization
