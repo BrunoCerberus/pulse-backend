@@ -72,6 +72,10 @@ make functions-serve   # Run Edge Functions locally
 make clean             # Remove build artifacts
 ```
 
+The `make deploy*` targets deploy to the project you linked with
+`supabase link`. Supabase CLI v3 (CI pins 3.4.0) asks before every hosted
+deploy, and pressing Enter declines.
+
 ## Testing
 
 Unit tests cover the Go packages and Deno Edge Functions. The hostile-input

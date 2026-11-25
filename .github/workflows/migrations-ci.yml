@@ -140,11 +140,12 @@ jobs:
         uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
         with:
           # Pinned, not "latest" (setup-cli's default): the steps below were
-          # validated against 2.116.0, and a silent CLI upgrade that changes
+          # validated against 3.4.0, and a silent CLI upgrade that changes
           # `db reset` / `db lint` semantics would break this job for reasons
-          # it cannot explain. Bump deliberately; the weekly toolchain-freshness
+          # it cannot explain. Bump deliberately, and keep all four setup-cli
+          # pins (here + deploy.yml) identical; the weekly toolchain-freshness
           # check tracks the latest release.
-          version: "2.116.0"
+          version: "3.4.0"
 
       - name: Start local Postgres
         if: needs.changes.outputs.run == 'true'
@@ -218,7 +219,9 @@ jobs:
           done
 
           echo "--- Applying this PR's migrations on top ---"
-          supabase migration up --local
+          # No target flag: CLI v3 targets the local stack by default and
+          # --local is a deprecated no-op that only prints a warning.
+          supabase migration up
 
           echo "ran=true" >> "$GITHUB_OUTPUT"
           {
@@ -359,11 +362,12 @@ jobs:
         uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
         with:
           # Pinned, not "latest" (setup-cli's default): the steps below were
-          # validated against 2.116.0, and a silent CLI upgrade that changes
+          # validated against 3.4.0, and a silent CLI upgrade that changes
           # `start` / `db reset` / Edge-Runtime semantics would break
-          # assertions this job cannot explain. Bump deliberately; the weekly
+          # assertions this job cannot explain. Bump deliberately, and keep
+          # all four setup-cli pins (here + deploy.yml) identical; the weekly
           # toolchain-freshness check tracks the latest release.
-          version: "2.116.0"
+          version: "3.4.0"
 
       - name: Start local Supabase stack
         if: needs.changes.outputs.run-contract == 'true'
@@ -374,6 +378,9 @@ jobs:
           # Postgres + the Edge Runtime container that `supabase start` serves
           # the repo's functions from. Everything else (studio, imgproxy,
           # storage, …) is excluded — it only costs image pulls and RAM.
+          # An unknown -x name only warns and starts the service anyway, so
+          # recheck these against `supabase start --help` on a CLI bump
+          # (all ten are valid in 3.4.0).
           # --yes: non-interactive CI — a future CLI prompt must never hang
           # the job until timeout.
           supabase start --yes \

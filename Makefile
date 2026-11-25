@@ -94,6 +94,8 @@ clean:
 # =============================================================================
 # Supabase Edge Functions
 # =============================================================================
+# Deploys go to the `supabase link`ed project. CLI v3 asks before each hosted
+# deploy (Enter = No); CI passes --yes --remote=<ref> instead (deploy.yml).
 
 deploy: deploy-all
 
