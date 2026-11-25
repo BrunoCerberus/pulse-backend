@@ -3,9 +3,11 @@ import {
   buildCacheKey,
   buildProxyUrl,
   fetchFromSupabase,
+  isBooleanEqFilter,
   isBooleanFilter,
   isCacheableResult,
   isLanguageFilter,
+  isSingleSlugEqFilter,
   isSlugFilter,
   isUpstreamSuccess,
   isUuidFilter,
@@ -472,6 +474,32 @@ Deno.test("isBooleanFilter accepts only true/false value(s)", () => {
   assert(isBooleanFilter("true"));
   assert(!isBooleanFilter("eq.maybe"));
   assert(!isBooleanFilter("eq.1"));
+});
+
+// The single-value forms exist for endpoints that must not let one caller
+// mint unbounded distinct cache keys: `neq.` and `in.(…)` pass the value-domain
+// validators above but match many rows, and `in.(…)` can be respelled
+// endlessly (order, duplicates, spaces).
+Deno.test("isSingleSlugEqFilter accepts only eq.<slug>", () => {
+  assert(isSingleSlugEqFilter("eq.bbc-news"));
+  assert(isSingleSlugEqFilter("eq.20-minutos"));
+  assert(!isSingleSlugEqFilter("bbc-news")); // no operator
+  assert(!isSingleSlugEqFilter("neq.bbc-news"));
+  assert(!isSingleSlugEqFilter("in.(bbc-news,g1)"));
+  assert(!isSingleSlugEqFilter("eq.(bbc-news,g1)"));
+  assert(!isSingleSlugEqFilter("eq.under_score"));
+  assert(!isSingleSlugEqFilter("eq."));
+  assert(!isSingleSlugEqFilter("eq." + "a".repeat(129))); // length cap
+});
+
+Deno.test("isBooleanEqFilter accepts only eq.true / eq.false", () => {
+  assert(isBooleanEqFilter("eq.true"));
+  assert(isBooleanEqFilter("eq.false"));
+  assert(!isBooleanEqFilter("true"));
+  assert(!isBooleanEqFilter("is.false"));
+  assert(!isBooleanEqFilter("neq.false"));
+  assert(!isBooleanEqFilter("in.(true, true)"));
+  assert(!isBooleanEqFilter("eq.TRUE"));
 });
 
 Deno.test("isCacheableResult rejects empty result sets", () => {

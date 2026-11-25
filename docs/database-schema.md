@@ -240,11 +240,11 @@ Persists per-source `etag`, `last_modified`, `consecutive_failures`,
 
 ### get_db_size_bytes()
 
-Returns `pg_database_size(current_database())`. Used by
-`api-source-health` to compute `quota_pct`.
+Returns `pg_database_size(current_database())`. Called by the watchdog
+workflow with the service-role key for its DB-quota alarm. No public endpoint
+returns it.
 
-**Granted to:** `service_role` only (migration 027 revoked anon access —
-the Edge Function calls upstream with the service-role key).
+**Granted to:** `service_role` only (migration 027 revoked anon access).
 
 ---
 

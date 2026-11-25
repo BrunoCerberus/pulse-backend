@@ -31,7 +31,7 @@ Edge Functions (caching proxy + in-memory cache)
     ├── /api-articles      → 15min + ETag
     ├── /api-search        → 1min private
     ├── /api-health        → no-store
-    └── /api-source-health → 60s (health + DB size)
+    └── /api-source-health → 60s (fleet health)
         ↓
 Pulse iOS App
 ```
@@ -181,5 +181,6 @@ allowlists. Full position: `docs/privacy.md`.
 ## Monitoring
 
 `fetch_logs` table + `api-source-health` endpoint (circuit/stale/high-failure counts, latest
-successful fetch age, DB `quota_pct`; watchdog trips at 180 minutes / 60%). Full runbook:
+successful fetch age) + the watchdog's own service-role DB-size check (trips at 180 minutes / 60%
+of quota; the size itself is never public). Full runbook:
 `docs/operations-runbook.md`.

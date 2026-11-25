@@ -4,6 +4,12 @@
  * Exposes per-source fetch health plus an aggregate summary so the watchdog
  * workflow (and future dashboards) can detect silently-degraded feeds.
  *
+ * It answers anyone (`verify_jwt = false`) and reads as service_role, so
+ * everything it returns is public. It does not report database size:
+ * migration 027 revoked that from anon because it tells an attacker filling
+ * the database how close the quota is. The watchdog reads the size itself
+ * through the service-role-only `get_db_size_bytes` RPC.
+ *
  * Reads from the `source_health` view (migration 020) — `security_invoker = on`
  * so it inherits the caller's RLS. The Edge Function calls upstream with
  * the service-role key (not anon), so the watchdog gets the full fleet
@@ -13,7 +19,6 @@
  * ```
  * {
  *   "fetched_at": "ISO-8601",
- *   "database": { "size_bytes": N, "size_pretty": "X MB", "quota_pct": N } | null,
  *   "summary":  { "total": N, "active": N, "circuit_open_count": N,
  *                 "high_failure_count": N, "stale_count": N,
  *                 "latest_successful_fetch_at": "ISO-8601" | null,
@@ -24,11 +29,10 @@
  *
  * `high_failure_count` = sources with consecutive_failures ≥ 3 but circuit
  * not yet open. `stale_count` = active sources with no article in 7 days
- * and circuit still closed. `database` is `null` if the size RPC fails —
- * the watchdog tolerates `null` so transient size-check failures don't
- * false-page. `latest_successful_fetch_at` is the newest `last_fetched_at`
- * among active sources, ignoring values more than `FUTURE_SKEW_MS` ahead of
- * now so a skewed clock can't pin `fetch_age_minutes` at 0.
+ * and circuit still closed. `latest_successful_fetch_at` is the newest
+ * `last_fetched_at` among active sources, ignoring values more than
+ * `FUTURE_SKEW_MS` ahead of now so a skewed clock can't pin
+ * `fetch_age_minutes` at 0.
  *
  * ## Caching
  * Cache-Control: 60s public. Health doesn't need to be perfectly fresh.
@@ -39,10 +43,10 @@ import { corsHeaders, handleCors } from "../_shared/cors.ts";
 import {
   buildCacheKey,
   buildProxyUrl,
-  isBooleanFilter,
-  isSlugFilter,
+  isBooleanEqFilter,
+  isSingleSlugEqFilter,
+  isSingleUuidEqFilter,
   isUpstreamSuccess,
-  isUuidFilter,
   type ProxyConfig,
   tooLong,
 } from "../_shared/supabase-proxy.ts";
@@ -50,9 +54,12 @@ import { getCached, setCached } from "../_shared/memory-cache.ts";
 
 // This endpoint runs upstream as service_role (see privilegedHeaders), so
 // validating the filter values keeps a malformed id/slug from costing a
-// service-role DB round-trip and from minting a unique cache key. Safe to
-// validate strictly: api-source-health is called by the watchdog / dashboards,
-// not the iOS app.
+// service-role DB round-trip and from minting a unique cache key. Each filter
+// takes a single `eq.` value: `neq.` / `in.(…)` match most of the fleet, and a
+// random value per request would make every one an uncached full-fleet query.
+// A rejected filter is dropped, so the request falls back to the cached
+// unfiltered view. Safe to validate strictly: api-source-health is called by
+// the watchdog / dashboards, not the iOS app.
 const config: ProxyConfig = {
   table: "source_health",
   allowedParams: ["id", "slug", "is_active", "order"],
@@ -60,9 +67,9 @@ const config: ProxyConfig = {
     "id,name,slug,is_active,consecutive_failures,circuit_open_until,circuit_open,last_fetched_at,most_recent_article_at,articles_last_24h",
   allowedOrderColumns: ["name", "slug", "consecutive_failures", "last_fetched_at"],
   paramValidators: {
-    id: isUuidFilter,
-    slug: isSlugFilter,
-    is_active: isBooleanFilter,
+    id: isSingleUuidEqFilter,
+    slug: isSingleSlugEqFilter,
+    is_active: isBooleanEqFilter,
   },
 };
 
@@ -76,7 +83,6 @@ const STALE_MS = 7 * 24 * 60 * 60 * 1000;
 // `fetch_age_minutes` at 0 forever, silently disabling the watchdog's
 // freshness alarm during a total ingestion stall.
 const FUTURE_SKEW_MS = 60 * 60 * 1000;
-const DEFAULT_QUOTA_BYTES = 524_288_000;
 
 interface SourceHealthRow {
   id: string;
@@ -101,21 +107,6 @@ interface HealthSummary {
   fetch_age_minutes: number | null;
 }
 
-interface DatabaseSize {
-  size_bytes: number;
-  size_pretty: string;
-  quota_pct: number;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
 function privilegedHeaders(): { url: string; headers: Record<string, string> } | null {
   // `source_health` is now revoked from anon (migration 027). The Edge
   // Function authenticates upstream as service_role so the watchdog can
@@ -133,35 +124,6 @@ function privilegedHeaders(): { url: string; headers: Record<string, string> } |
       Prefer: "count=estimated",
     },
   };
-}
-
-export async function fetchDatabaseSize(): Promise<DatabaseSize | null> {
-  const priv = privilegedHeaders();
-  if (!priv) return null;
-
-  const quotaRaw = Deno.env.get("SUPABASE_DB_QUOTA_BYTES");
-  const quotaParsed = quotaRaw ? Number(quotaRaw) : DEFAULT_QUOTA_BYTES;
-  const quotaBytes = Number.isFinite(quotaParsed) && quotaParsed > 0
-    ? quotaParsed
-    : DEFAULT_QUOTA_BYTES;
-
-  try {
-    const response = await fetch(`${priv.url}/rest/v1/rpc/get_db_size_bytes`, {
-      method: "POST",
-      headers: priv.headers,
-      body: "{}",
-    });
-    if (response.status !== 200) return null;
-    const sizeBytes = Number(await response.json());
-    if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return null;
-    return {
-      size_bytes: sizeBytes,
-      size_pretty: formatBytes(sizeBytes),
-      quota_pct: Math.round((sizeBytes / quotaBytes) * 100),
-    };
-  } catch {
-    return null;
-  }
 }
 
 export function summarize(rows: SourceHealthRow[]): HealthSummary {
@@ -236,10 +198,7 @@ async function buildPayload(
 ): Promise<
   { status: number; body: string; cacheable: boolean; contentRange?: string | null }
 > {
-  const [result, database] = await Promise.all([
-    fetchSourceHealth(req),
-    fetchDatabaseSize(),
-  ]);
+  const result = await fetchSourceHealth(req);
   if (result === null) {
     return {
       status: 500,
@@ -276,7 +235,6 @@ async function buildPayload(
   const rows: SourceHealthRow[] = JSON.parse(result.data);
   const payload = {
     fetched_at: new Date().toISOString(),
-    database,
     summary: summarize(rows),
     sources: rows,
   };

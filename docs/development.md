@@ -24,9 +24,6 @@ export CIRCUIT_MAX_BACKOFF_HOURS=24     # cap on the exponential circuit backoff
 export IMAGE_PRUNE_DAYS=3               # age (days) past which image_url/thumbnail_url are nulled by daily cleanup; must be >0 and <= 7 (ArticleRetentionDays)
 export CONTENT_PRUNE_DAYS=2             # age (days) past which articles.content is nulled by daily cleanup; same bounds as IMAGE_PRUNE_DAYS
 
-# Edge Functions only (read by api-source-health):
-export SUPABASE_DB_QUOTA_BYTES=524288000 # DB-size cap for quota_pct calculation (default 500 MB free tier)
-
 # Run the worker
 make run
 
@@ -141,7 +138,7 @@ pulse-backend/
 │   │   ├── api-articles/              # Articles endpoint (15min + ETag)
 │   │   ├── api-search/                # Search endpoint (1min private)
 │   │   ├── api-health/                # Health check endpoint (no-store)
-│   │   └── api-source-health/         # Per-source fetch health + summary + DB size (60s cache)
+│   │   └── api-source-health/         # Per-source fetch health + summary (60s cache)
 │   └── tests/                         # SQL security-invariant assertions (run by migrations-ci.yml)
 ├── rss-worker/
 │   ├── go.mod                         # Go module definition
