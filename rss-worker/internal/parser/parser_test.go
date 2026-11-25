@@ -1165,6 +1165,82 @@ func TestParseFeed_ConditionalGET_OmitsHeadersWhenSourceHasNone(t *testing.T) {
 	}
 }
 
+// A hostile feed sets its own response headers, and Go's client accepts up to
+// 10 MB of them. Validators are written to the sources row and resent on every
+// fetch, so one past the cap is dropped: never stored, sent or echoed back.
+// Truncating instead would store a value that can never match.
+const wantMaxValidatorLen = 1024
+
+func TestParseFeed_ConditionalGET_CapsValidatorLength(t *testing.T) {
+	over := `"` + strings.Repeat("a", wantMaxValidatorLen-1) + `"`
+	atCap := `"` + strings.Repeat("b", wantMaxValidatorLen-2) + `"`
+	smallETag, smallLM := `"v1"`, "Wed, 21 Oct 2025 07:28:00 GMT"
+	ptr := func(s string) *string { return &s }
+
+	cases := []struct {
+		name                     string
+		status                   int
+		respETag, respLM         string
+		storedETag, storedLM     *string
+		wantSentETag, wantSentLM string
+		wantETag, wantLM         string
+	}{
+		{
+			name: "200 drops oversized response validators", status: http.StatusOK,
+			respETag: over, respLM: over,
+		},
+		{
+			name: "200 keeps validators exactly at the cap", status: http.StatusOK,
+			respETag: atCap, respLM: atCap, wantETag: atCap, wantLM: atCap,
+		},
+		{
+			name: "304 with oversized validators keeps the stored ones", status: http.StatusNotModified,
+			respETag: over, respLM: over, storedETag: ptr(smallETag), storedLM: ptr(smallLM),
+			wantSentETag: smallETag, wantSentLM: smallLM, wantETag: smallETag, wantLM: smallLM,
+		},
+		{
+			name: "oversized stored validators are neither sent nor echoed", status: http.StatusNotModified,
+			storedETag: ptr(over), storedLM: ptr(over),
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var sentETag, sentLM string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sentETag = r.Header.Get("If-None-Match")
+				sentLM = r.Header.Get("If-Modified-Since")
+				if c.respETag != "" {
+					w.Header().Set("ETag", c.respETag)
+				}
+				if c.respLM != "" {
+					w.Header().Set("Last-Modified", c.respLM)
+				}
+				w.WriteHeader(c.status)
+				if c.status == http.StatusOK {
+					w.Write([]byte(`<?xml version="1.0"?><rss version="2.0"><channel><title>T</title></channel></rss>`))
+				}
+			}))
+			defer server.Close()
+
+			result, err := New().ParseFeed(context.Background(), models.Source{
+				ID: "src-1", FeedURL: server.URL, Language: "en",
+				ETag: c.storedETag, LastModified: c.storedLM,
+			})
+			if err != nil {
+				t.Fatalf("ParseFeed error: %v", err)
+			}
+			if sentETag != c.wantSentETag || sentLM != c.wantSentLM {
+				t.Errorf("sent If-None-Match %d bytes / If-Modified-Since %d bytes, want %d / %d",
+					len(sentETag), len(sentLM), len(c.wantSentETag), len(c.wantSentLM))
+			}
+			if result.ETag != c.wantETag || result.LastModified != c.wantLM {
+				t.Errorf("result ETag %d bytes / LastModified %d bytes, want %d / %d",
+					len(result.ETag), len(result.LastModified), len(c.wantETag), len(c.wantLM))
+			}
+		})
+	}
+}
+
 func TestParseFeed_ConditionalGET_Non2xxReturnsError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -1577,6 +1653,9 @@ func TestIsSafeArticleURL(t *testing.T) {
 		{"http://10.0.0.1/internal.mp3", false},
 		{"http://169.254.169.254/latest/meta-data/", false},
 		{"http://0.0.0.1/probe", false},
+		{"http://168.63.129.16/?comp=versions", false}, // Azure WireServer
+		{"http://[::169.254.169.254]/x", false},        // IPv4-compatible IMDS
+		{"http://[fec0::1]/x", false},                  // site-local
 		// M2 — obfuscated IP literals net.ParseIP rejects but getaddrinfo
 		// accepts; rejected outright regardless of range.
 		{"http://2852039166/latest/meta-data/", false}, // decimal 169.254.169.254

@@ -116,6 +116,7 @@ the vulnerability classes worth targeting during discovery.
 | Stored URL host the guard reads as public but the client parses as internal (`10.0.0.1.`, fullwidth digits, `localhost`, zone IDs) | **SSRF** | C-URLSAFE |
 | Multi-gigabyte feed / page body exhausts worker memory (DoS) | **DoS** | C-LIMITS |
 | One feed's item count / text volume fills the DB past the free-tier quota (project-wide outage) | **DoS** | C-LIMITS |
+| Megabyte-sized ETag / Last-Modified header bloats the sources row and is resent on every fetch | **DoS** | C-LIMITS |
 | Feed-supplied MIME type smuggles CRLF / extra headers | **Injection** | C-SANITIZE |
 | Oversized/overflowing media duration corrupts numeric fields | **DoS** | C-SANITIZE |
 | Control / bidi-override codepoints spoof rendering on iOS | **Injection** | C-SANITIZE |
@@ -186,8 +187,12 @@ rather than line numbers so this stays accurate as code moves.
   `0.0.0.0/8` "this host" block (whose `0.0.0.1` routes to localhost on Linux —
   `IsUnspecified()` only matches the single `0.0.0.0`), CGNAT (100.64/10), the
   NAT64 / 6to4 / Teredo IPv4↔IPv6 translation prefixes (which could otherwise
-  wrap 169.254.169.254), 6to4 relay anycast (192.88.99/24), reserved Class-E +
-  limited-broadcast (240/4), and benchmarking / documentation space.
+  wrap 169.254.169.254), the deprecated IPv4-compatible block (`::/96`, which
+  wraps a v4 the way `::ffff:` does but isn't unwrapped by `Unmap`) and
+  site-local block (`fec0::/10`), 6to4 relay anycast (192.88.99/24), reserved
+  Class-E + limited-broadcast (240/4), benchmarking / documentation space, and
+  Azure's WireServer (`168.63.129.16`): a public-looking address that answers
+  only from inside an Azure VM, which is what a GitHub-hosted runner is.
   `ValidateSSRFTarget` pre-flights scheme + host. Redirects are re-validated.
 - **C-OGIMG** — `internal/parser/ogimage.go`: `isAcceptableOGImage` delegates to
   the unified storage guard (`isSafeMediaURL` → `isSafeArticleURL`), so an
@@ -209,7 +214,11 @@ rather than line numbers so this stays accurate as code moves.
   50 MB feed of tiny items inserts hundreds of thousands of rows in a run. The
   content backfill (`runContentBackfill`) applies the same per-source budget,
   so serving short pages at fetch time and huge ones at backfill time can't
-  route around it.
+  route around it. The ETag / Last-Modified validators `ParseFeed` persists
+  to the source's row (and resends as `If-None-Match` / `If-Modified-Since`)
+  are dropped past `MaxValidatorLen` (1 KB); Go's client otherwise admits up
+  to 10 MB of response headers. A stored validator over the cap is neither
+  resent nor echoed back on a 304, so the next successful fetch clears it.
 - **C-SANITIZE** — `internal/parser/parser.go`: `sanitizeText` strips C0/C1
   control + bidi-override codepoints; `sanitizeMIMEType` enforces a tight MIME
   regex (no CRLF); `parseDuration` bounds each part before combining (so the
