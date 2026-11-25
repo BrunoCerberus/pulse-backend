@@ -197,8 +197,8 @@ jobs:
             case "$1" in
               gitleaks) echo ".github/workflows/security.yml — GITLEAKS_VERSION + GITLEAKS_SHA256 (the new SHA256 is in the release's \`gitleaks_<ver>_checksums.txt\`)" ;;
               gosec) echo ".github/workflows/security.yml — GOSEC_VERSION + GOSEC_SHA256 (the new SHA256 is in the release's \`gosec_<ver>_checksums.txt\`)" ;;
-              actionlint) echo ".github/workflows/lint-meta.yml — ACTIONLINT_VERSION + ACTIONLINT_SHA256 (the new SHA256 is in the release's \`actionlint_<ver>_checksums.txt\`)" ;;
-              zizmor) echo ".github/workflows/lint-meta.yml — ZIZMOR_VERSION + ZIZMOR_SHA256 (the new SHA256 is in the release body — zizmor publishes no checksums file)" ;;
+              actionlint) echo ".github/workflows/lint-meta.yml — ACTIONLINT_VERSION (both env blocks) + ACTIONLINT_SHA256 (the new SHA256 is in the release's \`actionlint_<ver>_checksums.txt\`)" ;;
+              zizmor) echo ".github/workflows/lint-meta.yml — ZIZMOR_VERSION (both env blocks) + ZIZMOR_SHA256 (zizmor publishes no checksums file: use the sha256 digest GitHub lists for the release's x86_64-unknown-linux-gnu asset, and confirm it with \`gh attestation verify\`)" ;;
               "Supabase CLI") echo "deploy.yml + migrations-ci.yml — the version input on BOTH supabase/setup-cli steps (bump together; no checksum — npm is the supply chain)" ;;
               *) echo "(unknown tool — update the bump notes in toolchain-freshness.yml)" ;;
             esac

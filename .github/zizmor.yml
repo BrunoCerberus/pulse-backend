@@ -1,0 +1,11 @@
+# zizmor config. zizmor finds it on its own from the repo root, so the
+# lint-meta.yml run needs no --config flag.
+rules:
+  # self-repository (zizmor 1.30+) wants GitHub's `uses: $/...` form instead
+  # of `uses: ./...`. actionlint (latest release 1.7.12) rejects `$/` as an
+  # invalid action reference (rhysd/actionlint#711, #780). Both tools gate the
+  # same required lint-meta job, so making the switch would just trade one
+  # failing check for another. Re-enable this, and run `zizmor --fix`, once an
+  # actionlint release accepts `$/`.
+  self-repository:
+    disable: true

@@ -122,8 +122,8 @@ jobs:
           # Using the prebuilt binary avoids `go install`'s strict toolchain
           # check, which rejects gosec releases that bump their own go.mod
           # past the project's Go version.
-          GOSEC_VERSION: "v2.22.11"
-          GOSEC_SHA256: "a9a3fb304a78cd22f4f3673403c70c2ad03011da876c9ca14e17244599d4f0ab"
+          GOSEC_VERSION: "v2.30.0"
+          GOSEC_SHA256: "3fcce2c4e802ff4169217874602a7df355e9a37bcb6ffaa34b08f3d5f336cdfb"
         run: |
           # Download the PINNED release tarball directly instead of gosec's
           # install.sh — that script resolves the tag through the
