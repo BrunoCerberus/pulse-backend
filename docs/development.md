@@ -183,5 +183,6 @@ pulse-backend/
     ├── CODEOWNERS                     # Review ownership
     ├── lgpd-gdpr-rules.toml           # Custom gitleaks rules: CPF, CNPJ, IBAN, US SSN
     ├── pii-allowlist.txt              # Allowed email literals (maintainer + reserved domains)
+    ├── zizmor.yml                     # zizmor config (self-repository off until actionlint accepts `$/`)
     └── dependabot.yml                 # Dependency updates (minor/patch grouped per ecosystem)
 ```

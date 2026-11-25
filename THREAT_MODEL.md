@@ -314,7 +314,12 @@ rather than line numbers so this stays accurate as code moves.
   execute) to read.
 - **C-WFLINT** — `zizmor` (in `lint-meta.yml`, a required check) audits every
   workflow and composite action for template injection, credential persistence,
-  over-broad permissions, and unpinned actions.
+  over-broad permissions, and unpinned actions. Two deliberate exceptions, each
+  with its reason written next to it: `.github/zizmor.yml` turns off
+  `self-repository`, because its `uses: $/…` fix is rejected by actionlint (the
+  other half of the same required job) until an actionlint release accepts it;
+  and `claude.yml` ignores `dangerous-triggers` on `issue_comment` inline,
+  because C-FORKGATE limits that job to owner/member/collaborator comments.
 - **C-LEASTPRIV** — workflows default to `contents: read`; jobs widen only as
   needed.
 - **C-DEPSCAN** — govulncheck (PR + weekly), Trivy (vuln/secret/misconfig),
