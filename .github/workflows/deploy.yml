@@ -456,7 +456,7 @@ jobs:
 
           # On success the migrate step always ran `supabase db push` (a missing
           # secret or a failed push aborts the job before this annotation).
-          migrate_line="Migrations applied via \`supabase db push --remote\`"
+          migrate_line="Migrations applied via \`supabase db push --yes --remote\`"
 
           # Rendered on both paths. Empty when the job died before the smoke
           # step ran (e.g. a failed migration), which is itself informative.
