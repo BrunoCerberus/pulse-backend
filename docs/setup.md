@@ -99,7 +99,7 @@ Two scopes:
 | Secret Name | Used by |
 |-------------|---------|
 | `SUPABASE_URL` | `fetch-rss.yml`, `cleanup.yml`, `backfill.yml`, `watchdog.yml` |
-| `SUPABASE_SERVICE_ROLE_KEY` | `fetch-rss.yml`, `cleanup.yml`, `backfill.yml` (worker writes). `watchdog.yml` does **not** need it. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `fetch-rss.yml`, `cleanup.yml`, `backfill.yml` (worker writes), and `watchdog.yml` for its direct `get_db_size_bytes` call only (it never sends the key to an Edge Function). |
 
 **`production` Environment secrets** (Settings → Environments → New environment "production"):
 
@@ -122,7 +122,7 @@ The workflows are already configured (full table in [ci-cd.md](ci-cd.md)):
 - `fetch-rss.yml` - Runs every 2 hours
 - `cleanup.yml` - Runs daily at 3 AM UTC
 - `backfill.yml` - og:image + content backfill daily at 04:30 UTC (manual `workflow_dispatch` accepts `kind: both|images|content`)
-- `watchdog.yml` - Source-health check every 2 hours (fails the job + emails on circuit/stale/high-failure/DB-quota or fetch-freshness breaches)
+- `watchdog.yml` - Source-health and DB-quota check hourly (fails the job + emails on circuit/stale/high-failure/DB-quota or fetch-freshness breaches)
 - `migrations-ci.yml` - On PR/push touching `supabase/migrations/**`, `supabase/config.toml`, or `supabase/tests/**`: boots the local Supabase stack, applies all migrations from scratch, `supabase db lint`, then runs the SQL security-invariant assertions
 - `lint-meta.yml` - `actionlint` (+ shellcheck on run-blocks) over all workflows on PR/push
 
