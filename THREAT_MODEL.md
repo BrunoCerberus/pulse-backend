@@ -306,7 +306,9 @@ rather than line numbers so this stays accurate as code moves.
 ### CI / supply-chain controls
 
 - **C-FORKGATE** — review bots run only for `OWNER`/`MEMBER`/`COLLABORATOR`
-  PRs; SARIF-upload steps skip on fork PRs.
+  PRs, and the on-demand `@claude` agent (`claude.yml`) runs only for comments,
+  reviews and issues from those same author associations (its job `if:` checks
+  `author_association` on every trigger); SARIF-upload steps skip on fork PRs.
 - **C-PIN** — third-party actions are pinned to commit SHAs; scanner versions
   pinned via env; curl-installed binaries are SHA256-verified before extraction.
 - **C-NOCRED** — every `actions/checkout` sets `persist-credentials: false`, so
