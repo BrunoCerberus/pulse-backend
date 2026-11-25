@@ -371,9 +371,10 @@ END $$;
 -- The worker writes all three only as service_role, so this breaks nothing.
 DO $$
 DECLARE
-    r    TEXT;
-    tbl  TEXT;
-    priv TEXT;
+    r       TEXT;
+    tbl     TEXT;
+    priv    TEXT;
+    granted BOOLEAN;
 BEGIN
     FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
         FOREACH tbl IN ARRAY ARRAY['public.articles', 'public.sources', 'public.categories'] LOOP
@@ -381,10 +382,13 @@ BEGIN
                 -- INSERT/UPDATE can also be granted per column, which
                 -- has_table_privilege does not see; has_any_column_privilege
                 -- covers both. DELETE/TRUNCATE exist only at table level.
-                IF CASE WHEN priv IN ('INSERT', 'UPDATE')
-                        THEN has_any_column_privilege(r, tbl, priv)
-                        ELSE has_table_privilege(r, tbl, priv)
-                   END THEN
+                -- Computed into a variable because PL/pgSQL's IF reads its
+                -- condition up to the first THEN, including one inside CASE.
+                granted := CASE WHEN priv IN ('INSERT', 'UPDATE')
+                                THEN has_any_column_privilege(r, tbl, priv)
+                                ELSE has_table_privilege(r, tbl, priv)
+                           END;
+                IF granted THEN
                     RAISE EXCEPTION 'INVARIANT 9 FAILED: % has % on % (migration 035/037 write-REVOKE regressed)', r, priv, tbl;
                 END IF;
             END LOOP;
