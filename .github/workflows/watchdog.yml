@@ -116,15 +116,19 @@ jobs:
           # attacker filling the database how close the quota is. This repo's
           # Actions logs are public too, so only ok / over / n/a is printed,
           # never the size. The key goes to curl on stdin, not in its argv.
-          # A failed check warns rather than fails, so a transient RPC error
-          # doesn't page, but it shows up as n/a instead of passing silently.
+          # A refused key or a missing function (401/403/404) fails the job:
+          # those persist, so the alarm would otherwise stay off unnoticed
+          # after a key rotation. A timeout / 5xx / 429 only warns (n/a), so a
+          # transient RPC error doesn't page.
           db_status="n/a"
-          db_bytes=$(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\n' \
+          db_body=$(mktemp)
+          db_code=$(printf 'header = "apikey: %s"\nheader = "Authorization: Bearer %s"\n' \
               "$SUPABASE_SERVICE_ROLE_KEY" "$SUPABASE_SERVICE_ROLE_KEY" |
-            curl -fsS --max-time 30 -K - -X POST \
+            curl -sS --max-time 30 -K - -o "$db_body" -w '%{http_code}' -X POST \
               -H "Content-Type: application/json" -d '{}' \
               "${SUPABASE_URL}/rest/v1/rpc/get_db_size_bytes" || true)
-          if [[ "$db_bytes" =~ $int_re ]]; then
+          db_bytes=$(cat "$db_body")
+          if [[ "$db_code" == "200" && "$db_bytes" =~ $int_re ]]; then
             if (( db_bytes * 100 > DB_QUOTA_BYTES * MAX_DB_QUOTA_PCT )); then
               db_status="over"
               echo "::error title=DB quota::database size exceeds ${MAX_DB_QUOTA_PCT}% of quota; check usage in the Supabase dashboard"
@@ -132,8 +136,12 @@ jobs:
             else
               db_status="ok"
             fi
+          elif [[ "$db_code" =~ ^(401|403|404)$ ]]; then
+            db_status="error"
+            echo "::error title=DB quota::database size check refused (HTTP ${db_code}), so the quota alarm is off; check the SUPABASE_SERVICE_ROLE_KEY secret and get_db_size_bytes grant"
+            fail=1
           else
-            echo "::warning title=DB quota::database size check unavailable; the quota alarm did not run"
+            echo "::warning title=DB quota::database size check unavailable (HTTP ${db_code:-none}); the quota alarm did not run"
           fi
           if (( fetch_age_minutes > MAX_FETCH_AGE_MINUTES )); then
             echo "::error title=Fetch freshness::latest successful fetch was ${fetch_age_minutes}m ago (${latest_successful_fetch_at}), exceeds ${MAX_FETCH_AGE_MINUTES}m"

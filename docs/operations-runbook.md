@@ -42,8 +42,9 @@ View workflow runs:
    `high_failure` cross thresholds defined inline, when DB size passes 60% of
    quota, or when the latest successful source fetch is more than 180 minutes
    old). The watchdog reads DB size itself through `get_db_size_bytes` and its
-   public logs show only `db_quota` ok / over / n/a; see the exact size in the
-   Supabase dashboard.
+   public logs show only `db_quota` ok / over / error / n/a; see the exact size
+   in the Supabase dashboard. `error` (the RPC refused the key, or the function
+   is gone) fails the job; `n/a` (timeout or 5xx) only warns.
 5. Check `deploy.yml` for production deploys — gated by the
    `production` GitHub Environment (required-reviewer approval,
    master-only); deploys pause for human approval in the Actions UI.

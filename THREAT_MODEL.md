@@ -280,7 +280,8 @@ rather than line numbers so this stays accurate as code moves.
   returns only the fleet summary and per-source rows, never the DB size 027
   also revoked: that number tells an attacker filling the database how close
   the quota is. The watchdog reads it itself through the service-role-only
-  `get_db_size_bytes` RPC, and its public Actions logs show only ok / over.
+  `get_db_size_bytes` RPC, and its public Actions logs show only a status,
+  never the size.
 - **C-DEFINER** — every `SECURITY DEFINER` function pins `SET search_path = ''`
   with fully-qualified references (migration 027).
 - **C-CALLERGATE** — all seven SECURITY DEFINER write functions (the five from
