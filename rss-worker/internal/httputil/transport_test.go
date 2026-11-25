@@ -350,6 +350,13 @@ func TestIsForbiddenIP(t *testing.T) {
 		{"6to4 relay anycast 192.88.99.x (RFC 7526)", net.ParseIP("192.88.99.1"), true},
 		{"Class-E reserved 240.x (RFC 1112)", net.ParseIP("240.0.0.1"), true},
 		{"limited broadcast 255.255.255.255", net.ParseIP("255.255.255.255"), true},
+		{"Azure WireServer 168.63.129.16 (reachable from GitHub runners)", net.ParseIP("168.63.129.16"), true},
+		{"Azure WireServer v4-mapped", net.ParseIP("::ffff:168.63.129.16"), true},
+		{"168.63.129.17 is outside the /32", net.ParseIP("168.63.129.17"), false},
+		{"IPv4-compatible wrapping IMDS (RFC 4291 ::/96)", net.ParseIP("::169.254.169.254"), true},
+		{"IPv4-compatible wrapping a public v4", net.ParseIP("::8.8.8.8"), true},
+		{"site-local fec0::1 (RFC 3879)", net.ParseIP("fec0::1"), true},
+		{"site-local end of range", net.ParseIP("feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), true},
 		{"public v6 2001:4860 not blocked", net.ParseIP("2001:4860:4860::8888"), false},
 		{"malformed length fails closed", net.IP{0x01}, true},
 	}

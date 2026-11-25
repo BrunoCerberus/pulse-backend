@@ -42,8 +42,8 @@ RSS feed configurations for news sources.
 | `updated_at` | TIMESTAMPTZ | Last update timestamp |
 | `language` | VARCHAR(5) | ISO 639-1 language code (default: 'en') |
 | `fetch_interval_hours` | INT | Adaptive fetch frequency (migration 015) |
-| `etag` | TEXT | Conditional-GET validator (migration 019) |
-| `last_modified` | TEXT | Conditional-GET validator (migration 019) |
+| `etag` | TEXT | Conditional-GET validator (migration 019); the worker drops values over 1 KB |
+| `last_modified` | TEXT | Conditional-GET validator (migration 019); the worker drops values over 1 KB |
 | `consecutive_failures` | INT | Circuit-breaker counter (migration 019) |
 | `circuit_open_until` | TIMESTAMPTZ | Cool-off timestamp when circuit trips (migration 019) |
 

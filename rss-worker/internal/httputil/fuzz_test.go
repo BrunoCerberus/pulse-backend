@@ -1,6 +1,7 @@
 package httputil
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -26,6 +27,9 @@ func FuzzIsForbiddenIP(f *testing.F) {
 		net.ParseIP("fd00::1"),
 		net.ParseIP("::ffff:169.254.169.254"),
 		net.ParseIP("2606:4700::1111"),
+		net.ParseIP("::169.254.169.254"),
+		net.ParseIP("fec0::1"),
+		{168, 63, 129, 16},
 		make([]byte, 5),
 		make([]byte, 17),
 	} {
@@ -47,6 +51,11 @@ func FuzzIsForbiddenIP(f *testing.F) {
 		// in its v6 form — ::ffff:169.254.169.254 is the classic bypass.
 		if v4 := ip.To4(); v4 != nil && IsForbiddenIP(v4) != forbidden {
 			t.Fatalf("IsForbiddenIP disagrees between %v and its 4-byte form %v", ip, v4)
+		}
+		// The deprecated IPv4-compatible form (::a.b.c.d) wraps a v4 too, but
+		// To4 doesn't unwrap it, so the whole ::/96 must be refused.
+		if len(b) == net.IPv6len && bytes.Equal(b[:12], make([]byte, 12)) && !forbidden {
+			t.Fatalf("IsForbiddenIP(%v) = false for an IPv4-compatible address", ip)
 		}
 	})
 }

@@ -65,6 +65,12 @@ const (
 	MaxArticlesPerFeed = 100
 	MaxFeedBytes       = 2 << 20
 
+	// MaxValidatorLen caps the ETag / Last-Modified a feed's response can make
+	// us store on its sources row and resend on every fetch. Go's client admits
+	// up to 10 MB of response headers; real validators are a quoted hash or a
+	// 29-byte HTTP date.
+	MaxValidatorLen = 1024
+
 	// Per-field length caps (in runes). Anything longer is silently
 	// truncated. Caps the DB-bloat amplification factor a single hostile
 	// item can produce.
@@ -176,11 +182,11 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 	if err != nil {
 		return nil, err
 	}
-	if source.ETag != nil && *source.ETag != "" {
-		req.Header.Set("If-None-Match", *source.ETag)
+	if etag := storedValidator(source.ETag); etag != "" {
+		req.Header.Set("If-None-Match", etag)
 	}
-	if source.LastModified != nil && *source.LastModified != "" {
-		req.Header.Set("If-Modified-Since", *source.LastModified)
+	if lm := storedValidator(source.LastModified); lm != "" {
+		req.Header.Set("If-Modified-Since", lm)
 	}
 	// Some publishers reject no-User-Agent requests; match what gofeed
 	// would have sent by default.
@@ -198,13 +204,13 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 		// RFC 7232: the server MAY omit ETag/Last-Modified on 304. When it
 		// does, preserve what we sent so the next run still benefits from
 		// the conditional GET.
-		etag := resp.Header.Get("ETag")
-		if etag == "" && source.ETag != nil {
-			etag = *source.ETag
+		etag := validator(resp.Header.Get("ETag"))
+		if etag == "" {
+			etag = storedValidator(source.ETag)
 		}
-		lm := resp.Header.Get("Last-Modified")
-		if lm == "" && source.LastModified != nil {
-			lm = *source.LastModified
+		lm := validator(resp.Header.Get("Last-Modified"))
+		if lm == "" {
+			lm = storedValidator(source.LastModified)
 		}
 		return &ParseResult{NotModified: true, ETag: etag, LastModified: lm}, nil
 	}
@@ -247,9 +253,28 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 
 	return &ParseResult{
 		Articles:     articles,
-		ETag:         resp.Header.Get("ETag"),
-		LastModified: resp.Header.Get("Last-Modified"),
+		ETag:         validator(resp.Header.Get("ETag")),
+		LastModified: validator(resp.Header.Get("Last-Modified")),
 	}, nil
+}
+
+// validator returns v, or "" when it is longer than MaxValidatorLen. Dropped,
+// not truncated: a truncated validator can never match.
+func validator(v string) string {
+	if len(v) > MaxValidatorLen {
+		return ""
+	}
+	return v
+}
+
+// storedValidator applies the same cap to a validator read back from the
+// sources row, so one stored before the cap existed is no longer resent and
+// is cleared on the next successful fetch.
+func storedValidator(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return validator(*v)
 }
 
 // capNewest keeps the limit newest articles by PublishedAt, in feed order.
