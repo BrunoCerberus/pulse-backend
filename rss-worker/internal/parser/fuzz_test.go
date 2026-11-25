@@ -1,10 +1,25 @@
 package parser
 
 import (
+	"net"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/pulsefeed/rss-worker/internal/httputil"
 )
+
+// mustHostname returns the host of a URL isSafeArticleURL accepted, which
+// therefore has to parse.
+func mustHostname(t *testing.T, s string) string {
+	t.Helper()
+	u, err := url.Parse(s)
+	if err != nil {
+		t.Fatalf("isSafeArticleURL(%q) accepted an unparseable URL: %v", s, err)
+	}
+	return u.Hostname()
+}
 
 // The parser package is the repo's primary hostile-input surface: every string
 // fuzzed here arrives verbatim from an attacker-controlled RSS feed or article
@@ -109,6 +124,11 @@ func FuzzURLSafety(f *testing.F) {
 		"http://[::ffff:127.0.0.1]/",
 		"http://example.com\x00/",
 		strings.Repeat("a", 4000),
+		"http://169.254.169.254./",
+		"http://0xa9.254.169.254./",
+		"http://１６９.２５４.１６９.２５４/",
+		"http://[fe80::1%25en0]/",
+		"http://localhost./",
 	} {
 		f.Add(s)
 	}
@@ -122,6 +142,26 @@ func FuzzURLSafety(f *testing.F) {
 		}
 		if safe && urlHasUnsafeRune(s) {
 			t.Fatalf("isSafeArticleURL(%q) accepted a URL with an unsafe rune", s)
+		}
+		if !safe {
+			return
+		}
+		if !utf8.ValidString(s) {
+			t.Fatalf("isSafeArticleURL(%q) accepted invalid UTF-8, which storage would rewrite", s)
+		}
+		// Oracles independent of the guard's own normalisation: a client
+		// drops one trailing root dot before reading an IP literal, never
+		// sends a zone ID off-link, and resolves "localhost" on-device.
+		host := strings.ToLower(mustHostname(t, s))
+		if strings.Contains(host, "%") {
+			t.Fatalf("isSafeArticleURL(%q) accepted a zone-scoped host %q", s, host)
+		}
+		bare := strings.TrimSuffix(host, ".")
+		if ip := net.ParseIP(bare); ip != nil && httputil.IsForbiddenIP(ip) {
+			t.Fatalf("isSafeArticleURL(%q) accepted forbidden literal %q", s, host)
+		}
+		if bare == "localhost" {
+			t.Fatalf("isSafeArticleURL(%q) accepted localhost", s)
 		}
 	})
 }

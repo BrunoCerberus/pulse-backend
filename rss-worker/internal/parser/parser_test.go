@@ -1584,6 +1584,43 @@ func TestIsSafeArticleURL(t *testing.T) {
 		{"http://134744072/", false},                   // decimal 8.8.8.8 (public, still rejected)
 		// A canonical public dotted-quad literal stays allowed.
 		{"http://93.184.216.34/img.jpg", true},
+		// The host must be judged the way the iOS client will parse it (WebKit
+		// follows the WHATWG URL spec), not as the raw string: these all
+		// normalise to a forbidden address or an on-device name.
+		{"http://169.254.169.254./latest/meta-data/", false}, // trailing root dot
+		{"http://10.0.0.1./internal", false},
+		{"http://0xa9.254.169.254./x", false}, // obfuscated + trailing dot
+		{"http://2852039166./x", false},       // decimal + trailing dot
+		{"http://１６９.２５４.１６９.２５４/x", false},   // fullwidth digits (UTS #46 maps to ASCII)
+		{"http://169。254。169。254/x", false},   // ideographic full stop as label separator
+		{"http://[fe80::1%25en0]/x", false},   // zone-scoped IPv6 literal
+		{"http://localhost/x", false},         // resolves on-device, never via DNS
+		{"http://localhost.:8080/x", false},
+		{"http://LOCALHOST/x", false},
+		{"http://ＬＯＣＡＬＨＯＳＴ/x", false},       // fullwidth letters map to "localhost"
+		{"http://admin.localhost/x", false}, // RFC 6761 reserves *.localhost for loopback
+		{"http://router.local/x", false},    // RFC 6762 mDNS — resolved on the user's LAN
+		{"http://router/x", false},          // dotless: search domain / LLMNR / mDNS, never public
+		{"http://intranet./x", false},       // dotless once the root dot goes
+		{"http://nas.home.arpa/x", false},   // RFC 8375 home-network names
+		{"http://db.internal/x", false},     // ICANN-reserved private-use TLD
+		// Invalid UTF-8 anywhere is refused before parsing: storage would
+		// rewrite it to U+FFFD, and x/net/idna on Go < 1.27 punycodes it
+		// without an error instead of refusing it.
+		{"http://a\xffb.example/x", false},
+		{"https://example.com/a\xffb.jpg", false},
+		// A host IDNA refuses (U+FFFD is disallowed) can't be loaded by the
+		// client either, so it is not stored.
+		{"http://a�b.example/x", false},
+		// Legitimate hosts must survive the normalisation.
+		{"https://www.bbc.co.uk/news/1", true},
+		{"https://EXAMPLE.COM/a", true},
+		{"https://example.com./a", true},               // fully-qualified public name
+		{"http://93.184.216.34./img.jpg", true},        // public literal + trailing dot
+		{"https://münchen.example/a", true},            // IDN
+		{"https://xn--mnchen-3ya.example/a", true},     // its punycode form
+		{"https://cdn_assets.example.com/a.jpg", true}, // underscore: WebKit does not apply STD3 rules
+		{"https://localhost.example.com/a", true},      // only the special-use suffixes are refused
 	}
 	for _, c := range cases {
 		t.Run(c.raw, func(t *testing.T) {
@@ -2081,5 +2118,217 @@ func TestParseSafeInt_OverflowGuard(t *testing.T) {
 	in := strings.Repeat("9", 20)
 	if parseSafeInt(in) != 0 {
 		t.Errorf("expected 0 on overflow, got %d", parseSafeInt(in))
+	}
+}
+
+// --- C-LIMITS: per-feed article and byte budget ---
+
+// Budget contract asserted by the ParseFeed tests below.
+const (
+	wantMaxArticlesPerFeed = MaxArticlesPerFeed
+	wantMaxFeedBytes       = MaxFeedBytes
+)
+
+// articleBytes sums the publisher-controlled text an article adds to its row.
+// Written independently of the parser's own accounting so the tests check the
+// stored result, not the implementation's arithmetic.
+func articleBytes(a *models.Article) int {
+	n := len(a.Title) + len(a.URL)
+	for _, p := range []*string{a.Summary, a.Content, a.Author, a.ImageURL, a.ThumbnailURL, a.MediaURL} {
+		if p != nil {
+			n += len(*p)
+		}
+	}
+	return n
+}
+
+// hostileFeedServer serves an RSS feed of n items listed OLDEST first (one
+// hour apart, the newest an hour ago), each optionally carrying contentPerItem
+// as content:encoded. Article pages 404, so enrichment adds nothing and the
+// test measures exactly what the feed itself supplied.
+func hostileFeedServer(t *testing.T, n int, contentPerItem string) *httptest.Server {
+	t.Helper()
+	newest := time.Now().Add(-time.Hour).UTC()
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/feed" {
+			http.NotFound(w, r)
+			return
+		}
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel><title>t</title>`)
+		for i := 0; i < n; i++ {
+			pub := newest.Add(-time.Duration(n-1-i) * time.Hour).Format(time.RFC1123Z)
+			fmt.Fprintf(&b, `<item><title>item-%d</title><link>%s/a/%d</link><pubDate>%s</pubDate>`, i, srv.URL, i, pub)
+			if contentPerItem != "" {
+				fmt.Fprintf(&b, `<content:encoded><![CDATA[%s]]></content:encoded>`, contentPerItem)
+			}
+			b.WriteString(`</item>`)
+		}
+		b.WriteString(`</channel></rss>`)
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// fastParser lifts the per-host rate limit for the test's single local host so
+// enrichment over many items doesn't sleep on the token bucket.
+func fastParser(t *testing.T) *Parser {
+	t.Helper()
+	origRPS, origBurst := hostRPS, hostBurst
+	SetHostRateLimit(10_000, 10_000)
+	t.Cleanup(func() { SetHostRateLimit(origRPS, origBurst) })
+	return New()
+}
+
+// A hostile feed lists far more items than any real feed (the body cap still
+// admits hundreds of thousands of tiny ones). Only the newest
+// wantMaxArticlesPerFeed may be kept, and they must be the newest even when the
+// feed is ordered oldest-first, as some podcast feeds legitimately are.
+func TestParseFeed_CapsArticlesPerFeed(t *testing.T) {
+	const n = 1000
+	if n <= wantMaxArticlesPerFeed {
+		t.Fatal("test feed must exceed the article cap")
+	}
+	srv := hostileFeedServer(t, n, "")
+	p := fastParser(t)
+
+	res, err := p.ParseFeed(context.Background(), models.Source{ID: "s", FeedURL: srv.URL + "/feed", Language: "en"})
+	if err != nil {
+		t.Fatalf("ParseFeed: %v", err)
+	}
+	if got := len(res.Articles); got != wantMaxArticlesPerFeed {
+		t.Fatalf("got %d articles from a %d-item feed, want %d", got, n, wantMaxArticlesPerFeed)
+	}
+	// Feed order is preserved, and the survivors are the newest items.
+	for i, a := range res.Articles {
+		if want := fmt.Sprintf("item-%d", n-wantMaxArticlesPerFeed+i); a.Title != want {
+			t.Fatalf("articles[%d].Title = %q, want %q", i, a.Title, want)
+		}
+	}
+}
+
+// Each item may carry up to maxContentLen runes, so even a capped item count
+// can store hundreds of MB per run. The feed's total stored text is bounded;
+// the newest items keep their content, older ones are stored without it
+// (backfill can fill those in later) rather than dropped.
+func TestParseFeed_EnforcesFeedByteBudget(t *testing.T) {
+	const n = 20
+	body := strings.Repeat("a", maxContentLen) // 200 KB per item, 4 MB per feed
+	if n*maxContentLen <= wantMaxFeedBytes {
+		t.Fatal("test feed must exceed the byte budget")
+	}
+	srv := hostileFeedServer(t, n, body)
+	p := fastParser(t)
+
+	res, err := p.ParseFeed(context.Background(), models.Source{ID: "s", FeedURL: srv.URL + "/feed", Language: "en"})
+	if err != nil {
+		t.Fatalf("ParseFeed: %v", err)
+	}
+	if len(res.Articles) != n {
+		t.Fatalf("got %d articles, want all %d kept (content dropped, not the article)", len(res.Articles), n)
+	}
+	total := 0
+	for _, a := range res.Articles {
+		total += articleBytes(a)
+	}
+	if total > wantMaxFeedBytes {
+		t.Fatalf("feed stored %d bytes, want <= %d", total, wantMaxFeedBytes)
+	}
+	if newest := res.Articles[n-1]; newest.Content == nil || len(*newest.Content) != maxContentLen {
+		t.Errorf("newest article lost its content; budget must favour the newest items")
+	}
+	if oldest := res.Articles[0]; oldest.Content != nil {
+		t.Errorf("oldest article kept %d bytes of content past the budget", len(*oldest.Content))
+	}
+}
+
+func budgetArticle(title string, age time.Duration, summary, content string) *models.Article {
+	a := &models.Article{Title: title, URL: "https://example.com/" + title, PublishedAt: time.Now().Add(-age)}
+	if summary != "" {
+		a.Summary = &summary
+	}
+	if content != "" {
+		a.Content = &content
+	}
+	return a
+}
+
+func titles(articles []*models.Article) []string {
+	out := make([]string, len(articles))
+	for i, a := range articles {
+		out[i] = a.Title
+	}
+	return out
+}
+
+func TestCapNewest(t *testing.T) {
+	t.Run("under cap is returned untouched", func(t *testing.T) {
+		in := []*models.Article{budgetArticle("a", 2*time.Hour, "", ""), budgetArticle("b", time.Hour, "", "")}
+		if got := capNewest(in, 2); len(got) != 2 || &got[0] != &in[0] {
+			t.Fatalf("capNewest under the cap should return the same slice, got %v", titles(got))
+		}
+	})
+	t.Run("keeps the newest in feed order; ties keep feed order", func(t *testing.T) {
+		in := []*models.Article{
+			budgetArticle("old", 3*time.Hour, "", ""),
+			budgetArticle("new", time.Hour, "", ""),
+			budgetArticle("mid", 2*time.Hour, "", ""),
+		}
+		in[2].PublishedAt = in[1].PublishedAt // tie: "new" precedes "mid" in the feed
+		if got := strings.Join(titles(capNewest(in, 1)), ","); got != "new" {
+			t.Fatalf("capNewest = %s, want new", got)
+		}
+		if got := strings.Join(titles(capNewest(in, 2)), ","); got != "new,mid" {
+			t.Fatalf("capNewest = %s, want new,mid", got)
+		}
+	})
+}
+
+func TestFitByteBudget(t *testing.T) {
+	t.Run("under budget is returned untouched", func(t *testing.T) {
+		in := []*models.Article{budgetArticle("a", time.Hour, "s", "c")}
+		if got := fitByteBudget(in, 1<<20); len(got) != 1 || got[0].Content == nil {
+			t.Fatal("fitByteBudget under budget must not strip or drop anything")
+		}
+	})
+	t.Run("strips content oldest-first, drops what cannot fit even without it", func(t *testing.T) {
+		big := strings.Repeat("x", 1000)
+		in := []*models.Article{
+			budgetArticle("huge", 3*time.Hour, strings.Repeat("s", 5000), ""), // too big even bare
+			budgetArticle("old", 2*time.Hour, "", big),
+			budgetArticle("new", time.Hour, "", big),
+		}
+		got := fitByteBudget(in, 1500)
+		if names := strings.Join(titles(got), ","); names != "old,new" {
+			t.Fatalf("kept %s, want old,new (huge dropped, feed order kept)", names)
+		}
+		if got[1].Content == nil {
+			t.Error("newest article must keep its content")
+		}
+		if got[0].Content != nil {
+			t.Error("older article must have its content stripped to fit")
+		}
+		total := 0
+		for _, a := range got {
+			total += storedBytes(a)
+		}
+		if total > 1500 {
+			t.Fatalf("stored %d bytes, want <= 1500", total)
+		}
+	})
+}
+
+func TestStoredBytes_CountsEveryPublisherField(t *testing.T) {
+	a := &models.Article{
+		Title: "t", URL: "u",
+		Summary: strPtr("s"), Content: strPtr("c"), Author: strPtr("a"),
+		ImageURL: strPtr("i"), ThumbnailURL: strPtr("h"), MediaURL: strPtr("m"),
+	}
+	if got := storedBytes(a); got != 8 {
+		t.Fatalf("storedBytes = %d, want 8", got)
 	}
 }

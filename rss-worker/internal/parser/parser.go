@@ -23,11 +23,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mmcdole/gofeed"
 	"github.com/pulsefeed/rss-worker/internal/httputil"
 	"github.com/pulsefeed/rss-worker/internal/logger"
 	"github.com/pulsefeed/rss-worker/internal/models"
+	"golang.org/x/net/idna"
 )
 
 // Parser handles RSS/Atom feed parsing and article enrichment.
@@ -51,6 +53,17 @@ const (
 	// publisher from streaming gigabytes of XML and exhausting memory. 50 MB
 	// is generous — real feeds top out below 1 MB.
 	MaxFeedBodyBytes = 50 << 20
+
+	// MaxArticlesPerFeed and MaxFeedBytes bound what one feed can add to the
+	// database per fetch. The body cap above bounds worker memory, not rows: a
+	// 50 MB feed of tiny items, each with a fresh link, would insert hundreds of
+	// thousands of rows in one run, and a few full-content items per run could
+	// fill the free-tier quota (500 MB) that took the project down in April
+	// 2026. Real feeds list well under 100 items and a 2-hour fetch window adds
+	// a handful of new ones, so neither bound touches legitimate input in
+	// practice; when they do bind, the newest items win.
+	MaxArticlesPerFeed = 100
+	MaxFeedBytes       = 2 << 20
 
 	// Per-field length caps (in runes). Anything longer is silently
 	// truncated. Caps the DB-bloat amplification factor a single hostile
@@ -219,6 +232,9 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 			articles = append(articles, article)
 		}
 	}
+	// Capped before enrichment so it also bounds the og:image / content
+	// fetches a feed can trigger.
+	articles = capNewest(articles, MaxArticlesPerFeed)
 
 	// Fetch og:images in parallel for high-resolution header images
 	p.enrichWithOGImages(ctx, articles)
@@ -226,11 +242,94 @@ func (p *Parser) ParseFeed(ctx context.Context, source models.Source) (*ParseRes
 	// Extract content for articles that don't have it from RSS.
 	p.enrichWithContent(ctx, articles, contentCap)
 
+	// Budgeted after enrichment, once every article's stored size is known.
+	articles = fitByteBudget(articles, MaxFeedBytes)
+
 	return &ParseResult{
 		Articles:     articles,
 		ETag:         resp.Header.Get("ETag"),
 		LastModified: resp.Header.Get("Last-Modified"),
 	}, nil
+}
+
+// capNewest keeps the limit newest articles by PublishedAt, in feed order.
+// Newest rather than first: some feeds (notably podcast back catalogues) list
+// oldest-first, and a head cut would then drop every new item forever.
+func capNewest(articles []*models.Article, limit int) []*models.Article {
+	if len(articles) <= limit {
+		return articles
+	}
+	keep := make([]bool, len(articles))
+	for _, i := range newestFirst(articles)[:limit] {
+		keep[i] = true
+	}
+	return keepMarked(articles, keep)
+}
+
+// fitByteBudget bounds the total storedBytes of articles to budget, spending
+// it newest-first. An article that does not fit is stored without its content
+// if that is enough (the content backfill can fill it in later), and dropped
+// otherwise. Output is in feed order. Older items are usually ones already
+// stored (the insert skips them as duplicates), so when the budget binds on a
+// real feed it costs nothing.
+func fitByteBudget(articles []*models.Article, budget int) []*models.Article {
+	total := 0
+	for _, a := range articles {
+		total += storedBytes(a)
+	}
+	if total <= budget {
+		return articles
+	}
+	keep := make([]bool, len(articles))
+	for _, i := range newestFirst(articles) {
+		a := articles[i]
+		size := storedBytes(a)
+		if size > budget && a.Content != nil {
+			size -= len(*a.Content)
+			a.Content = nil
+		}
+		if size > budget {
+			continue
+		}
+		budget -= size
+		keep[i] = true
+	}
+	return keepMarked(articles, keep)
+}
+
+// storedBytes is the publisher-controlled text an article adds to its row.
+func storedBytes(a *models.Article) int {
+	n := len(a.Title) + len(a.URL)
+	for _, s := range []*string{a.Summary, a.Content, a.Author, a.ImageURL, a.ThumbnailURL, a.MediaURL} {
+		if s != nil {
+			n += len(*s)
+		}
+	}
+	return n
+}
+
+// newestFirst returns article indices ordered by PublishedAt, newest first;
+// ties keep feed order.
+func newestFirst(articles []*models.Article) []int {
+	order := make([]int, len(articles))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		return articles[order[x]].PublishedAt.After(articles[order[y]].PublishedAt)
+	})
+	return order
+}
+
+// keepMarked returns the articles whose keep flag is set, in their original order.
+func keepMarked(articles []*models.Article, keep []bool) []*models.Article {
+	out := make([]*models.Article, 0, len(articles))
+	for i, a := range articles {
+		if keep[i] {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // enrichStats holds success/failure counts from an enrichment pass.
@@ -458,8 +557,10 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentC
 }
 
 // isSafeArticleURL accepts only http/https URLs with a non-empty host, no
-// embedded userinfo, no control/bidi-override codepoints, and no forbidden or
-// obfuscated IP-literal host. This is a *storage* guard: unlike the worker's
+// embedded userinfo, no control/bidi-override codepoints, and no host that a
+// client resolves to a non-public address on its own (forbidden or obfuscated
+// IP literal, localhost, mDNS) — judged as the client parses the host, see
+// hostIsUnsafeForClient. This is a *storage* guard: unlike the worker's
 // own fetch (protected at the dial layer by httputil.SafeTransport, which
 // re-resolves and rejects forbidden IPs), these URLs are persisted and shipped
 // to iOS clients, which then dereference them. So the same value must be safe
@@ -469,7 +570,12 @@ func (p *Parser) itemToArticle(item *gofeed.Item, source models.Source, contentC
 // (itemToArticle), thumbnail / RSS-image / media (isSafeMediaURL), and og:image
 // (isAcceptableOGImage) — so all four enforce one consistent policy.
 func isSafeArticleURL(raw string) bool {
-	if urlHasUnsafeRune(raw) {
+	// Invalid UTF-8 is refused outright. The URL is JSON-encoded for storage,
+	// which rewrites invalid bytes to U+FFFD, so the checks below would judge a
+	// different string from the one stored and served; and x/net/idna's
+	// handling of invalid UTF-8 varies with its Unicode tables (chosen by Go
+	// version), so the host check would too.
+	if !utf8.ValidString(raw) || urlHasUnsafeRune(raw) {
 		return false
 	}
 	u, err := url.Parse(raw)
@@ -488,13 +594,81 @@ func isSafeArticleURL(raw string) bool {
 	if u.User != nil {
 		return false
 	}
-	// Reject IP-literal hosts in forbidden ranges, plus any obfuscated
-	// (decimal / hex / octal) IPv4 literal a client resolver would accept —
-	// a client-side SSRF / internal-network-probe vector once served to iOS.
-	if hostIsForbiddenIPLiteral(u.Hostname()) {
+	// Reject hosts that reach a non-public address on the client without a
+	// DNS answer we could vet — a client-side SSRF / internal-network-probe
+	// vector once served to iOS.
+	if hostIsUnsafeForClient(u.Hostname()) {
 		return false
 	}
 	return true
+}
+
+// clientIDNA maps a host the way the WHATWG URL parser does ("domain to
+// ASCII": UTS #46, non-transitional, CheckBidi + CheckJoiners on,
+// CheckHyphens and UseSTD3ASCIIRules off). WebKit — iOS's URL parser — follows
+// that spec, so this is the host the client will actually look up.
+var clientIDNA = idna.New(
+	idna.MapForLookup(),
+	idna.BidiRule(),
+	idna.Transitional(false),
+	idna.StrictDomainName(false),
+	idna.CheckHyphens(false),
+)
+
+// hostIsUnsafeForClient reports whether a client handed this URL host would
+// reach a non-public address without consulting public DNS: a forbidden or
+// obfuscated IP literal, or a name the device resolves itself.
+//
+// The checks run on the host as the client interprets it (clientHost), not on
+// the raw string. Checking the raw string let `169.254.169.254.` (trailing
+// root dot), `１６９．２５４．…` (fullwidth digits, which UTS #46 maps to
+// ASCII), `localhost` and `[fe80::1%25en0]` through, although each reaches the
+// same internal address once WebKit parses it.
+func hostIsUnsafeForClient(host string) bool {
+	if ip := net.ParseIP(host); ip != nil {
+		return httputil.IsForbiddenIP(ip)
+	}
+	h, ok := clientHost(host)
+	if !ok {
+		return true
+	}
+	return isLocalOnlyName(h) || hostIsForbiddenIPLiteral(h)
+}
+
+// clientHost returns host as a WHATWG URL parser resolves it — UTS #46-mapped
+// to lowercase ASCII, minus one trailing root dot (the WHATWG IPv4 parser
+// drops it) — or ok=false for a host such a client cannot load, which is
+// therefore never worth storing.
+func clientHost(host string) (h string, ok bool) {
+	// Canonical IPv6 literals were already handled by net.ParseIP; anything
+	// else with ':' or '%' is a zone-scoped (fe80::1%en0) or malformed bracket
+	// literal. A zone names a local interface, so it is never a public host.
+	if strings.ContainsAny(host, ":%") {
+		return "", false
+	}
+	ascii, err := clientIDNA.ToASCII(host)
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(ascii, "."), true
+}
+
+// isLocalOnlyName reports whether h (from clientHost) is a name public DNS
+// can never answer, so it can only resolve to the user's device or network: a
+// dotless name (search domains, LLMNR, mDNS; ICANN bars dotless public
+// names), localhost and *.localhost (RFC 6761, loopback), *.local (RFC 6762,
+// multicast DNS), *.home.arpa (RFC 8375, home networks) or *.internal
+// (ICANN's private-use reservation). No publisher URL legitimately uses one.
+func isLocalOnlyName(h string) bool {
+	if !strings.Contains(h, ".") {
+		return true
+	}
+	for _, suffix := range []string{".localhost", ".local", ".home.arpa", ".internal"} {
+		if strings.HasSuffix(h, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // hostIsForbiddenIPLiteral reports whether host (a url.Hostname() result) is an
